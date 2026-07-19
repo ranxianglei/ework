@@ -4,7 +4,6 @@
   "description": "Issue-driven AI development daemon. Spawns opencode subprocesses to resolve Gitea issues.",
   "module": "src/index.ts",
   "type": "module",
-  "private": true,
   "license": "MIT",
   "author": "dog and contributors",
   "repository": {
@@ -25,7 +24,21 @@
     "bridge"
   ],
   "bin": {
-    "ework-daemon": "./src/cli.ts"
+    "ework-daemon": "./src/cli.ts",
+    "ework-daemon-server": "./bin/ework-daemon-server.js"
+  },
+  "files": [
+    "src",
+    "bin",
+    "scripts/ework-daemon.service",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "bun": ">=1.1.0"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "setup": "bun run scripts/setup.ts",
