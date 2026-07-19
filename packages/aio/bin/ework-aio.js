@@ -1,0 +1,60 @@
+#!/usr/bin/env bun
+import { spawn, spawnSync } from "bun";
+import { existsSync, readFileSync } from "fs";
+import { resolve, dirname, join } from "path";
+import { fileURLToPath } from "url";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+const args = process.argv.slice(2);
+const subcommand = args[0] || "install";
+
+function usage() {
+  console.log(`ework-aio — installer and controller for the ework stack
+
+Usage:
+  ework-aio install [options]    Install and start ework-web + ework-daemon
+  ework-aio uninstall            Stop services and remove units (keeps data)
+  ework-aio status               Show service status
+  ework-aio logs [svc]           Tail logs (svc: ework-web | ework-daemon)
+  ework-aio env                  Print the .env path and key names (no values)
+  ework-aio --version            Print version
+
+Install options:
+  --user                         Use user-level systemd units (default if non-root)
+  --system                       Use system-level systemd units (default if root)
+  --data-dir <path>              Override data directory (default: ~/.local/share/ework-aio)
+  --port <n>                     ework-web port (default: 3002)
+  --daemon-port <n>              ework-daemon port (default: 3101)
+  --bot-name <login>             Bot username (default: ework-daemon)
+  --no-start                     Install units but don't start services
+  --yes                          Skip all prompts (use generated defaults)
+`);
+}
+
+if (subcommand === "--help" || subcommand === "-h" || subcommand === "help") {
+  usage();
+  process.exit(0);
+}
+if (subcommand === "--version" || subcommand === "-v") {
+  const pkg = JSON.parse(readFileSync(join(__dirname, "..", "package.json"), "utf8"));
+  console.log(`ework-aio ${pkg.version}`);
+  process.exit(0);
+}
+
+const installSh = resolve(__dirname, "install.sh");
+if (!existsSync(installSh)) {
+  console.error(`Cannot find install.sh next to ework-aio bin (looked at ${installSh}).`);
+  console.error("This usually means the package was installed incorrectly.");
+  process.exit(1);
+}
+
+const knownSubs = ["install", "uninstall", "status", "logs", "env"];
+const finalArgs = knownSubs.includes(subcommand) ? args : ["install", ...args];
+
+const result = spawnSync(["bash", installSh, ...finalArgs], {
+  stdio: ["inherit", "inherit", "inherit"],
+  env: process.env,
+});
+if (result.status !== null) process.exit(result.status);
+process.exit(1);

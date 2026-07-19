@@ -1,0 +1,51 @@
+{
+  "name": "ework-aio",
+  "version": "0.1.0",
+  "description": "All-in-one installer for ework (issue tracker) + ework-daemon (AI bridge) + opencode-ework (plugin). One command: npm i -g ework-aio && ework-aio install.",
+  "type": "module",
+  "license": "MIT",
+  "author": "contributors",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ranxianglei/ework-aio.git"
+  },
+  "homepage": "https://github.com/ranxianglei/ework-aio",
+  "bugs": {
+    "url": "https://github.com/ranxianglei/ework-aio/issues"
+  },
+  "keywords": [
+    "ework",
+    "opencode",
+    "issue-tracker",
+    "ai-agent",
+    "installer",
+    "self-hosted"
+  ],
+  "bin": {
+    "ework-aio": "./bin/ework-aio.js"
+  },
+  "files": [
+    "bin",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "bun": ">=1.1.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "start": "bun bin/ework-aio.js",
+    "check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "ework-web": "^0.1.0",
+    "ework-daemon": "^0.1.0",
+    "opencode-ework": "^0.1.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  }
+}
