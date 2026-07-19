@@ -32,7 +32,8 @@ const { values } = parseArgs({
     "dry-run": { type: "boolean", default: false },
     ledger: { type: "string" },
     "data-dir": { type: "string" },
-    "sleep-ms": { type: "string" }, // politeness delay between POSTs
+    "sleep-ms": { type: "string" },
+    "ework-db": { type: "string" },
     help: { type: "boolean", default: false },
   },
   allowPositionals: true,
@@ -65,6 +66,9 @@ Misc:
   --ledger PATH           Override ledger DB path.
   --data-dir PATH         Override ework-aio data dir.
   --sleep-ms N            Politeness delay between target POSTs (default 50).
+  --ework-db PATH         Override ework.db path. When the DB is reachable
+                          (single-box deploy), timestamps are preserved
+                          inline. Otherwise run backfill-timestamps.ts after.
   -h, --help              Show this help.
 `);
   process.exit(0);
@@ -75,6 +79,31 @@ const DATA_DIR = values["data-dir"] ?? join(homedir(), ".local/share/ework-aio")
 const LEDGER_PATH = values["ledger"] ?? join(DATA_DIR, "migration-ledger.db");
 const COMPLETE_FLAG = join(DATA_DIR, ".migration-complete");
 const SLEEP_MS = Number(values["sleep-ms"] ?? 50);
+
+// Optional direct-DB write access to ework.db. The ework-web REST API
+// doesn't accept created_at in POST bodies, so without DB access the
+// migrated rows get server-now timestamps. When ework.db is reachable
+// (single-box deploy), we UPDATE timestamps inline after each POST.
+// When it's not (e.g., remote target), timestamps will be wrong and the
+// standalone backfill-timestamps.ts script is the workaround.
+const EWORK_DB_PATH = values["ework-db"] ?? join(DATA_DIR, "ework-web/ework.db");
+const ework = existsSync(EWORK_DB_PATH)
+  ? new Database(EWORK_DB_PATH)
+  : null;
+if (!ework && !values["dry-run"]) {
+  console.error(`note: ework.db not at ${EWORK_DB_PATH} — timestamps will not be preserved.`);
+  console.error(`      Run scripts/backfill-timestamps.ts afterwards to fix.`);
+}
+const updIssueTs = ework?.prepare(
+  `UPDATE issues SET created_at = ?, updated_at = ? WHERE id = ?`
+);
+const updCommentTs = ework?.prepare(
+  `UPDATE comments SET created_at = ?, updated_at = ? WHERE id = ?`
+);
+const findIssueIdByRepoNum = ework?.prepare(
+  `SELECT i.id FROM issues i JOIN projects p ON i.project_id = p.id
+   WHERE p.owner || '/' || p.name = ? AND i.number = ?`
+);
 
 const sourceUrl = (values["source-url"] ?? "").replace(/\/+$/, "");
 const sourceToken = values["source-token"] ?? "";
@@ -500,6 +529,10 @@ async function main() {
               targetNum,
               new Date().toISOString()
             );
+            if (updIssueTs && findIssueIdByRepoNum) {
+              const t = findIssueIdByRepoNum.get(fullName, targetNum) as { id: number } | undefined;
+              if (t) updIssueTs.run(iss.created_at, iss.updated_at, t.id);
+            }
           }
           newIssues++;
           await sleep(SLEEP_MS);
@@ -554,6 +587,9 @@ async function main() {
               created.id,
               new Date().toISOString()
             );
+            if (updCommentTs) {
+              updCommentTs.run(c.created_at, c.updated_at, created.id);
+            }
           }
           newComments++;
           await sleep(SLEEP_MS);

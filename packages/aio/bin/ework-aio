@@ -27,6 +27,8 @@ Usage:
   ework-aio migrate [options]    Migrate issues from a Gitea instance into
                                  ework-web via the Gitea REST API. Idempotent.
                                  Run \`ework-aio migrate --help\` for details.
+  ework-aio backfill-timestamps  Fix created_at/updated_at on already-migrated
+                                 data. Use after migrate when ework.db is local.
   ework-aio --version            Print version
 
 Install options:
@@ -69,6 +71,21 @@ if (subcommand === "migrate") {
   }
   const rest = args.slice(1);
   const result = spawnSync(["bun", migrateScript, ...rest], {
+    stdio: ["inherit", "inherit", "inherit"],
+    env: process.env,
+  });
+  if (result.status !== null) process.exit(result.status);
+  process.exit(1);
+}
+
+if (subcommand === "backfill-timestamps") {
+  const script = resolve(__dirname, "..", "scripts", "backfill-timestamps.ts");
+  if (!existsSync(script)) {
+    console.error(`Cannot find backfill-timestamps script (looked at ${script}).`);
+    process.exit(1);
+  }
+  const rest = args.slice(1);
+  const result = spawnSync(["bun", script, ...rest], {
     stdio: ["inherit", "inherit", "inherit"],
     env: process.env,
   });
