@@ -1,0 +1,40 @@
+# Build context is parent of ework/, so .dockerignore lives at ework/.dockerignore
+# and applies to everything under the context. Exclude heavy/unrelated stuff.
+
+# Git
+**/.git
+**/.gitignore
+
+# Build artifacts / caches
+**/node_modules
+**/dist
+**/build
+**/.cache
+**/*.log
+
+# Test / docs
+**/test
+**/tests
+**/docs
+
+# Local runtime data (must NOT be baked into image — mount as volume)
+**/.env
+**/.env.local
+**/data
+**/*.db
+**/*.db-shm
+**/*.db-wal
+
+# Unrelated sibling projects (keep context lean)
+/awork
+/awork-web
+/opencode
+/opencode-stable
+/forgejo
+/gitea
+
+# OS / editor noise
+**/.DS_Store
+**/.vscode
+**/.idea
+**/*.swp
