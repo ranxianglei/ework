@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+plugin/node_modules/
+
+# Build artifacts
+dist/
+*.tsbuildinfo
+ ework-daemon
+
+# Test artifacts
+test/*.db
+test/*.db-shm
+test/*.db-wal
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Local env (never commit)
+.env
+.env.test.local
+
+# Local data
+data/
