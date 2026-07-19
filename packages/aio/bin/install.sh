@@ -94,14 +94,18 @@ ensure_pkg() {
 }
 case "$MODE" in
   install)
-    log "Ensuring npm packages are installed..."
-    ensure_pkg "ework-web"
-    ensure_pkg "ework-daemon"
-    # opencode-ework is a library, not a bin; check node_modules
-    if ! [[ -d "$(npm root -g)/opencode-ework" ]] \
-       && ! [[ -d "$(npm root -g)/ework-aio/node_modules/opencode-ework" ]]; then
-      npm install -g opencode-ework || die "npm install -g opencode-ework failed"
-    fi
+    log "Installing npm packages globally..."
+    # Install each as a top-level global so bins are linked to PATH.
+    # (npm v9 doesn't hoist nested deps' bins from `npm i -g ework-aio`.)
+    for pkg in ework-web ework-daemon opencode-ework ework-aio; do
+      if ! command -v "${pkg//-/}" >/dev/null 2>&1 \
+         && ! [[ -d "$(npm root -g 2>/dev/null)/$pkg" ]]; then
+        npm install -g "$pkg" || die "npm install -g $pkg failed"
+      fi
+    done
+    # opencode-ework is a library (no bin); ensure it's present in node_modules.
+    [[ -d "$(npm root -g)/opencode-ework" ]] || npm install -g opencode-ework \
+      || die "npm install -g opencode-ework failed"
     ok "npm packages ready"
 
     # Absolute paths to the bin shims (resolved once, baked into systemd units)
