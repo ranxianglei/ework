@@ -409,7 +409,32 @@ else
 fi
 
 # ─── Register opencode-ework plugin ────────────────────────────────────────
+# Safety: every edit writes to a temp file, validates with `jq -e .`, only
+# then atomically replaces the original. A timestamped .bak is always kept.
 mkdir -p "$(dirname "$OPENCODE_CFG")"
+
+json_edit() {
+  # $1 = file, $2 = jq program, $3 = expected JSON type (optional, e.g. "object").
+  # Writes to temp, validates (parses + optional type check), only then swaps.
+  # Backup at $file.bak.<epoch>.
+  local file="$1" prog="$2" expected="${3:-}" tmp
+  tmp=$(mktemp)
+  if ! jq "$prog" "$file" > "$tmp" 2>/dev/null; then
+    rm -f "$tmp"
+    die "jq edit failed on $file (program: $prog)"
+  fi
+  if ! jq -e . "$tmp" >/dev/null 2>&1; then
+    rm -f "$tmp"
+    die "jq edit produced invalid JSON on $file — aborted, original untouched"
+  fi
+  if [[ -n "$expected" ]] && ! jq -e "type == \"$expected\"" "$tmp" >/dev/null 2>&1; then
+    rm -f "$tmp"
+    die "jq edit produced wrong type on $file (expected $expected) — aborted, original untouched"
+  fi
+  cp "$file" "$file.bak.$(date +%s)"
+  mv "$tmp" "$file"
+}
+
 if [[ ! -f "$OPENCODE_CFG" ]]; then
   log "Writing $OPENCODE_CFG (registering opencode-ework plugin)"
   cat > "$OPENCODE_CFG" <<'EOF'
@@ -418,24 +443,24 @@ if [[ ! -f "$OPENCODE_CFG" ]]; then
   "plugin": ["opencode-ework@latest"]
 }
 EOF
-elif grep -qE '"opencode-ework(@latest)?"' "$OPENCODE_CFG"; then
-  if grep -q '"opencode-ework@latest"' "$OPENCODE_CFG"; then
-    ok "opencode-ework@latest already in $OPENCODE_CFG"
-  else
-    log "Upgrading opencode-ework → opencode-ework@latest in $OPENCODE_CFG"
-    cp "$OPENCODE_CFG" "$OPENCODE_CFG.bak.$(date +%s)"
-    tmp=$(mktemp)
-    jq '(.plugin // []) | map(if . == "opencode-ework" then "opencode-ework@latest" else . end)' \
-       "$OPENCODE_CFG" > "$tmp" && mv "$tmp" "$OPENCODE_CFG"
-    ok "Plugin upgraded (backup at $OPENCODE_CFG.bak.*)"
-  fi
+elif grep -q '"opencode-ework@latest"' "$OPENCODE_CFG"; then
+  ok "opencode-ework@latest already in $OPENCODE_CFG"
+elif grep -q '"opencode-ework"' "$OPENCODE_CFG"; then
+  log "Upgrading opencode-ework → opencode-ework@latest in $OPENCODE_CFG"
+  json_edit "$OPENCODE_CFG" \
+    '.plugin = ((.plugin // []) | map(if . == "opencode-ework" then "opencode-ework@latest" else . end))' \
+    object
+  ok "Plugin upgraded (backup at $OPENCODE_CFG.bak.*)"
 else
   log "Merging opencode-ework@latest into existing $OPENCODE_CFG"
-  cp "$OPENCODE_CFG" "$OPENCODE_CFG.bak.$(date +%s)"
-  tmp=$(mktemp)
-  jq 'if .plugin then .plugin += ["opencode-ework@latest"] else . + {plugin:["opencode-ework@latest"]} end' \
-     "$OPENCODE_CFG" > "$tmp" && mv "$tmp" "$OPENCODE_CFG"
+  json_edit "$OPENCODE_CFG" \
+    'if .plugin then .plugin += ["opencode-ework@latest"] else . + {plugin:["opencode-ework@latest"]} end' \
+    object
   ok "Plugin registered (backup at $OPENCODE_CFG.bak.*)"
+fi
+
+if ! jq -e 'type == "object"' "$OPENCODE_CFG" >/dev/null 2>&1; then
+  warn "$OPENCODE_CFG is not a JSON object — check $OPENCODE_CFG.bak.* for restore"
 fi
 
 # ─── Done ──────────────────────────────────────────────────────────────────
