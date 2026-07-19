@@ -13,10 +13,20 @@ All-in-one installer for the **ework** self-hosted AI development stack:
 ## Quick start
 
 ```bash
-npm install -g ework-aio && ework-aio install
+# Recommended: user-level install (no sudo needed)
+npm install -g ework-aio --prefix ~/.local && ework-aio install
 ```
 
 That's the whole install. When it finishes it prints your login URL, operator login, and token.
+
+> **PATH heads-up:** `--prefix ~/.local` puts bin shims at `~/.local/bin/`.
+> Most distros already have `~/.local/bin` on PATH (via `systemd-user-sessions`
+> or `~/.profile`). If `command -v ework-aio` fails after install, add this to
+> your `~/.bashrc` / `~/.zshrc`:
+>
+> ```bash
+> export PATH="$HOME/.local/bin:$PATH"
+> ```
 
 ### Prerequisites
 
@@ -30,18 +40,27 @@ The install command checks for these and aborts with a hint if any are missing:
 | `systemctl` | any     | systemd-based Linux                  |
 | `openssl`/`curl`/`jq`/`awk` | any | your distro package manager |
 
-### One-liner alternatives
+### Install variants
 
 ```bash
+# System-level install (needs sudo; services run as root, units in /etc/systemd/system)
+sudo npm install -g ework-aio && sudo ework-aio install --system
+
 # Run without installing globally (downloads + runs once)
 npx ework-aio install
 
-# If npm registry is slow on your machine, route through an HTTP proxy
-HTTPS_PROXY=http://127.0.0.1:7890 npm install -g ework-aio && ework-aio install
-
-# User-level install (no sudo) — uses ~/.local as npm prefix
-npm install -g ework-aio --prefix ~/.local && ework-aio install
+# Route through an HTTP proxy if npm registry is slow on your machine
+HTTPS_PROXY=http://127.0.0.1:7890 npm install -g ework-aio --prefix ~/.local && ework-aio install
 ```
+
+User-level (default in this README) keeps everything under your home directory:
+
+- bins: `~/.local/bin/`
+- npm package files: `~/.local/lib/node/`
+- data: `~/.local/share/ework-aio/`
+- systemd units: `~/.config/systemd/user/`
+
+`sudo` is never required; uninstall is `rm -rf ~/.local/share/ework-aio && npm uninstall -g ework-aio --prefix ~/.local`.
 
 ### Why two steps?
 
