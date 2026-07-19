@@ -100,6 +100,39 @@ if [[ "$SCOPENAME" == "--user" && "${EUID:-$(id -u)}" == "0" ]]; then
   SCOPENAME="--system"
 fi
 
+# ─── Ensure --user mode can actually talk to systemd ─────────────────────────
+# When invoked from ssh/cron/non-PAM-login shells, XDG_RUNTIME_DIR is often
+# empty and systemctl --user fails with "Failed to connect to bus" or — worse —
+# "Unit not found" (when a stale bus from another session responds but doesn't
+# know about installed units). Auto-export the runtime dir + bus socket if we
+# can find them. No-op for --system scope.
+ensure_user_session() {
+  [[ "$SCOPENAME" == "--user" ]] || return 0
+  local uid
+  uid="$(id -u)"
+  local rundir="/run/user/$uid"
+
+  if [[ -z "${XDG_RUNTIME_DIR:-}" && -d "$rundir" ]]; then
+    export XDG_RUNTIME_DIR="$rundir"
+  fi
+  if [[ -z "${DBUS_SESSION_BUS_ADDRESS:-}" && -S "${XDG_RUNTIME_DIR}/bus" ]]; then
+    export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
+  fi
+
+  # Final sanity: can we reach systemd --user at all?
+  if ! systemctl --user is-system-running >/dev/null 2>&1 \
+     && ! systemctl --user list-units >/dev/null 2>&1; then
+    warn "systemctl --user cannot reach the user session bus."
+    warn "  XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-<empty>}"
+    warn "  DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS:-<empty>}"
+    warn "Likely causes: ssh without PAM, no linger, or session never started."
+    warn "Fix: 'sudo loginctl enable-linger \$USER' then relogin; or reinstall with --system."
+    return 1
+  fi
+  return 0
+}
+ensure_user_session || true   # warn but don't hard-fail — let later steps report specifics
+
 # ─── Pre-flight: command dependencies ───────────────────────────────────────
 need_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1. $2"
@@ -260,7 +293,45 @@ EOF
   fi
 }
 
-ctl() { systemctl "$SCOPENAME" "$@"; }
+# ctl wraps `systemctl $SCOPENAME` with two hardenings over the bare command:
+#   1. If output contains "Unit ... not found", retry once after daemon-reload
+#      — fresh user sessions (no linger, post-ssh-reconnect) often have a stale
+#      unit cache and this is the standard fix.
+#   2. If output mentions bus connection failure, print an actionable hint
+#      instead of letting the raw "No medium found" / "Failed to connect to
+#      bus" message through unchanged.
+ctl() {
+  local out rc
+  out="$(systemctl "$SCOPENAME" "$@" 2>&1)"
+  rc=$?
+  if [[ $rc -ne 0 ]]; then
+    if [[ "$out" == *"Failed to connect to bus"* || "$out" == *"No medium found"* ]]; then
+      cat >&2 <<EOF
+${c_red}systemctl $SCOPENAME failed to reach the user bus.${c_reset}
+  $out
+Hint: run from a logged-in session, or:
+  export XDG_RUNTIME_DIR=/run/user/$(id -u)
+  export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus
+or reinstall with: sudo ework-aio install --system
+EOF
+      return $rc
+    fi
+    if [[ "$out" == *"not found"* ]]; then
+      systemctl "$SCOPENAME" daemon-reload >/dev/null 2>&1 || true
+      out="$(systemctl "$SCOPENAME" "$@" 2>&1)"
+      rc=$?
+      if [[ $rc -ne 0 ]]; then
+        cat >&2 <<EOF
+${c_red}systemctl $SCOPENAME $*: unit not found after daemon-reload.${c_reset}
+The unit file may be missing from $UNIT_DIR. Re-run:
+  ework-aio install --no-start    # rewrites units, preserves .env/data
+EOF
+        return $rc
+      fi
+    fi
+  fi
+  printf '%s\n' "$out"
+}
 
 # ─── Config mode: read/change runtime .env keys ─────────────────────────────
 # Each entry: KEY|SERVICE|DESCRIPTION. Only keys in this list are settable via
@@ -343,14 +414,24 @@ service_for_key() {
 
 restart_service() {
   local svc="$1"
+  local rc=0
   case "$svc" in
-    web)    ctl restart ework-web.service    && ok "Restarted ework-web" ;;
-    daemon) ctl restart ework-daemon.service && ok "Restarted ework-daemon" ;;
+    web)    ctl restart ework-web.service    && ok "Restarted ework-web"    || rc=$? ;;
+    daemon) ctl restart ework-daemon.service && ok "Restarted ework-daemon" || rc=$? ;;
     both)
-      ctl restart ework-web.service ework-daemon.service && ok "Restarted ework-web + ework-daemon"
+      ctl restart ework-web.service ework-daemon.service \
+        && ok "Restarted ework-web + ework-daemon" || rc=$?
       ;;
     *) return 1 ;;
   esac
+  if [[ $rc -ne 0 ]]; then
+    warn "restart of '$svc' failed (exit $rc)."
+    warn "The .env changes are saved; services still need to be reloaded."
+    warn "Recovery: 'ework-aio config restart $svc' from a logged-in shell,"
+    warn "or 'sudo ework-aio install --system' to escape user-bus limitations."
+    return $rc
+  fi
+  return 0
 }
 
 config_help() {
