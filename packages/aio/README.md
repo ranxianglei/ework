@@ -103,6 +103,12 @@ ework-aio uninstall            Stop services and remove units (data preserved)
 ework-aio status               Show service status
 ework-aio logs [web|daemon]    Tail logs
 ework-aio env                  Print key paths (no secrets)
+ework-aio config <subcommand>  Read / change runtime .env keys
+  config list                 List settable keys + current values
+  config get <KEY>            Print one key's current value
+  config set <KEY> <VALUE>    Set a key, then restart affected service
+                              (use --no-restart to defer)
+  config restart <web|daemon|both>  Restart one or both services
 ```
 
 ### Install options
@@ -146,6 +152,56 @@ Re-running `ework-aio install` is safe:
 - Bot user creation returns 400/409 if it already exists; PAT is reused.
 - Systemd units are overwritten (config drift auto-corrected).
 - Plugin merge skips if `opencode-ework` already in `plugin` array.
+
+## Runtime configuration (`ework-aio config`)
+
+For changing settings after install, prefer `config` over editing `.env` by hand — it writes the right file, handles cross-service dependencies, and restarts the affected service for you.
+
+```bash
+ework-aio config list                          # see all settable keys + current values
+ework-aio config get WORK_PORT                 # read one
+ework-aio config set WORK_PORT 8080            # set + auto-restart ework-web
+ework-aio config set WORK_PORT 8080 --no-restart  # stage the change, apply later
+ework-aio config restart both                  # explicit restart
+```
+
+### Settable keys
+
+| Key                          | Service | What it controls                                           |
+| ---------------------------- | ------- | ---------------------------------------------------------- |
+| `WORK_PORT`                  | web     | ework-web listen port (default 3002)                       |
+| `WORK_HOST`                  | web     | bind address (default 127.0.0.1; use 0.0.0.0 for LAN)      |
+| `WORK_OPERATOR_LOGIN`        | web     | login auto-promoted to admin                               |
+| `WORK_OPENCODE_BIN`          | web     | opencode binary path used by ework-web                     |
+| `WORK_TRANSLATE_URL`         | web     | OpenAI-compat `/v1/chat/completions` endpoint for translate |
+| `WORK_TRANSLATE_MODEL`       | web     | translate model name                                       |
+| `WORK_TTS_SPEED`             | web     | TTS playback rate (default 1.0)                            |
+| `WORK_FILE_ROOTS`            | web     | comma-separated file-viewer roots                          |
+| `WORK_COMMENT_SORT`          | web     | `desc` or `asc`                                            |
+| `DAEMON_PORT`                | daemon  | ework-daemon listen port (default 3101)                    |
+| `DAEMON_HOST`                | daemon  | bind address                                               |
+| `OPENCODE_BINARY`            | daemon  | opencode binary path                                       |
+| `OPENCODE_BASE_WORKDIR`      | daemon  | opencode working directory base                            |
+| `COMPLETION_CHECK_API_KEY`   | daemon  | completion-check API key                                   |
+| `COMPLETION_CHECK_BASE_URL`  | daemon  | completion-check API base URL                              |
+| `COMPLETION_CHECK_MODEL`     | daemon  | completion-check model name                                |
+
+### Cross-service dependencies
+
+Changing `WORK_PORT` or `DAEMON_PORT` also rewrites the URL the *other* service uses to call it (so the daemon still finds web, and web still finds the daemon), and restarts **both**:
+
+- `config set WORK_PORT 8080` → updates `WORK_PORT` in web env + `GITEA_URL` in daemon env, restarts both
+- `config set DAEMON_PORT 3102` → updates `DAEMON_PORT` in daemon env + `WORK_DAEMON_WEBHOOK_URL` in web env, restarts both
+
+### Not settable here (use install)
+
+Secrets and the web↔daemon contract aren't exposed via `config` — rerun `ework-aio install` to regenerate them (delete the relevant `.env` first if you want fresh tokens):
+
+- Random secrets: `WORK_TOKEN`, `WORK_COOKIE_SECRET`, `WORK_DAEMON_WEBHOOK_SECRET`, `BOT_TOKEN`
+- DB / attachment paths: `WORK_DB_PATH`, `WORK_ATTACHMENT_ROOT`, `DAEMON_DB_PATH`
+- Web↔daemon contract: `GITEA_URL`, `GITEA_TOKEN`, `WORK_DAEMON_BOT_LOGIN`, `WORK_DAEMON_WEBHOOK_URL`, `BOT_USERNAME`
+
+To regenerate all of them: `rm -rf ~/.local/share/ework-aio && ework-aio install`.
 
 ## Uninstall
 

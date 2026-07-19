@@ -30,12 +30,27 @@ DAEMON_PORT="3101"
 BOT_NAME="ework-daemon"
 NO_START=0
 ASSUME_YES=0
+NO_RESTART=0
+CFG_ARGS=()
 
 usage() {
   cat <<'EOF'
-ework-aio install [options]
+ework-aio <command> [options]
 
-Options:
+Commands:
+  install [options]              Install or upgrade the ework stack (default)
+  uninstall                      Stop services and remove units (data preserved)
+  status                         Show service status
+  logs [web|daemon]              Tail logs
+  env                            Print key paths (no secrets)
+  config <subcommand>            Read / change runtime config (.env keys)
+    config list                  List all settable keys + current values
+    config get <KEY>             Print current value of one key
+    config set <KEY> <VALUE>     Set a key, then restart affected service
+                                 (unless --no-restart is given)
+    config restart <web|daemon>  Restart one or both services
+
+Install options:
   --user                         Use user-level systemd units (default if non-root)
   --system                       Use system-level systemd units (default if root)
   --data-dir <path>              Override data directory (default: ~/.local/share/ework-aio)
@@ -44,7 +59,9 @@ Options:
   --bot-name <login>             Bot username (default: ework-daemon)
   --no-start                     Install units but don't start services
   --yes                          Skip all prompts (use generated defaults)
-  --mode <install|uninstall|status|logs|env>   (internal; first positional arg wins)
+
+Global options:
+  --no-restart                   With `config set`: edit .env but skip the restart
   -h, --help                     Show this help
 EOF
 }
@@ -52,6 +69,18 @@ EOF
 while [[ $# -gt 0 ]]; do
   case "$1" in
     install|uninstall|status|logs|env) MODE="$1"; shift ;;
+    config)
+      MODE="config"
+      shift
+      # Consume remaining args as config subcommand + its positionals.
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --no-restart) NO_RESTART=1; shift ;;
+          -h|--help) CFG_ARGS=("help"); shift ;;
+          *) CFG_ARGS+=("$1"); shift ;;
+        esac
+      done
+      ;;
     --user)   SCOPENAME="--user"; shift ;;
     --system) SCOPENAME="--system"; shift ;;
     --data-dir) DATA_DIR="$2"; shift 2 ;;
@@ -59,6 +88,7 @@ while [[ $# -gt 0 ]]; do
     --daemon-port) DAEMON_PORT="$2"; shift 2 ;;
     --bot-name) BOT_NAME="$2"; shift 2 ;;
     --no-start) NO_START=1; shift ;;
+    --no-restart) NO_RESTART=1; shift ;;
     --yes|-y) ASSUME_YES=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) die "Unknown argument: $1 (try --help)" ;;
@@ -74,14 +104,19 @@ fi
 need_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1. $2"
 }
-need_cmd bun        "Install from https://bun.sh"
-need_cmd npm        "Install Node.js or Bun (ships npm)"
-need_cmd opencode   "Install from https://opencode.ai"
+# Commands every mode needs (status/logs/env/config/uninstall all use systemctl).
 need_cmd systemctl  "This installer requires systemd."
-need_cmd openssl    "Install the openssl package."
-need_cmd curl       "Install curl."
-need_cmd jq         "Install jq (for opencode.json merge)."
 need_cmd awk        "Should be present on any Linux."
+
+# Install-only deps. Other modes work even if these are missing.
+if [[ "$MODE" == "install" ]]; then
+  need_cmd bun        "Install from https://bun.sh"
+  need_cmd npm        "Install Node.js or Bun (ships npm)"
+  need_cmd opencode   "Install from https://opencode.ai"
+  need_cmd openssl    "Install the openssl package."
+  need_cmd curl       "Install curl."
+  need_cmd jq         "Install jq (for opencode.json merge)."
+fi
 
 # Verify the 3 npm packages are reachable. If not, try to install them now.
 ensure_pkg() {
@@ -227,6 +262,211 @@ EOF
 
 ctl() { systemctl "$SCOPENAME" "$@"; }
 
+# ─── Config mode: read/change runtime .env keys ─────────────────────────────
+# Each entry: KEY|SERVICE|DESCRIPTION. Only keys in this list are settable via
+# `config set`. Secrets (WORK_TOKEN, *_WEBHOOK_SECRET, BOT_TOKEN), DB paths,
+# and the web<->daemon contract (GITEA_URL/TOKEN, WORK_DAEMON_WEBHOOK_*) are
+# deliberately excluded — changing them by hand breaks the install.
+SETTABLE_KEYS=(
+  "WORK_PORT|web|ework-web listen port (default 3002)"
+  "WORK_HOST|web|ework-web bind address (default 127.0.0.1; use 0.0.0.0 for LAN)"
+  "WORK_OPERATOR_LOGIN|web|login auto-promoted to admin"
+  "WORK_OPENCODE_BIN|web|opencode binary path used by ework-web"
+  "WORK_TRANSLATE_URL|web|OpenAI-compat /v1/chat/completions endpoint for translate"
+  "WORK_TRANSLATE_MODEL|web|translate model name"
+  "WORK_TTS_SPEED|web|TTS playback rate (default 1.0)"
+  "WORK_FILE_ROOTS|web|comma-separated file-viewer roots"
+  "WORK_COMMENT_SORT|web|comment sort order: desc|asc"
+  "DAEMON_PORT|daemon|ework-daemon listen port (default 3101)"
+  "DAEMON_HOST|daemon|ework-daemon bind address (default 127.0.0.1)"
+  "OPENCODE_BINARY|daemon|opencode binary path"
+  "OPENCODE_BASE_WORKDIR|daemon|opencode working directory base"
+  "COMPLETION_CHECK_API_KEY|daemon|completion-check API key"
+  "COMPLETION_CHECK_BASE_URL|daemon|completion-check API base URL"
+  "COMPLETION_CHECK_MODEL|daemon|completion-check model name"
+)
+
+key_service() {
+  local k="$1" e
+  for e in "${SETTABLE_KEYS[@]}"; do
+    [[ "$e" == "$k|"* ]] || continue
+    local rest="${e#*|}"
+    echo "${rest%%|*}"
+    return
+  done
+}
+key_default() {
+  local k="$1" e
+  for e in "${SETTABLE_KEYS[@]}"; do
+    [[ "$e" == "$k|"* ]] || continue
+    local rest="${e#*|}"
+    echo "${rest#*|}"
+    return
+  done
+}
+key_settable()  { local k="$1"; local e; for e in "${SETTABLE_KEYS[@]}"; do [[ "$e" == "$k|"* ]] && return 0; done; return 1; }
+
+env_file_for() {
+  case "$1" in
+    web)    echo "$WEB_ENV" ;;
+    daemon) echo "$DAEMON_ENV" ;;
+    *)      return 1 ;;
+  esac
+}
+
+env_get() {
+  local file="$1" key="$2"
+  [[ -f "$file" ]] || return 1
+  awk -F= -v k="$key" '$1==k {sub(/^[^=]*=/,""); print; found=1} END{exit !found}' "$file"
+}
+
+env_set() {
+  local file="$1" key="$2" val="$3"
+  [[ -f "$file" ]] || { mkdir -p "$(dirname "$file")"; touch "$file"; chmod 600 "$file"; }
+  if grep -q "^${key}=" "$file"; then
+    sed -i "s|^${key}=.*|${key}=${val}|" "$file"
+  else
+    printf '%s=%s\n' "$key" "$val" >> "$file"
+  fi
+}
+
+service_for_key() {
+  case "$1" in
+    WORK_PORT)
+      echo "both" ;;
+    DAEMON_PORT)
+      echo "both" ;;
+    *)
+      echo "$(key_service "$1")" ;;
+  esac
+}
+
+restart_service() {
+  local svc="$1"
+  case "$svc" in
+    web)    ctl restart ework-web.service    && ok "Restarted ework-web" ;;
+    daemon) ctl restart ework-daemon.service && ok "Restarted ework-daemon" ;;
+    both)
+      ctl restart ework-web.service ework-daemon.service && ok "Restarted ework-web + ework-daemon"
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+config_help() {
+  cat <<'EOF'
+ework-aio config <subcommand>
+
+Subcommands:
+  list                          List all settable keys + current values
+  get <KEY>                     Print current value of one key
+  set <KEY> <VALUE>             Set a key in .env, then restart the affected
+                                service (unless --no-restart is given)
+  restart <web|daemon|both>     Restart one or both services
+
+Examples:
+  ework-aio config list
+  ework-aio config get WORK_PORT
+  ework-aio config set WORK_PORT 8080
+  ework-aio config set WORK_TRANSLATE_URL http://127.0.0.1:8000/v1 --no-restart
+  ework-aio config restart both
+
+Note: changing WORK_PORT or DAEMON_PORT also rewrites the cross-link the other
+service uses (GITEA_URL on daemon side, WORK_DAEMON_WEBHOOK_URL on web side),
+and restarts both. Secrets and DB paths are not settable here — rerun
+`ework-aio install` (with `rm .env` first if you need new tokens).
+EOF
+}
+
+config_list() {
+  hr; log "Settable config keys"; hr
+  printf '  %-28s %-8s %s\n' "KEY" "SERVICE" "VALUE"
+  local e k svc val env_file
+  for e in "${SETTABLE_KEYS[@]}"; do
+    k="${e%%|*}"
+    svc="$(key_service "$k")"
+    env_file="$(env_file_for "$svc")"
+    val="$(env_get "$env_file" "$k" 2>/dev/null || echo '')"
+    [[ -z "$val" ]] && val="(unset)"
+    printf '  %-28s %-8s %s\n' "$k" "$svc" "$val"
+  done
+  hr
+  printf 'Use %sconfig set <KEY> <VALUE>%s to change a key.\n' "$c_bold" "$c_reset"
+}
+
+config_get() {
+  local k="$1"
+  [[ -n "$k" ]] || die "Usage: ework-aio config get <KEY>"
+  key_settable "$k" || die "Key '$k' is not settable. Run 'ework-aio config list' for the allow-list."
+  local svc env_file val
+  svc="$(key_service "$k")"
+  env_file="$(env_file_for "$svc")"
+  val="$(env_get "$env_file" "$k" 2>/dev/null)" || { warn "$k is not currently set in $env_file"; exit 0; }
+  printf '%s\n' "$val"
+}
+
+config_set() {
+  local k="$1" v="$2"
+  [[ -n "$k" && -n "$v" ]] || die "Usage: ework-aio config set <KEY> <VALUE>"
+  key_settable "$k" || die "Key '$k' is not settable. Run 'ework-aio config list' for the allow-list."
+
+  local svc env_file
+  svc="$(key_service "$k")"
+  env_file="$(env_file_for "$svc")"
+
+  log "Setting $k=$v in $env_file"
+  cp "$env_file" "$env_file.bak.$(date +%s)" 2>/dev/null || true
+  env_set "$env_file" "$k" "$v"
+  ok "$k updated"
+
+  case "$k" in
+    WORK_PORT)
+      log "Propagating to daemon (GITEA_URL)"
+      cp "$DAEMON_ENV" "$DAEMON_ENV.bak.$(date +%s)" 2>/dev/null || true
+      env_set "$DAEMON_ENV" "GITEA_URL" "http://127.0.0.1:$v"
+      ok "DAEMON_ENV GITEA_URL updated"
+      ;;
+    DAEMON_PORT)
+      log "Propagating to web (WORK_DAEMON_WEBHOOK_URL)"
+      cp "$WEB_ENV" "$WEB_ENV.bak.$(date +%s)" 2>/dev/null || true
+      env_set "$WEB_ENV" "WORK_DAEMON_WEBHOOK_URL" "http://127.0.0.1:$v"
+      ok "WEB_ENV WORK_DAEMON_WEBHOOK_URL updated"
+      ;;
+  esac
+
+  if [[ "$NO_RESTART" == "1" ]]; then
+    local to_restart
+    to_restart="$(service_for_key "$k")"
+    warn "--no-restart: changes saved but service not reloaded. Run 'ework-aio config restart $to_restart' to apply."
+    return
+  fi
+
+  local target
+  target="$(service_for_key "$k")"
+  log "Restarting $target..."
+  restart_service "$target" || warn "restart failed — services may need manual reload"
+}
+
+config_restart() {
+  local svc="${1:-both}"
+  case "$svc" in
+    web|daemon|both) restart_service "$svc" ;;
+    *) die "Usage: ework-aio config restart <web|daemon|both>" ;;
+  esac
+}
+
+run_config() {
+  local sub="${CFG_ARGS[0]:-list}"
+  case "$sub" in
+    list)    config_list ;;
+    get)     config_get "${CFG_ARGS[1]:-}" ;;
+    set)     config_set "${CFG_ARGS[1]:-}" "${CFG_ARGS[2]:-}" ;;
+    restart) config_restart "${CFG_ARGS[1]:-both}" ;;
+    help|-h|--help) config_help ;;
+    *) die "Unknown config subcommand: $sub (try: ework-aio config help)" ;;
+  esac
+}
+
 # ─── Modes ──────────────────────────────────────────────────────────────────
 case "$MODE" in
 env)
@@ -238,6 +478,11 @@ env)
   printf '  opencode cfg  : %s\n' "$OPENCODE_CFG"
   printf '  systemd scope : %s\n' "$SCOPENAME"
   printf '  unit dir      : %s\n' "$UNIT_DIR"
+  exit 0
+  ;;
+
+config)
+  run_config
   exit 0
   ;;
 
