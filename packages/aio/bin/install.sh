@@ -94,18 +94,13 @@ ensure_pkg() {
 }
 case "$MODE" in
   install)
-    log "Installing npm packages globally..."
+    log "Installing/updating npm packages globally..."
     # Install each as a top-level global so bins are linked to PATH.
     # (npm v9 doesn't hoist nested deps' bins from `npm i -g ework-aio`.)
+    # Always run `npm install -g` (not gated on presence) so re-runs pick up new versions.
     for pkg in ework-web ework-daemon opencode-ework ework-aio; do
-      if ! command -v "${pkg//-/}" >/dev/null 2>&1 \
-         && ! [[ -d "$(npm root -g 2>/dev/null)/$pkg" ]]; then
-        npm install -g "$pkg" || die "npm install -g $pkg failed"
-      fi
+      npm install -g "$pkg@latest" || die "npm install -g $pkg@latest failed"
     done
-    # opencode-ework is a library (no bin); ensure it's present in node_modules.
-    [[ -d "$(npm root -g)/opencode-ework" ]] || npm install -g opencode-ework \
-      || die "npm install -g opencode-ework failed"
     ok "npm packages ready"
 
     # Absolute paths to the bin shims (resolved once, baked into systemd units)
@@ -420,17 +415,25 @@ if [[ ! -f "$OPENCODE_CFG" ]]; then
   cat > "$OPENCODE_CFG" <<'EOF'
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["opencode-ework"]
+  "plugin": ["opencode-ework@latest"]
 }
 EOF
-elif grep -q '"opencode-ework"' "$OPENCODE_CFG"; then
-  ok "opencode-ework already in $OPENCODE_CFG"
+elif grep -qE '"opencode-ework(@latest)?"' "$OPENCODE_CFG"; then
+  if grep -q '"opencode-ework@latest"' "$OPENCODE_CFG"; then
+    ok "opencode-ework@latest already in $OPENCODE_CFG"
+  else
+    log "Upgrading opencode-ework → opencode-ework@latest in $OPENCODE_CFG"
+    cp "$OPENCODE_CFG" "$OPENCODE_CFG.bak.$(date +%s)"
+    tmp=$(mktemp)
+    jq '(.plugin // []) | map(if . == "opencode-ework" then "opencode-ework@latest" else . end)' \
+       "$OPENCODE_CFG" > "$tmp" && mv "$tmp" "$OPENCODE_CFG"
+    ok "Plugin upgraded (backup at $OPENCODE_CFG.bak.*)"
+  fi
 else
-  log "Merging opencode-ework into existing $OPENCODE_CFG"
+  log "Merging opencode-ework@latest into existing $OPENCODE_CFG"
   cp "$OPENCODE_CFG" "$OPENCODE_CFG.bak.$(date +%s)"
-  # Use jq to append to plugin array (creates array if missing)
   tmp=$(mktemp)
-  jq 'if .plugin then .plugin += ["opencode-ework"] else . + {plugin:["opencode-ework"]} end' \
+  jq 'if .plugin then .plugin += ["opencode-ework@latest"] else . + {plugin:["opencode-ework@latest"]} end' \
      "$OPENCODE_CFG" > "$tmp" && mv "$tmp" "$OPENCODE_CFG"
   ok "Plugin registered (backup at $OPENCODE_CFG.bak.*)"
 fi
@@ -441,8 +444,23 @@ ok "Install complete."
 hr
 printf '\n%s→%s Open %shttp://127.0.0.1:%s/login%s\n' \
   "$c_bold" "$c_reset" "$c_dim" "$WORK_PORT" "$c_reset"
-printf '  Login token: %s%s%s\n' "$c_bold" "$WORK_TOKEN_VAL" "$c_reset"
-printf '  Logs:        ework-aio logs web | ework-aio logs daemon\n'
-printf '  Status:      ework-aio status\n'
-printf '  Uninstall:   ework-aio uninstall\n'
+printf '  Operator login: %s%s%s (auto-promoted admin; derived from $USER at install time)\n' \
+  "$c_bold" "$USER" "$c_reset"
+printf '  Login token:    %s%s%s\n' "$c_bold" "$WORK_TOKEN_VAL" "$c_reset"
+printf '  Bot user:       %s%s%s (auto-created, used by ework-daemon)\n' \
+  "$c_bold" "$BOT_NAME" "$c_reset"
+printf '  Data dir:       %s%s%s\n' "$c_dim" "$DATA_DIR" "$c_reset"
+printf '  Logs:           ework-aio logs web | ework-aio logs daemon\n'
+printf '  Status:         ework-aio status\n'
+printf '  Uninstall:      ework-aio uninstall\n'
+hr
+printf '\n%sNext steps (optional config)%s\n' "$c_bold" "$c_reset"
+printf '  • 朗读 (TTS):     %shttp://127.0.0.1:%s/admin/tts%s — needs an OpenAI-compat /audio/speech endpoint\n' \
+  "$c_dim" "$WORK_PORT" "$c_reset"
+printf '  • 翻译:           edit %s%s/.env%s, set WORK_TRANSLATE_URL + WORK_TRANSLATE_MODEL\n' \
+  "$c_dim" "$WEB_DATA_DIR" "$c_reset"
+printf '                    (OpenAI-compat /v1/chat/completions endpoint), then: ework-aio install\n'
+printf '  • Per-project webhook: open %s/<owner>/<repo>/webhooks%s to wire downstream\n' \
+  "$c_dim" "$c_reset"
+printf '                    consumers (GitHub Actions, etc.). Gitea-compat payload + HMAC-SHA256 sig.\n'
 hr
