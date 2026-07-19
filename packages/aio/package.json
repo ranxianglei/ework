@@ -22,7 +22,7 @@
     "self-hosted"
   ],
   "bin": {
-    "ework-aio": "./bin/ework-aio.js"
+    "ework-aio": "./bin/ework-aio"
   },
   "files": [
     "bin",
