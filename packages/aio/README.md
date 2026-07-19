@@ -13,18 +13,56 @@ All-in-one installer for the **ework** self-hosted AI development stack:
 ## Quick start
 
 ```bash
-# 1. Make sure prerequisites are on PATH
-bun --version          # >= 1.1.0 — https://bun.sh
-opencode --version     # >= 1.14   — https://opencode.ai
-npm --version          # ships with bun or node
-systemctl --version    # this installer requires systemd
-
-# 2. One-shot install
-npx ework-aio install
-# or: npm install -g ework-aio && ework-aio install
+npm install -g ework-aio && ework-aio install
 ```
 
-The installer prints your login URL and token when it finishes.
+That's the whole install. When it finishes it prints your login URL, operator login, and token.
+
+### Prerequisites
+
+The install command checks for these and aborts with a hint if any are missing:
+
+| Tool        | Min ver | Install from                         |
+| ----------- | ------- | ------------------------------------ |
+| `bun`       | 1.1.0   | https://bun.sh                       |
+| `opencode`  | 1.14    | https://opencode.ai                  |
+| `npm`       | any     | ships with bun or node               |
+| `systemctl` | any     | systemd-based Linux                  |
+| `openssl`/`curl`/`jq`/`awk` | any | your distro package manager |
+
+### One-liner alternatives
+
+```bash
+# Run without installing globally (downloads + runs once)
+npx ework-aio install
+
+# If npm registry is slow on your machine, route through an HTTP proxy
+HTTPS_PROXY=http://127.0.0.1:7890 npm install -g ework-aio && ework-aio install
+
+# User-level install (no sudo) — uses ~/.local as npm prefix
+npm install -g ework-aio --prefix ~/.local && ework-aio install
+```
+
+### Why two steps?
+
+`npm install -g ework-aio` **only** lays down files: the bin launcher and the bash installer. It does **not** run the installer. The second `ework-aio install` step is what actually:
+
+- writes `.env` files with random tokens,
+- creates systemd units (user-level by default, system-level if you sudo),
+- starts services,
+- bootstraps the bot user,
+- edits `~/.config/opencode/opencode.json`.
+
+Keeping these in a separate, explicitly-invoked step is intentional:
+
+- **Privilege boundary.** `sudo npm install -g` runs as root; the install step runs as *you*. Folding them together would force system-level systemd units and root-owned files in `$HOME`.
+- **No surprise side-effects.** `npm install -g foo` should lay down files and stop. Creating services, generating tokens, editing your opencode config — that's invasive and belongs in a step you opted into.
+- **npm `--ignore-scripts`.** Many users / CI disable lifecycle scripts. Auto-installing via `postinstall` would silently no-op for them.
+- **`npm uninstall` reversibility.** Files outside npm's tracking (systemd units, `.env`, DBs, bot PAT) can't be cleaned by npm. Keeping them in a separate command means `npm uninstall -g ework-aio` does what people expect (removes files) and `ework-aio uninstall` does the rest.
+
+`bin/ework-aio` with no args defaults to `install`, so `npm install -g ework-aio && ework-aio` (no `install`) also works.
+
+---
 
 ## What it does
 
