@@ -534,7 +534,7 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
   }
 
   if (req.method === "GET" && url.pathname === "/api/tts/backends") {
-    return json(cfg.ttsBackends.map((b) => ({ id: b.id, label: b.label, voice: b.voice })));
+    return json(cfg.ttsBackends.filter((b) => b.url.trim() !== "").map((b) => ({ id: b.id, label: b.label, voice: b.voice })));
   }
 
   if (req.method === "POST" && url.pathname === "/api/tts") {

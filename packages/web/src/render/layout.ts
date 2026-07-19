@@ -12,6 +12,8 @@ export interface LayoutProps {
   writesEnabled?: boolean;
   operatorLogin?: string;
   upstreamWebUrl?: string | null;
+  translateEnabled?: boolean;
+  ttsEnabled?: boolean;
 }
 
 export const THEME_CSS = `
@@ -143,7 +145,7 @@ export function renderLayout(props: LayoutProps, inner: string, initialItems: st
   </div>
 </div>
 ${props.descriptionHtml.trim() ? `<div class="desc-wrap">
-  <div class="desc-actions">${actionBarHTML({ copy: true, link: true, translate: true, tts: true })}</div>
+  <div class="desc-actions">${actionBarHTML({ copy: true, link: true, translate: true, tts: true, translateEnabled: props.translateEnabled !== false, ttsEnabled: props.ttsEnabled !== false })}</div>
   <div class="desc${props.descriptionCollapsed ? " collapsed" : ""}" id="issueDesc">${props.descriptionHtml}</div>
   ${props.descriptionCollapsed ? `<button type="button" class="desc-toggle" id="descToggle">显示详情 ▾</button>` : ""}
 </div>` : ""}
@@ -226,14 +228,18 @@ export interface ActionBarOpts {
   link?: boolean;
   translate?: boolean;
   tts?: boolean;
+  translateEnabled?: boolean;
+  ttsEnabled?: boolean;
 }
 
 export function actionBarHTML(o: ActionBarOpts): string {
   const d = o.cid != null ? ` data-cid="${escapeAttr(o.cid)}"` : "";
   const cpy = o.copy ? `<button type="button" class="cbtn"${d} title="复制">📋</button>` : "";
   const lnk = o.link ? `<button type="button" class="clink"${d} title="复制楼层链接">🔗</button>` : "";
-  const tr = o.translate ? `<button type="button" class="tbtn"${d} title="翻译">翻译</button>` : "";
-  const tts = o.tts
+  const tr = (o.translate && o.translateEnabled !== false)
+    ? `<button type="button" class="tbtn"${d} title="翻译">翻译</button>`
+    : "";
+  const tts = (o.tts && o.ttsEnabled !== false)
     ? `<button type="button" class="ttsstop"${d} title="停止朗读">⏹</button><button type="button" class="ttsbtn"${d} title="朗读">🔊</button>`
     : "";
   return cpy + lnk + tr + tts;

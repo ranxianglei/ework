@@ -44,7 +44,7 @@ export function relTime(iso: string): string {
 }
 
 // Must match app.js cardHTML so client hydration/polling produce identical markup.
-export function renderCommentCard(c: CommentView): string {
+export function renderCommentCard(c: CommentView, cfg?: { translateUrl?: string; ttsBackends?: { url: string }[] }): string {
   const tag = c.tag || "human";
   const label = TAG_LABEL[tag] || "👤";
   const rx =
@@ -53,6 +53,8 @@ export function renderCommentCard(c: CommentView): string {
           .map((r) => `<span class="rxc">${r.e}<span class="rxn">${r.n}</span></span>`)
           .join("")}</span>`
       : "";
+  const translateEnabled = cfg ? !!cfg.translateUrl && cfg.translateUrl.trim() !== "" : true;
+  const ttsEnabled = cfg ? !!(cfg.ttsBackends && cfg.ttsBackends.some((b) => b.url && b.url.trim() !== "")) : true;
   return (
     `<div class="item item-${esc(tag)}" id="comment-${c.id}" data-id="${c.id}">` +
     `<div class="card"><div class="card-h">` +
@@ -60,7 +62,7 @@ export function renderCommentCard(c: CommentView): string {
     `<span class="who">${esc(c.login)}</span>` +
     `<span class="when" data-ts="${esc(c.created_at)}" title="${esc(c.created_at)}">${relTime(c.created_at)}</span>` +
     rx +
-    `<span class="card-actions">` + actionBarHTML({ cid: String(c.id), copy: true, link: true, translate: true, tts: true }) + `</span>` +
+    `<span class="card-actions">` + actionBarHTML({ cid: String(c.id), copy: true, link: true, translate: true, tts: true, translateEnabled, ttsEnabled }) + `</span>` +
     `</div><div class="card-b">${c.body_html}</div></div></div>`
   );
 }

@@ -164,7 +164,7 @@ export function loadConfig(): Config {
 }
 
 export function resolveTtsBackend(cfg: Config, id?: string): TtsBackend | null {
-  const list = cfg.ttsBackends;
+  const list = cfg.ttsBackends.filter((b) => b.url.trim() !== "");
   if (list.length === 0) return null;
   return list.find((b) => b.id === id) ?? list.find((b) => b.id === cfg.ttsDefaultBackend) ?? list[0] ?? null;
 }

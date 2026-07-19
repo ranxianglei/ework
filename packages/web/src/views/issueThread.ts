@@ -124,9 +124,11 @@ export function buildIssueThread(
       writesEnabled: cfg.writesEnabled,
       operatorLogin: viewerLogin ?? cfg.operatorLogin,
       upstreamWebUrl,
+      translateEnabled: !!cfg.translateUrl && cfg.translateUrl.trim() !== "",
+      ttsEnabled: cfg.ttsBackends.some((b) => b.url && b.url.trim() !== ""),
     },
     safeJsonEmbed(payload),
-    displayViews.map(renderCommentCard).join("")
+    displayViews.map((v) => renderCommentCard(v, cfg)).join("")
   );
   return { html };
 }
