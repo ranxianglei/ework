@@ -24,6 +24,9 @@ Usage:
     config set <KEY> <VALUE>     Set a key, then restart affected service
                                  (use --no-restart to defer)
     config restart <web|daemon|both>
+  ework-aio migrate [options]    Migrate issues from a Gitea instance into
+                                 ework-web via the Gitea REST API. Idempotent.
+                                 Run \`ework-aio migrate --help\` for details.
   ework-aio --version            Print version
 
 Install options:
@@ -56,6 +59,23 @@ if (!existsSync(installSh)) {
 }
 
 const knownSubs = ["install", "uninstall", "status", "logs", "env", "config"];
+
+if (subcommand === "migrate") {
+  const migrateScript = resolve(__dirname, "..", "scripts", "migrate-from-gitea.ts");
+  if (!existsSync(migrateScript)) {
+    console.error(`Cannot find migrate script (looked at ${migrateScript}).`);
+    console.error("This usually means the package was installed incorrectly.");
+    process.exit(1);
+  }
+  const rest = args.slice(1);
+  const result = spawnSync(["bun", migrateScript, ...rest], {
+    stdio: ["inherit", "inherit", "inherit"],
+    env: process.env,
+  });
+  if (result.status !== null) process.exit(result.status);
+  process.exit(1);
+}
+
 const finalArgs = knownSubs.includes(subcommand) ? args : ["install", ...args];
 
 const result = spawnSync(["bash", installSh, ...finalArgs], {
