@@ -178,6 +178,12 @@ export async function ensureEnvFile(opts: EnsureEnvOptions): Promise<{ added: st
 // If the file doesn't exist, it's created with just this key. If the key
 // already exists, its value is replaced in-place. Otherwise the key is
 // appended after the last non-blank line.
+//
+// Key matching uses the same tolerance as parseEnvFile: leading/trailing
+// whitespace around `=` is accepted (`KEY = value` matches key `KEY`).
+// Without this alignment, patch would append a duplicate line instead of
+// replacing, and downstream parseEnvFile would silently pick one of the
+// two values depending on iteration order.
 export async function patchEnvKey(envFile: string, key: string, value: string): Promise<void> {
   let content = "";
   try {
@@ -188,7 +194,11 @@ export async function patchEnvKey(envFile: string, key: string, value: string): 
   const lines = content.split(/\r?\n/);
   let found = false;
   for (const [i, line] of lines.entries()) {
-    if (line.startsWith(`${key}=`)) {
+    const eqIdx = line.indexOf("=");
+    if (eqIdx === -1) continue;
+    // Skip comment lines (parseEnvFile ignores leading '#' too).
+    if (line.slice(0, eqIdx).trim().startsWith("#")) continue;
+    if (line.slice(0, eqIdx).trim() === key) {
       lines[i] = `${key}=${value}`;
       found = true;
       break;
@@ -199,6 +209,11 @@ export async function patchEnvKey(envFile: string, key: string, value: string): 
     while (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
     if (lines.length > 0) lines.push("");
     lines.push(`${key}=${value}`);
+  } else {
+    // On in-place replace, `content.split(/\r?\n/)` keeps a trailing "" if
+    // the file ended with `\n` (the common case). Joining back with "\n"
+    // reproduces the trailing "\n", so we'd otherwise double it below.
+    while (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
   }
   await writeEnvFileAtomic(envFile, lines.join("\n") + "\n");
 }

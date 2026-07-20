@@ -9,6 +9,7 @@ import {
   serializeEnvFile,
   ensureEnvFile,
   readEnvFile,
+  patchEnvKey,
 } from "../src/env.ts";
 import { WEB_ENV_KEYS, DAEMON_ENV_KEYS, type InstallContext } from "../src/config.ts";
 import { resolvePaths } from "../src/paths.ts";
@@ -303,5 +304,61 @@ describe("readEnvFile", () => {
     } finally {
       fs.rmSync(path.dirname(tmpFile), { recursive: true, force: true });
     }
+  });
+});
+
+describe("patchEnvKey (B-1: tolerance aligned with parseEnvFile)", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ework-patch-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("replaces a value when the key is in canonical 'KEY=value' form", async () => {
+    const envFile = path.join(tmpDir, ".env");
+    await fs.promises.writeFile(envFile, "FOO=old\nBAR=keep\n", { mode: 0o600 });
+    await patchEnvKey(envFile, "FOO", "new");
+    const after = await fs.promises.readFile(envFile, "utf8");
+    expect(after).toBe("FOO=new\nBAR=keep\n");
+  });
+
+  // Regression for B-1: parseEnvFile trims the key half of each line, so
+  // `KEY = value` parses as key=KEY. patchEnvKey used to require the strict
+  // `KEY=` prefix, failed to match the padded form, and appended a duplicate
+  // — parseEnvFile then iterated both lines and shadowed values unpredictably.
+  it("replaces in place when the existing line has whitespace around '=' (B-1)", async () => {
+    const envFile = path.join(tmpDir, ".env");
+    await fs.promises.writeFile(envFile, "FOO = old\nBAR=keep\n", { mode: 0o600 });
+    await patchEnvKey(envFile, "FOO", "new");
+    const after = await fs.promises.readFile(envFile, "utf8");
+    expect(after).toBe("FOO=new\nBAR=keep\n");
+    expect(after.match(/^FOO/gm)!.length).toBe(1);
+  });
+
+  it("appends the key when it is not present", async () => {
+    const envFile = path.join(tmpDir, ".env");
+    await fs.promises.writeFile(envFile, "FOO=1\n", { mode: 0o600 });
+    await patchEnvKey(envFile, "BAR", "2");
+    const after = await fs.promises.readFile(envFile, "utf8");
+    expect(after).toBe("FOO=1\n\nBAR=2\n");
+  });
+
+  it("creates the file if it does not exist", async () => {
+    const envFile = path.join(tmpDir, ".env");
+    await patchEnvKey(envFile, "FOO", "bar");
+    const after = await fs.promises.readFile(envFile, "utf8");
+    expect(after).toBe("FOO=bar\n");
+  });
+
+  it("does not match comment lines that happen to contain the key text", async () => {
+    const envFile = path.join(tmpDir, ".env");
+    await fs.promises.writeFile(envFile, "# FOO=old\nFOO=real\n", { mode: 0o600 });
+    await patchEnvKey(envFile, "FOO", "new");
+    const after = await fs.promises.readFile(envFile, "utf8");
+    expect(after).toBe("# FOO=old\nFOO=new\n");
   });
 });
