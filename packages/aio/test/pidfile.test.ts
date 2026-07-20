@@ -56,6 +56,39 @@ describe("writePidFileAtomic + readPidFile", () => {
     expect(pid).toBeNull();
   });
 
+  // G23: empty file (0 bytes) and whitespace-only file. Behavior was always
+  // null (parseInt(" ") → NaN), but no test pinned it — a refactor that
+  // treats empty as "missing pid, exit 0" or treats whitespace as 0 would
+  // slip through. stopProcess on an empty pidfile currently throws
+  // PidFileError("not found or empty"); readPidFile should agree.
+  it("returns null for an empty file (0 bytes)", async () => {
+    const pidFile = path.join(tmpDir, "empty.pid");
+    await fs.promises.writeFile(pidFile, "");
+    const pid = await readPidFile(pidFile);
+    expect(pid).toBeNull();
+  });
+
+  it("returns null for whitespace-only content", async () => {
+    const pidFile = path.join(tmpDir, "ws.pid");
+    await fs.promises.writeFile(pidFile, "   \n\t\n  ");
+    const pid = await readPidFile(pidFile);
+    expect(pid).toBeNull();
+  });
+
+  it("returns null for a zero pid", async () => {
+    const pidFile = path.join(tmpDir, "zero.pid");
+    await fs.promises.writeFile(pidFile, "0\n");
+    const pid = await readPidFile(pidFile);
+    expect(pid).toBeNull();
+  });
+
+  it("returns null for a negative pid", async () => {
+    const pidFile = path.join(tmpDir, "neg.pid");
+    await fs.promises.writeFile(pidFile, "-1\n");
+    const pid = await readPidFile(pidFile);
+    expect(pid).toBeNull();
+  });
+
   it("creates parent dir if missing", async () => {
     const pidFile = path.join(tmpDir, "nested", "deep", "test.pid");
     await writePidFileAtomic(pidFile, 99999);
@@ -216,5 +249,21 @@ describe("startProcess + stopProcess (real subprocess)", () => {
 
     const logContent = await fs.promises.readFile(logFile, "utf8");
     expect(logContent).toContain("hello-from-child");
+  });
+
+  // S-2: spawn failure must not leak the log fd. We trigger the existing
+  // catch-path (which already closes logFd) by spawning a non-existent
+  // binary. The new no-pid close-on-throw lives in the same file and
+  // shares the resource-management contract — covered by code review.
+  it("spawn error closes logFd (S-2 leak guard)", async () => {
+    const logFile = path.join(tmpDir, "missing.log");
+    const pidFile = path.join(tmpDir, "missing.pid");
+    await expect(startProcess({
+      cmd: "/nonexistent/binary/that/does/not/exist",
+      args: [],
+      logFile,
+      pidFile,
+    })).rejects.toThrow();
+    expect(fs.existsSync(logFile)).toBe(true);
   });
 });

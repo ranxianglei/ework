@@ -51,7 +51,21 @@ export async function startProcess(opts: StartProcessOptions): Promise<StartProc
     throw new PidFileError(`Failed to spawn ${opts.cmd}: ${(err as Error).message}`);
   }
 
+  // Bun/node:spawn returns a ChildProcess even when the binary doesn't
+  // exist (ENOENT) — child.pid stays undefined and an 'error' event is
+  // emitted on next tick. Without a handler the event becomes an
+  // uncaughtException that takes down the test runner (and on long-running
+  // ework-aio, the install). The no-pid check below catches this case
+  // synchronously; this handler suppresses the redundant async 'error'.
+  child.on("error", () => { /* handled via pid check below */ });
+
   if (typeof child.pid !== "number") {
+    // S-2: logFd was opened above; we own it until spawn() inherits it
+    // via stdio. On the no-pid failure path the child didn't actually
+    // take over the fd, so we must close it before throwing — otherwise
+    // the fd leaks until process exit (and on long-running installs
+    // holding the log file open blocks log rotation).
+    fs.closeSync(logFd);
     throw new PidFileError(`Spawned ${opts.cmd} but no pid was assigned`);
   }
 
