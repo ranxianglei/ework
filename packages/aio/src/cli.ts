@@ -444,9 +444,4 @@ function runDelegateScript(scriptName: string, args: string[]): number {
   return 1;
 }
 
-// Entry: when run as a bin, dispatch immediately. When imported (tests),
-// the importer calls main() themselves.
-if (import.meta.path === process.argv[1]) {
-  const argv = process.argv.slice(2);
-  main(argv).then((code) => process.exit(code));
-}
+// Entry-point is bin/ework-aio only. Tests import main() directly.
