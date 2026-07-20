@@ -62,6 +62,44 @@ const MAX_RESPONSE_LOG_BYTES = 8192;
 const HTTP_TIMEOUT_MS = 10_000;
 const RETRY_DELAYS_MS = [0, 2_000, 8_000];
 
+// Global cap on concurrent in-flight webhook HTTP deliveries. Without this, a
+// flood of events against dead targets (e.g. daemon down during migration)
+// kicks off unbounded concurrent fetches — each waits HTTP_TIMEOUT_MS, so the
+// Bun event loop saturates and ework-web stops serving user traffic. The cap
+// queues surplus deliveries; releaseSlot() drains the queue FIFO.
+const MAX_CONCURRENT_DELIVERIES = clampPositiveInt(
+  Number(process.env.WORK_WEBHOOK_MAX_CONCURRENT ?? "6"),
+  1,
+  64,
+  6
+);
+let inFlightDeliveries = 0;
+const deliveryQueue: Array<() => void> = [];
+
+function clampPositiveInt(v: number, lo: number, hi: number, fallback: number): number {
+  if (!Number.isFinite(v) || v < lo || v > hi) return fallback;
+  return Math.floor(v);
+}
+
+function acquireDeliverySlot(): Promise<void> {
+  if (inFlightDeliveries < MAX_CONCURRENT_DELIVERIES) {
+    inFlightDeliveries++;
+    return Promise.resolve();
+  }
+  return new Promise<void>((resolve) => {
+    deliveryQueue.push(() => {
+      inFlightDeliveries++;
+      resolve();
+    });
+  });
+}
+
+function releaseDeliverySlot(): void {
+  inFlightDeliveries--;
+  const next = deliveryQueue.shift();
+  if (next) next();
+}
+
 function now(): string {
   return new Date().toISOString();
 }
@@ -488,23 +526,28 @@ async function deliver(
   event: WebhookEventName,
   rawBody: string
 ): Promise<void> {
-  for (const attempt of RETRY_DELAYS_MS) {
-    if (attempt > 0) await Bun.sleep(attempt);
-    const deliveryUuid = randomUUID();
-    const headers = buildHeaders(event, deliveryUuid, rawBody, webhook.secret);
-    const result = await postWithTimeout(webhook.url, rawBody, headers);
-    const success = result.status !== null && result.status >= 200 && result.status < 300;
-    recordDelivery(webhook.id, event, deliveryUuid, rawBody, result);
-    if (success) return;
-    // 410 Gone: receiver explicitly says "stop sending" — honor it, no retry.
-    if (result.status === 410) return;
+  await acquireDeliverySlot();
+  try {
+    for (const attempt of RETRY_DELAYS_MS) {
+      if (attempt > 0) await Bun.sleep(attempt);
+      const deliveryUuid = randomUUID();
+      const headers = buildHeaders(event, deliveryUuid, rawBody, webhook.secret);
+      const result = await postWithTimeout(webhook.url, rawBody, headers);
+      const success = result.status !== null && result.status >= 200 && result.status < 300;
+      recordDelivery(webhook.id, event, deliveryUuid, rawBody, result);
+      if (success) return;
+      // 410 Gone: receiver explicitly says "stop sending" — honor it, no retry.
+      if (result.status === 410) return;
+    }
+    log.warn("webhook: gave up after retries", {
+      attempts: RETRY_DELAYS_MS.length,
+      webhookId: webhook.id,
+      url: webhook.url,
+      event,
+    });
+  } finally {
+    releaseDeliverySlot();
   }
-  log.warn("webhook: gave up after retries", {
-    attempts: RETRY_DELAYS_MS.length,
-    webhookId: webhook.id,
-    url: webhook.url,
-    event,
-  });
 }
 
 function fanOut(
