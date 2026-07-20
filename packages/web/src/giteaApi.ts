@@ -160,8 +160,16 @@ export async function handleGiteaApi(
       const title = asString(body.title);
       if (!title) return giteaError(400, "title required");
       const text = asString(body.body) ?? "";
-      const created = createIssue(project.id, title, text, user.login);
+      const created = createIssue(project.id, title, text, user.login, {
+        createdAt: asString(body.created_at),
+        updatedAt: asString(body.updated_at),
+        state: asIssueState(body.state) ?? "open",
+        closedAt: asString(body.closed_at) || undefined,
+      });
       emitIssueEvent(project.id, created.id, "opened", origin);
+      if (created.state === "closed") {
+        emitIssueEvent(project.id, created.id, "closed", origin);
+      }
       return { status: 201, body: buildIssuePayload(created, project, 0, origin) };
     } catch (e) {
       return giteaError(e instanceof StoreError ? e.status : 500, e instanceof Error ? e.message : "error");
@@ -190,6 +198,8 @@ export async function handleGiteaApi(
           title: asString(body.title),
           body: asString(body.body),
           state: asIssueState(body.state),
+          closedAt: asString(body.closed_at) || undefined,
+          updatedAt: asString(body.updated_at),
         });
         const after = getIssueById(issue.id);
         if (!after) return giteaError(404, "issue vanished mid-edit");
@@ -229,7 +239,10 @@ export async function handleGiteaApi(
         const body = await readJson(req);
         const text = asString(body.body);
         if (text === undefined) return giteaError(400, "body required");
-        const created = postComment(issue.id, text, user.login);
+        const created = postComment(issue.id, text, user.login, {
+          createdAt: asString(body.created_at),
+          updatedAt: asString(body.updated_at),
+        });
         emitCommentEvent(project.id, issue.id, created.id, origin);
         return { status: 201, body: buildCommentPayload(issue, created, project, origin) };
       }

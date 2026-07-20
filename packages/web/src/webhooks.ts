@@ -323,7 +323,7 @@ function buildIssue(
     comments: commentCount,
     created_at: issue.created_at,
     updated_at: issue.updated_at,
-    closed_at: issue.state === "closed" ? issue.updated_at : null,
+    closed_at: issue.closed_at,
     due_date: null,
     pull_request: null,
     repository: buildRepository(project, origin),
