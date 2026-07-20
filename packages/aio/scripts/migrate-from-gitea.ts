@@ -66,9 +66,10 @@ Misc:
   --ledger PATH           Override ledger DB path.
   --data-dir PATH         Override ework-aio data dir.
   --sleep-ms N            Politeness delay between target POSTs (default 50).
-  --ework-db PATH         Override ework.db path. When the DB is reachable
-                          (single-box deploy), timestamps are preserved
-                          inline. Otherwise run backfill-timestamps.ts after.
+  --ework-db PATH         Deprecated. Accepted for backward compat, ignored.
+                          Timestamps now flow through the ework-web API
+                          (requires ework-web ≥ 0.1.2). For older targets,
+                          run scripts/backfill-timestamps.ts after migration.
   -h, --help              Show this help.
 `);
   process.exit(0);
@@ -80,31 +81,16 @@ const LEDGER_PATH = values["ledger"] ?? join(DATA_DIR, "migration-ledger.db");
 const COMPLETE_FLAG = join(DATA_DIR, ".migration-complete");
 const SLEEP_MS = Number(values["sleep-ms"] ?? 50);
 
-// Optional direct-DB write access to ework.db. The ework-web REST API
-// doesn't accept created_at in POST bodies, so without DB access the
-// migrated rows get server-now timestamps. When ework.db is reachable
-// (single-box deploy), we UPDATE timestamps inline after each POST.
-// When it's not (e.g., remote target), timestamps will be wrong and the
-// standalone backfill-timestamps.ts script is the workaround.
+// Optional direct-DB access to ework.db is no longer required for timestamp
+// preservation: ework-web ≥ 0.1.2 accepts created_at/updated_at/state/closed_at
+// in POST/PATCH bodies. The --ework-db flag remains accepted for backward
+// compat but is a no-op now. For pre-0.1.2 targets, use
+// scripts/backfill-timestamps.ts after migration.
 const EWORK_DB_PATH = values["ework-db"] ?? join(DATA_DIR, "ework-web/ework.db");
-const ework = existsSync(EWORK_DB_PATH)
-  ? new Database(EWORK_DB_PATH)
-  : null;
-if (!ework && !values["dry-run"]) {
-  console.error(`note: ework.db not at ${EWORK_DB_PATH} — timestamps will not be preserved.`);
-  console.error(`      Run scripts/backfill-timestamps.ts afterwards to fix.`);
+if (values["ework-db"]) {
+  console.error(`note: --ework-db is deprecated (timestamps now flow via API).`);
+  console.error(`      Path was ${EWORK_DB_PATH}; ignoring.`);
 }
-const updIssueTs = ework?.prepare(
-  `UPDATE issues SET created_at = ?, updated_at = ? WHERE id = ?`
-);
-const updCommentTs = ework?.prepare(
-  `UPDATE comments SET created_at = ?, updated_at = ? WHERE id = ?`
-);
-const findIssueIdByRepoNum = ework?.prepare(
-  `SELECT i.id FROM issues i JOIN projects p ON i.project_id = p.id
-   WHERE p.owner || '/' || p.name = ? AND i.number = ?`
-);
-
 const sourceUrl = (values["source-url"] ?? "").replace(/\/+$/, "");
 const sourceToken = values["source-token"] ?? "";
 
@@ -357,6 +343,8 @@ interface SourceIssue {
   body: string | null;
   state: "open" | "closed";
   created_at: string;
+  updated_at?: string;
+  closed_at?: string | null;
   user: { login: string };
 }
 
@@ -383,6 +371,7 @@ interface SourceComment {
   id: number;
   body: string | null;
   created_at: string;
+  updated_at?: string;
   user: { login: string };
 }
 
@@ -515,9 +504,22 @@ async function main() {
         console.error(`  [${i}/${issues.length}] issue #${iss.number} new → POST…`);
         const prefixedBody = prefixBody(iss.body, iss.user.login, iss.created_at, sourceUrl, fullName);
         try {
+          // ework-web ≥ 0.1.2 accepts created_at/updated_at/state/closed_at in
+          // POST body, so timestamps + closed state survive migration in a
+          // single round-trip (no --ework-db inline UPDATE fallback needed).
+          const postBody: Record<string, unknown> = {
+            title: iss.title,
+            body: prefixedBody,
+            created_at: iss.created_at,
+            updated_at: iss.updated_at ?? iss.created_at,
+          };
+          if (iss.state === "closed") {
+            postBody.state = "closed";
+            postBody.closed_at = iss.closed_at ?? iss.updated_at ?? iss.created_at;
+          }
           const created = await tgtPostJson(
             `/api/v1/repos/${repo.owner}/${repo.name}/issues`,
-            { title: iss.title, body: prefixedBody }
+            postBody
           );
           targetNum = created.number;
           if (!values["dry-run"]) {
@@ -529,25 +531,9 @@ async function main() {
               targetNum,
               new Date().toISOString()
             );
-            if (updIssueTs && findIssueIdByRepoNum) {
-              const t = findIssueIdByRepoNum.get(fullName, targetNum) as { id: number } | undefined;
-              if (t) updIssueTs.run(iss.created_at, iss.updated_at, t.id);
-            }
           }
           newIssues++;
           await sleep(SLEEP_MS);
-
-          // Source closed → PATCH target closed. We do this so the webhook
-          // emitter fires a `closed` event that ework-mirror (if installed)
-          // replays to source Gitea. Otherwise the source's closed state
-          // would be lost in mirror-replicated direction.
-          if (iss.state === "closed" && !values["dry-run"]) {
-            await tgtPatchJson(
-              `/api/v1/repos/${repo.owner}/${repo.name}/issues/${targetNum}`,
-              { state: "closed" }
-            );
-            await sleep(SLEEP_MS);
-          }
         } catch (e) {
           failedIssues++;
           console.error(
@@ -575,7 +561,11 @@ async function main() {
           const prefixed = prefixComment(c.body, c.user.login, c.created_at);
           const created = await tgtPostJson(
             `/api/v1/repos/${repo.owner}/${repo.name}/issues/${targetNum}/comments`,
-            { body: prefixed }
+            {
+              body: prefixed,
+              created_at: c.created_at,
+              updated_at: c.updated_at ?? c.created_at,
+            }
           );
           if (!values["dry-run"]) {
             stmt.insComment.run(
@@ -587,9 +577,6 @@ async function main() {
               created.id,
               new Date().toISOString()
             );
-            if (updCommentTs) {
-              updCommentTs.run(c.created_at, c.updated_at, created.id);
-            }
           }
           newComments++;
           await sleep(SLEEP_MS);
