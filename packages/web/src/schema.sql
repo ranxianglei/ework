@@ -42,6 +42,9 @@ CREATE TABLE IF NOT EXISTS issues (
   author     TEXT NOT NULL REFERENCES users(login),
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
+  -- NULL when open; stamped on close, cleared on reopen. Backfill-safe because
+  -- migrateIssuesTable ADDs the column idempotently for legacy DBs.
+  closed_at  TEXT,
   UNIQUE (project_id, number)
 );
 CREATE INDEX IF NOT EXISTS issues_project_state_updated

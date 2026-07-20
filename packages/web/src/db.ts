@@ -57,6 +57,14 @@ function migrateProjectsTable(db: Database): void {
   }
 }
 
+function migrateIssuesTable(db: Database): void {
+  const have = tableColumns(db, "issues");
+  if (have.size === 0) return;
+  if (!have.has("closed_at")) {
+    db.exec("ALTER TABLE issues ADD COLUMN closed_at TEXT");
+  }
+}
+
 function db(): Database {
   if (_db) return _db;
   mkdirSync(dirname(DB_PATH), { recursive: true });
@@ -72,6 +80,7 @@ function db(): Database {
   migrateUsersTable(_db);
   migratePatTable(_db);
   migrateProjectsTable(_db);
+  migrateIssuesTable(_db);
   _db.exec(readFileSync(join(import.meta.dir, "schema.sql"), "utf8"));
   return _db;
 }
