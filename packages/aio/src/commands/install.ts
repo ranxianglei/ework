@@ -30,6 +30,7 @@ import {
   writeUnitFile,
   installUnit,
   startUnit,
+  disableUnit,
   type SystemctlOptions,
 } from "../systemd.ts";
 import { ensurePluginInFile } from "../opencode-config.ts";
@@ -69,7 +70,12 @@ export async function runInstall(
   hooks: InstallHooks = {},
 ): Promise<InstallOutcome> {
   const exists = hooks.exists ?? ((p) => fs.existsSync(p));
-  const operatorLogin = process.env.USER || os.userInfo().username;
+  // S-4: process.env.USER is settable by the caller and sudo variants
+  // propagate it inconsistently (sudo -i keeps the original, plain sudo
+  // resets it). os.userInfo().username reads from the password database
+  // via the getpwuid syscall — the only authoritative source for "who am
+  // I running as right now".
+  const operatorLogin = os.userInfo().username;
 
   logger.hr();
   logger.log("ework-aio install");
@@ -177,6 +183,7 @@ export async function runInstall(
       envFile: paths.webEnvFile,
       workingDirectory: paths.webDataDir,
       logFile: paths.webLogFile,
+      scope: opts.scope,
     });
     await writeUnitFile(paths.webUnitFile, webUnit);
     logger.ok(`wrote ${paths.webUnitFile}`);
@@ -232,7 +239,6 @@ export async function runInstall(
       // Disable the already-enabled unit so it doesn't auto-start on next
       // boot and fight the PID-file mode process for the port.
       try {
-        const { disableUnit } = await import("./../systemd.ts");
         await disableUnit("ework-web", { scope: opts.scope });
       } catch (disableErr) {
         logger.warn(`could not disable ework-web unit: ${(disableErr as Error).message}`);
@@ -256,11 +262,20 @@ export async function runInstall(
   }
 
   // 8. Wait for ework-web to answer on its HTTP port. Skipped under --no-start.
-  const baseUrl = `http://127.0.0.1:${opts.workPort}`;
+  // S-3: read WORK_PORT from the actual .env rather than opts.workPort.
+  // On a re-install where the user previously ran `config set WORK_PORT 8080`
+  // and didn't pass --port this time, opts.workPort is the default (3002)
+  // but the running service listens on 8080. Polling the wrong port times
+  // out at 30s every re-install — a confusing UX with no error hint.
+  const actualWorkPortStr = await readEnvKey(paths.webEnvFile, "WORK_PORT");
+  const actualWorkPort = actualWorkPortStr && /^\d+$/.test(actualWorkPortStr)
+    ? parseInt(actualWorkPortStr, 10)
+    : opts.workPort;
+  const baseUrl = `http://127.0.0.1:${actualWorkPort}`;
   if (webStarted) {
     try {
       await pollHttpUp(baseUrl + "/login", hooks.fetchImpl);
-      logger.ok(`ework-web listening on :${opts.workPort}`);
+      logger.ok(`ework-web listening on :${actualWorkPort}`);
     } catch (err) {
       if (!opts.noStart) throw err;
       logger.warn(`ework-web not reachable (start failed under --no-start): ${(err as Error).message}`);
@@ -339,6 +354,7 @@ export async function runInstall(
       envFile: paths.daemonEnvFile,
       workingDirectory: paths.daemonDataDir,
       logFile: paths.daemonLogFile,
+      scope: opts.scope,
     });
     await writeUnitFile(paths.daemonUnitFile, unit);
     logger.ok(`wrote ${paths.daemonUnitFile}`);
@@ -350,7 +366,6 @@ export async function runInstall(
       logger.warn(`daemon systemd start failed: ${(err as Error).message}`);
       logger.warn(`disabling ework-daemon unit and falling back to PID-file mode`);
       try {
-        const { disableUnit } = await import("./../systemd.ts");
         await disableUnit("ework-daemon", { scope: opts.scope });
       } catch (disableErr) {
         logger.warn(`could not disable ework-daemon unit: ${(disableErr as Error).message}`);
@@ -535,9 +550,9 @@ async function bootstrapBot(opts: BootstrapBotOpts): Promise<string> {
     throw new InstallError(`bot login failed (HTTP ${loginRes.status}): ${body.slice(0, 200)}`);
   }
   const setCookie = loginRes.headers.get("set-cookie");
-  const botCookie = parseFirstCookie(setCookie);
+  const botCookie = parseFirstCookie(loginRes.headers);
   if (!botCookie) {
-    throw new InstallError(`bot login response missing ework_auth cookie`);
+    throw new InstallError(`bot login response missing ework_auth cookie (set-cookie: ${setCookie ?? "<absent>"})`);
   }
 
   // 3. Mint PAT via /me/tokens/create. Response is HTML containing the
@@ -569,12 +584,27 @@ async function bootstrapBot(opts: BootstrapBotOpts): Promise<string> {
   return match[1];
 }
 
-function parseFirstCookie(setCookie: string | null): string | null {
-  if (!setCookie) return null;
-  const first = setCookie.split(",")[0] ?? "";
-  const kv = first.split(";")[0] ?? "";
-  if (!kv.includes("ework_auth=")) return null;
-  return kv;
+function parseFirstCookie(headers: Headers): string | null {
+  // S-7: Headers#getSetCookie returns each Set-Cookie as a separate entry.
+  // Falling back to parsing the combined "set-cookie" header is fragile —
+  // multiple cookies get joined with ", " and individual cookies contain
+  // commas in attribute values (`Expires=Wed, 09 Jun 2021 ...`). The
+  // regex split looks for ", " followed by a name=value pattern.
+  const getSetCookies = (headers as unknown as {
+    getSetCookie?: () => string[];
+  }).getSetCookie;
+  const allCookies: string[] = [];
+  if (typeof getSetCookies === "function") {
+    allCookies.push(...getSetCookies.call(headers));
+  } else {
+    const sc = headers.get("set-cookie");
+    if (sc) allCookies.push(...sc.split(/,(?=\s*[\w-]+=)/));
+  }
+  for (const c of allCookies) {
+    const kv = c.split(";")[0]?.trim() ?? "";
+    if (kv.startsWith("ework_auth=")) return kv;
+  }
+  return null;
 }
 
 function printSummary(logger: Logger, o: InstallOutcome): void {
@@ -583,7 +613,14 @@ function printSummary(logger: Logger, o: InstallOutcome): void {
   logger.hr();
   logger.log(`  → open http://127.0.0.1:${o.workPort}/login`);
   logger.log(`  operator login : ${o.operatorLogin} (auto-promoted admin)`);
-  logger.log(`  login token    : ${o.workToken}`);
+  // S-8: only print the token when stdout is a TTY. Piping install output
+  // to a file or shell variable (e.g. `logs=$(ework-aio install 2>&1)`)
+  // would otherwise leak the admin credential into logs.
+  if (process.stdout.isTTY) {
+    logger.log(`  login token    : ${o.workToken}`);
+  } else {
+    logger.log(`  login token    : (hidden — read from ${o.paths.webEnvFile})`);
+  }
   logger.log(`  bot user       : ${o.botName} (auto-created)`);
   logger.log(`  data dir       : ${o.paths.dataDir}`);
   logger.log(`  logs           : ework-aio logs web | ework-aio logs daemon`);

@@ -114,6 +114,21 @@ function mintPatHandler(): (req: Request) => Promise<Response> {
   };
 }
 
+// G11: alternative HTML shape — attribute order swapped (`value=… id="t"`).
+// Without the second regex in bootstrapBot, this fixture fails to match
+// and install throws "could not extract PAT". Catches a false-positive
+// test gap where the second regex gets deleted but all tests still pass.
+function mintPatHandlerReverseAttrs(): (req: Request) => Promise<Response> {
+  return async () => {
+    const pat = "b".repeat(40);
+    const html = `<!DOCTYPE html><html><body>
+      <p>Your new token (shown once):</p>
+      <input value="${pat}" id="t" readonly>
+      </body></html>`;
+    return new Response(html, { status: 200, headers: { "Content-Type": "text/html" } });
+  };
+}
+
 describe("buildAuthCookie", () => {
   test("produces ework_auth=<token>.<base64url hmac>", () => {
     const token = "abc123";
@@ -274,14 +289,19 @@ WORK_DAEMON_WEBHOOK_SECRET=somesecret
 `;
     await fs.promises.writeFile(path.join(tmpDir, "ework-web", ".env"), customEnv, { mode: 0o600 });
 
+    // S-3: install now polls the actual WORK_PORT from .env (9999), not
+    // opts.workPort. Re-register the mock routes on port 9999 so the
+    // poll-then-bootstrap flow can complete.
+    state.routes.set("GET http://127.0.0.1:9999/login", async () => new Response("ok", { status: 200 }));
+    state.routes.set("POST http://127.0.0.1:9999/admin/users/create", adminCreateHandler(state));
+    state.routes.set("POST http://127.0.0.1:9999/login", loginHandler());
+    state.routes.set("POST http://127.0.0.1:9999/me/tokens/create", mintPatHandler());
+
     const result = await runInstall(opts, silentLogger(), { fetchImpl: makeMockFetch(state) });
 
     const webEnv = await Bun.file(path.join(tmpDir, "ework-web", ".env")).text();
-    // User's WORK_PORT=9999 preserved
     expect(webEnv).toContain("WORK_PORT=9999");
-    // User's comment preserved
     expect(webEnv).toContain("# My custom config");
-    // User's token preserved
     expect(webEnv).toContain("WORK_TOKEN=mycustomtoken");
 
     // Cleanup
@@ -377,5 +397,56 @@ WORK_DAEMON_WEBHOOK_SECRET=somesecret
     const daemonPid = parseInt(await Bun.file(path.join(tmpDir, "run", "daemon.pid")).text(), 10);
     try { process.kill(webPid, "SIGKILL"); } catch { /* already gone */ }
     try { process.kill(daemonPid, "SIGKILL"); } catch { /* already gone */ }
+  });
+
+  test("PAT scrape matches HTML with reversed attribute order (G11)", async () => {
+    // Override /me/tokens/create to return HTML where value= comes before id=.
+    // bootstrapBot's second regex must match this; deleting it fails this test.
+    state.routes.set(
+      "POST http://127.0.0.1:3002/me/tokens/create",
+      mintPatHandlerReverseAttrs(),
+    );
+    const result = await runInstall(opts, silentLogger(), { fetchImpl: makeMockFetch(state) });
+    expect(result.botBootstrapped).toBe(true);
+    expect(result.botToken).toMatch(/^[a-f0-9]{40}$/);
+
+    const webPid = parseInt(await Bun.file(path.join(tmpDir, "run", "web.pid")).text(), 10);
+    const daemonPid = parseInt(await Bun.file(path.join(tmpDir, "run", "daemon.pid")).text(), 10);
+    try { process.kill(webPid, "SIGKILL"); } catch { /* already gone */ }
+    try { process.kill(daemonPid, "SIGKILL"); } catch { /* already gone */ }
+  });
+
+  test("PAT endpoint returning 303 (PRG) is NOT auto-followed (G12 redirect:manual)", async () => {
+    // If redirect:"manual" is removed, fetch auto-follows the 303 → GET
+    // lands on /me/tokens → 200 with no PAT input → bootstrap fails with
+    // "could not extract PAT". With redirect:"manual" in place, install
+    // sees the 303 directly, fails with "mint PAT returned HTTP 303", and
+    // **never calls** GET /me/tokens. We assert on the request log so the
+    // test catches the regression even though both paths throw the same
+    // "install completed with degraded state" wrapper downstream.
+    state.routes.set(
+      "POST http://127.0.0.1:3002/me/tokens/create",
+      async () => new Response(null, { status: 303, headers: { Location: "/me/tokens" } }),
+    );
+    state.routes.set(
+      "GET http://127.0.0.1:3002/me/tokens",
+      async () => new Response("<html>token list, no clear-text here</html>", { status: 200, headers: { "Content-Type": "text/html" } }),
+    );
+
+    await expect(runInstall(opts, silentLogger(), { fetchImpl: makeMockFetch(state) }))
+      .rejects.toThrow(/install completed with degraded state/);
+
+    // The defining assertion: GET /me/tokens must NOT appear in the request
+    // log. If it does, fetch auto-followed the 303 — meaning redirect:"manual"
+    // was removed.
+    const autoFollowed = state.requests.some(
+      (r) => r.method === "GET" && r.url === "http://127.0.0.1:3002/me/tokens",
+    );
+    expect(autoFollowed).toBe(false);
+
+    try {
+      const webPid = parseInt(await Bun.file(path.join(tmpDir, "run", "web.pid")).text(), 10);
+      process.kill(webPid, "SIGKILL");
+    } catch { /* already gone */ }
   });
 });
