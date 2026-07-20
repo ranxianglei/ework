@@ -79,7 +79,11 @@ export const configSchema = z.object({
   daemonWebhookUrl: z.string().default(""),
   daemonWebhookSecret: z.string().default(""),
   autowireActive: z.coerce.boolean().default(true),
-  webhookMaxConcurrent: z.coerce.number().int().min(1).max(64).default(6),
+  webhookMaxConcurrent: z.preprocess((v) => {
+    const n = typeof v === "number" ? v : Number(v);
+    if (!Number.isFinite(n) || n < 1 || n > 64) return 6;
+    return Math.floor(n);
+  }, z.number().int().min(1).max(64)),
 });
 
 export type Config = z.infer<typeof configSchema>;
