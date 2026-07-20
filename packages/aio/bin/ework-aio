@@ -253,10 +253,11 @@ function startOne(svc: SvcName, foreground: boolean): boolean {
   }
   const envPath = svcEnvPath(svc);
   if (!existsSync(envPath)) {
-    console.error(
-      `${SVC_CONFIG[svc].label}: missing .env at ${envPath}.`
-    );
-    console.error("  Run `ework-aio install --no-start` first to scaffold config + data dir.");
+    console.error(`${SVC_CONFIG[svc].label}: missing .env at ${envPath}.`);
+    console.error("  Run `ework-aio install` first to scaffold config + data dir.");
+    console.error("  If install fails with npm ENOTEMPTY, a stale temp dir is blocking it.");
+    console.error("  Manual fix: sudo rm -rf \"$(npm root -g)/.ework-*\" \"$(npm root -g)\"/*.Trash*");
+    console.error("  Then re-run: ework-aio install");
     return false;
   }
 

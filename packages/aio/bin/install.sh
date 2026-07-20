@@ -162,12 +162,59 @@ ensure_pkg() {
 }
 case "$MODE" in
   install)
+    # Pre-clean stale npm rename temp-dirs from any previous failed install.
+    # npm's atomic-install pattern renames the existing package dir to a
+    # `.<pkg>-<rand>` sibling before extracting the new tarball; if a prior
+    # install crashed mid-flight, that temp dir stays behind and the NEXT
+    # install fails with ENOTEMPTY on the rename. Symptoms:
+    #   npm error code ENOTEMPTY
+    #   npm error syscall rename
+    #   npm error path .../node_modules/ework-web
+    #   npm error dest  .../node_modules/.ework-web-Cx2Tkt83
+    clean_npm_stale_dirs() {
+      local npm_root
+      npm_root="$(npm root -g 2>/dev/null)" || return 0
+      [[ -d "$npm_root" ]] || return 0
+      # Stale temp patterns: .ework-web-XXXX, .ework-daemon-XXXX, .opencode-ework-XXXX,
+      # .ework-aio-XXXX, plus the .Trash suffix some npm versions use.
+      local found=()
+      while IFS= read -r p; do
+        [[ -n "$p" ]] && found+=("$p")
+      done < <(find "$npm_root" -maxdepth 1 \( \
+        -name '.ework-web-*'      -o \
+        -name '.ework-daemon-*'   -o \
+        -name '.ework-aio-*'      -o \
+        -name '.opencode-ework-*' -o \
+        -name 'ework-*.Trash*'    -o \
+        -name 'opencode-ework.Trash*' \) 2>/dev/null || true)
+      if [[ ${#found[@]} -gt 0 ]]; then
+        log "Found ${#found[@]} stale npm temp dir(s) under $npm_root from a previous failed install:"
+        printf '  %s\n' "${found[@]}"
+        log "Removing..."
+        local d
+        for d in "${found[@]}"; do
+          rm -rf "$d" 2>/dev/null || warn "could not remove $d (try: sudo rm -rf $d)"
+        done
+      fi
+    }
+
+    npm_install_global() {
+      # One retry after a cleanup pass — covers the ENOTEMPTY case where npm
+      # itself produced a fresh temp dir during this same failed run.
+      if ! npm install -g "$1@latest"; then
+        warn "npm install -g $1@latest failed; cleaning stale temp dirs and retrying once..."
+        clean_npm_stale_dirs
+        npm install -g "$1@latest"
+      fi
+    }
+
+    clean_npm_stale_dirs
     log "Installing/updating npm packages globally..."
     # Install each as a top-level global so bins are linked to PATH.
     # (npm v9 doesn't hoist nested deps' bins from `npm i -g ework-aio`.)
     # Always run `npm install -g` (not gated on presence) so re-runs pick up new versions.
     for pkg in ework-web ework-daemon opencode-ework ework-aio; do
-      npm install -g "$pkg@latest" || die "npm install -g $pkg@latest failed"
+      npm_install_global "$pkg" || die "npm install -g $pkg@latest failed (even after cleanup retry; manual fix: sudo rm -rf $(npm root -g)/.$pkg-* $(npm root -g)/$pkg.Trash*)"
     done
     ok "npm packages ready"
 
