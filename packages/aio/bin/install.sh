@@ -12,6 +12,13 @@
 
 set -euo pipefail
 
+# ERR trap: when `set -e` kills the script, print the line + last command so
+# the user sees why instead of an empty prompt. Tricky failure modes (root
+# scope + polkit redirect, missing systemd PID 1, journalctl-as-root) all
+# manifest as silent exit at a systemctl call — without this trace, the user
+# just sees the prompt return and assumes install succeeded.
+trap 'rc=$?; if [[ $rc -ne 0 ]]; then echo "${c_red}✗${c_reset} install.sh exited with code $rc at line $LINENO (most recent command: ${BASH_COMMAND})" >&2; echo "  If systemd is unavailable on this host, retry with: ework-aio install --no-start" >&2; echo "  Then start services with: ework-aio start" >&2; fi' ERR
+
 # ─── Pretty output ──────────────────────────────────────────────────────────
 c_reset=$'\033[0m'; c_bold=$'\033[1m'; c_dim=$'\033[2m'
 c_red=$'\033[31m';   c_grn=$'\033[32m'; c_ylw=$'\033[33m'; c_blu=$'\033[34m'
@@ -681,22 +688,59 @@ write_unit_file \
 ok "Wrote $WEB_UNIT"
 
 # ─── Reload + start ework-web ──────────────────────────────────────────────
-ctl daemon-reload
-if [[ "$NO_START" == "0" ]]; then
+# systemd calls here are best-effort. If systemd isn't functional on this host
+# (containers without systemd PID 1, polkit redirects under sudo, missing
+# /etc/systemd/system) we still want install to complete so the user can run
+# `ework-aio start` (PID-file mode) against the scaffolded .env.
+SYSTEMD_OK=1
+if ! ctl daemon-reload; then
+  warn "systemctl daemon-reload failed — systemd may be unavailable on this host."
+  SYSTEMD_OK=0
+fi
+
+if [[ "$NO_START" == "0" && "$SYSTEMD_OK" == "1" ]]; then
   log "Starting ework-web..."
-  ctl enable ework-web.service
-  ctl restart ework-web.service
+  ctl enable ework-web.service || { warn "systemctl enable failed"; SYSTEMD_OK=0; }
+  if [[ "$SYSTEMD_OK" == "1" ]]; then
+    ctl restart ework-web.service || { warn "systemctl restart failed"; SYSTEMD_OK=0; }
+  fi
+  if [[ "$SYSTEMD_OK" == "1" ]]; then
+    for i in $(seq 1 60); do
+      if curl -sf -o /dev/null "http://127.0.0.1:$WORK_PORT/login"; then
+        ok "ework-web listening on :$WORK_PORT (after ${i} half-seconds)"
+        break
+      fi
+      sleep 0.5
+      [[ $i -eq 60 ]] && { warn "ework-web did not come up via systemd in 30s. Falling back to PID-file mode."; SYSTEMD_OK=0; }
+    done
+  fi
+else
+  warn "--no-start: unit enabled but not started"
+  ctl enable ework-web.service 2>/dev/null || true
+fi
+
+# ─── PID-file mode fallback for bot bootstrap ──────────────────────────────
+# If systemd couldn't start web (or we're on a host without systemd), bring
+# web up briefly via the PID-file path so the bot user + PAT bootstrap can
+# still complete. We leave web running in PID-file mode so subsequent curl
+# calls to :WORK_PORT succeed.
+if [[ "$NO_START" == "0" && "$SYSTEMD_OK" == "0" ]]; then
+  log "Starting ework-web via PID-file mode (nohup) for bot bootstrap..."
+  WEB_LOG_FILE="$DATA_DIR/run/web.log"
+  mkdir -p "$(dirname "$WEB_LOG_FILE")"
+  setsid nohup "$EWORK_WEB_BIN" >>"$WEB_LOG_FILE" 2>&1 </dev/null &
+  WEB_PID=$!
+  disown "$WEB_PID" 2>/dev/null || true
+  printf '%s\n' "$WEB_PID" > "$DATA_DIR/run/web.pid"
+  ok "ework-web started in PID-file mode (pid $WEB_PID, log $WEB_LOG_FILE)"
   for i in $(seq 1 60); do
     if curl -sf -o /dev/null "http://127.0.0.1:$WORK_PORT/login"; then
-      ok "ework-web listening on :$WORK_PORT (after ${i} half-seconds)"
+      ok "ework-web listening on :$WORK_PORT (after ${i} half-seconds, PID-file mode)"
       break
     fi
     sleep 0.5
-    [[ $i -eq 60 ]] && die "ework-web did not come up in 30s. Check: journalctl $SCOPENAME -u ework-web.service -n 50"
+    [[ $i -eq 60 ]] && die "ework-web did not come up in 30s. Tail of $WEB_LOG_FILE: $(tail -n 20 "$WEB_LOG_FILE" 2>/dev/null)"
   done
-else
-  warn "--no-start: unit enabled but not started"
-  ctl enable ework-web.service
 fi
 
 # ─── Bootstrap bot user + PAT (idempotent) ─────────────────────────────────
@@ -709,10 +753,23 @@ COOKIE_SIG=$(printf '%s' "$WORK_TOKEN_VAL" \
 AUTH_COOKIE="ework_auth=${WORK_TOKEN_VAL}.${COOKIE_SIG}"
 
 BOT_TOKEN=""
+BOT_BOOTSTRAP_OK=1
 if [[ -f "$BOT_TOKEN_FILE" ]]; then
   BOT_TOKEN=$(cat "$BOT_TOKEN_FILE")
   ok "Reusing saved bot token from $BOT_TOKEN_FILE"
 else
+  # Pre-flight: web must be reachable for the bot bootstrap HTTP calls below.
+  # In --no-start mode OR on hosts where systemd couldn't bring web up, skip
+  # the bootstrap entirely — daemon .env still gets written (with empty token)
+  # so the user can `ework-aio start` and re-run install later.
+  if ! curl -sf -o /dev/null "http://127.0.0.1:$WORK_PORT/login"; then
+    warn "ework-web not reachable at :$WORK_PORT — skipping bot bootstrap."
+    warn "Daemon will not be able to talk to web until you re-run install with web running."
+    BOT_BOOTSTRAP_OK=0
+  fi
+fi
+
+if [[ "$BOT_BOOTSTRAP_OK" == "1" && ! -f "$BOT_TOKEN_FILE" ]]; then
   log "Bootstrapping bot user '$BOT_NAME'..."
   BOT_PW=$(openssl rand -hex 24)
   CREATE_CODE=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
@@ -725,9 +782,11 @@ else
   case "$CREATE_CODE" in
     303) ok "Bot user '$BOT_NAME' created" ;;
     400|409) warn "Bot user '$BOT_NAME' already exists (continuing)" ;;
-    *) die "Failed to create bot user: HTTP $CREATE_CODE" ;;
+    *) warn "Failed to create bot user: HTTP $CREATE_CODE — skipping PAT mint; daemon will not be able to talk to web until re-run"; BOT_BOOTSTRAP_OK=0 ;;
   esac
+fi
 
+if [[ "$BOT_BOOTSTRAP_OK" == "1" && ! -f "$BOT_TOKEN_FILE" ]]; then
   log "Logging in as bot to mint PAT..."
   COOKIE_JAR=$(mktemp)
   LOGIN_CODE=$(curl -sS -c "$COOKIE_JAR" -X POST "http://127.0.0.1:$WORK_PORT/login" \
@@ -736,18 +795,25 @@ else
     -o /dev/null -w '%{http_code}') || LOGIN_CODE=000
   BOT_COOKIE=$(awk '/ework_auth/ {print $7}' "$COOKIE_JAR")
   rm -f "$COOKIE_JAR"
-  [[ "$LOGIN_CODE" == "302" && -n "$BOT_COOKIE" ]] \
-    || die "Bot login failed: HTTP $LOGIN_CODE"
+  if [[ "$LOGIN_CODE" != "302" || -z "$BOT_COOKIE" ]]; then
+    warn "Bot login failed: HTTP $LOGIN_CODE — skipping PAT mint"
+    BOT_BOOTSTRAP_OK=0
+  fi
+fi
 
+if [[ "$BOT_BOOTSTRAP_OK" == "1" && ! -f "$BOT_TOKEN_FILE" ]]; then
   log "Minting PAT..."
   PAT_RES=$(curl -sS -X POST "http://127.0.0.1:$WORK_PORT/me/tokens/create" \
     -H "Cookie: ework_auth=$BOT_COOKIE" \
     --data-urlencode "name=aio-$(date +%s)")
   BOT_TOKEN=$(printf '%s' "$PAT_RES" | grep -oE 'id="t">[a-f0-9]{40}<' | grep -oE '[a-f0-9]{40}' | head -1 || true)
-  [[ -n "$BOT_TOKEN" ]] || die "Could not extract PAT from token-create response"
-  printf '%s' "$BOT_TOKEN" > "$BOT_TOKEN_FILE"
-  chmod 600 "$BOT_TOKEN_FILE"
-  ok "Bot PAT saved to $BOT_TOKEN_FILE"
+  if [[ -z "$BOT_TOKEN" ]]; then
+    warn "Could not extract PAT from token-create response — daemon .env will have empty token"
+  else
+    printf '%s' "$BOT_TOKEN" > "$BOT_TOKEN_FILE"
+    chmod 600 "$BOT_TOKEN_FILE"
+    ok "Bot PAT saved to $BOT_TOKEN_FILE"
+  fi
 fi
 
 # ─── Write ework-daemon .env ───────────────────────────────────────────────
@@ -766,19 +832,30 @@ write_unit_file \
 # (trailing " \"\"" is a no-op separator; kept for future extra env injection)
 ok "Wrote $DAEMON_UNIT"
 
-ctl daemon-reload
-if [[ "$NO_START" == "0" ]]; then
+ctl daemon-reload 2>/dev/null || true
+if [[ "$NO_START" == "0" && "$SYSTEMD_OK" == "1" ]]; then
   log "Starting ework-daemon..."
-  ctl enable ework-daemon.service
-  ctl restart ework-daemon.service
+  ctl enable ework-daemon.service 2>/dev/null || true
+  ctl restart ework-daemon.service 2>/dev/null || warn "ework-daemon restart via systemd failed; use 'ework-aio start daemon' for PID-file mode"
   sleep 1
-  if ctl is-active --quiet ework-daemon.service; then
+  if ctl is-active --quiet ework-daemon.service 2>/dev/null; then
     ok "ework-daemon active"
   else
-    warn "ework-daemon did not report active; check: journalctl $SCOPENAME -u ework-daemon.service -n 50"
+    warn "ework-daemon did not report active; run 'ework-aio start daemon' for PID-file mode"
   fi
 else
-  ctl enable ework-daemon.service
+  ctl enable ework-daemon.service 2>/dev/null || true
+fi
+
+if [[ "$SYSTEMD_OK" == "0" ]]; then
+  hr
+  warn "systemd mode did not come up cleanly on this host."
+  warn "Services are scaffolded but not auto-started under systemd."
+  warn "Use PID-file mode instead:"
+  echo "    ework-aio start          # start web + daemon in background"
+  echo "    ework-aio ps             # check status"
+  echo "    ework-aio logs web       # tail web log"
+  hr
 fi
 
 # ─── Register opencode-ework plugin ────────────────────────────────────────
