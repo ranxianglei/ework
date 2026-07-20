@@ -16,6 +16,11 @@ export interface UnitContext {
   mainScript: string;         // entry script (e.g. /usr/lib/node_modules/ework-web/bin/ework-web.js)
   envFile: string;
   workingDirectory: string;
+  // Absolute path the service should pipe stdout/stderr to. Must match the
+  // PID-file mode log path (paths.webLogFile / paths.daemonLogFile) so
+  // `ework-aio logs <svc>` reads the same file regardless of how the
+  // service was started.
+  logFile: string;
   restart?: "always" | "on-failure" | "no";
   description?: string;
 }
@@ -38,8 +43,8 @@ EnvironmentFile=${ctx.envFile}
 ExecStart=${ctx.binPath} ${ctx.mainScript}
 Restart=${restart}
 RestartSec=3
-StandardOutput=append:${path.join(path.dirname(ctx.envFile), "run", `${svc}.log`)}
-StandardError=append:${path.join(path.dirname(ctx.envFile), "run", `${svc}.log`)}
+StandardOutput=append:${ctx.logFile}
+StandardError=append:${ctx.logFile}
 
 [Install]
 WantedBy=default.target

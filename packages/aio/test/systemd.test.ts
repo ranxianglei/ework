@@ -19,6 +19,7 @@ const sampleCtx: UnitContext = {
   mainScript: "/usr/lib/node_modules/ework-web/bin/ework-web.js",
   envFile: "/home/alice/.local/share/ework-aio/ework-web/.env",
   workingDirectory: "/home/alice/.local/share/ework-aio/ework-web",
+  logFile: "/home/alice/.local/share/ework-aio/run/web.log",
 };
 
 describe("generateUnitFile", () => {
@@ -48,10 +49,10 @@ describe("generateUnitFile", () => {
     expect(unit).toContain("Restart=on-failure");
   });
 
-  it("writes log output to run/<svc>.log relative to envFile dir", () => {
+  it("writes log output to the logFile path from context (S-4)", () => {
     const unit = generateUnitFile("ework-web", sampleCtx);
-    expect(unit).toMatch(/StandardOutput=append:.*\/run\/ework-web\.log/);
-    expect(unit).toMatch(/StandardError=append:.*\/run\/ework-web\.log/);
+    expect(unit).toContain("StandardOutput=append:/home/alice/.local/share/ework-aio/run/web.log");
+    expect(unit).toContain("StandardError=append:/home/alice/.local/share/ework-aio/run/web.log");
   });
 
   it("uses WantedBy=default.target for user-scope install", () => {

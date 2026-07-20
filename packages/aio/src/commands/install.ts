@@ -22,7 +22,7 @@ import { createHmac, randomBytes } from "node:crypto";
 import { Logger, InstallError } from "../log.ts";
 import { resolvePaths, type PathConfig } from "../paths.ts";
 import { type InstallContext } from "../config.ts";
-import { ensureEnvFile, parseEnvFile } from "../env.ts";
+import { ensureEnvFile, parseEnvFile, patchEnvKey } from "../env.ts";
 import { startProcess, isProcessRunning, readPidFile } from "../pidfile.ts";
 import { checkPreflight, resolveCommand, REQUIRED_COMMANDS } from "../preflight.ts";
 import {
@@ -176,12 +176,31 @@ export async function runInstall(
       mainScript: webBin,
       envFile: paths.webEnvFile,
       workingDirectory: paths.webDataDir,
+      logFile: paths.webLogFile,
     });
     await writeUnitFile(paths.webUnitFile, webUnit);
     logger.ok(`wrote ${paths.webUnitFile}`);
     try {
       await installUnit("ework-web", paths.webUnitFile, webUnit, unitOpts);
       systemdOk = true;
+      // S-1: enable linger so user-scope units survive logout. Without
+      // this, `install systemd --user` produces units that die when the
+      // user logs out — defeating the point of systemd mode. Best-effort.
+      if (opts.scope === "user") {
+        const userInfo = os.userInfo();
+        const linger = Bun.spawnSync(["loginctl", "enable-linger", userInfo.username], {
+          env: process.env,
+          stdout: "pipe", stderr: "pipe",
+        });
+        if (linger.exitCode === 0) {
+          logger.ok(`enabled linger for ${userInfo.username} (user units survive logout)`);
+        } else {
+          logger.warn(
+            `could not enable linger for ${userInfo.username}: ${linger.stderr?.toString().trim() ?? ""}. ` +
+            `Run 'sudo loginctl enable-linger ${userInfo.username}' so user units survive logout.`,
+          );
+        }
+      }
     } catch (err) {
       logger.warn(`systemd install failed for ework-web: ${(err as Error).message}`);
       logger.warn(`falling back to PID-file mode for ework-web`);
@@ -319,6 +338,7 @@ export async function runInstall(
       mainScript: daemonBin,
       envFile: paths.daemonEnvFile,
       workingDirectory: paths.daemonDataDir,
+      logFile: paths.daemonLogFile,
     });
     await writeUnitFile(paths.daemonUnitFile, unit);
     logger.ok(`wrote ${paths.daemonUnitFile}`);
@@ -450,24 +470,6 @@ async function readEnvKey(envFile: string, key: string): Promise<string | null> 
   }
 }
 
-// patchEnvKey: replace or append a key in .env. NOT atomic — caller should
-// have just written the file via ensureEnvFile (atomic) and now patches a
-// single key. Used for BOT_TOKEN injection after forward-fill.
-async function patchEnvKey(envFile: string, key: string, value: string): Promise<void> {
-  const content = await Bun.file(envFile).text();
-  const lines = content.split(/\r?\n/);
-  let found = false;
-  for (const [i, line] of lines.entries()) {
-    if (line.startsWith(`${key}=`)) {
-      lines[i] = `${key}=${value}`;
-      found = true;
-      break;
-    }
-  }
-  if (!found) lines.push(`${key}=${value}`);
-  await fs.promises.writeFile(envFile, lines.join("\n"), { mode: 0o600 });
-}
-
 // loadEnvIntoProcess: read .env into a fresh object suitable for spawn env.
 // Inherits process.env (so PATH etc. are available) and overlays .env keys.
 async function loadEnvIntoProcess(envFile: string): Promise<NodeJS.ProcessEnv> {
@@ -541,13 +543,26 @@ async function bootstrapBot(opts: BootstrapBotOpts): Promise<string> {
   // 3. Mint PAT via /me/tokens/create. Response is HTML containing the
   // clear-text token in `<input id="t" value="<40-hex>">`. We only get one
   // chance to see the clear-text — must scrape it now.
+  //
+  // S-3: pin redirect:"manual" so a PRG-style 303→GET doesn't land us on
+  // a "token list" page where the clear-text value isn't present.
+  //
+  // S-2: scrape regex is attribute-order-independent — accepts both
+  // `<input id="t" value="...">` and `<input value="..." id="t">`.
   const patRes = await fetchImpl(`${opts.baseUrl}/me/tokens/create`, {
     method: "POST",
     headers: { Cookie: botCookie, "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({ name: `aio-${Date.now()}` }).toString(),
+    redirect: "manual",
   });
+  if (patRes.status !== 200) {
+    throw new InstallError(
+      `mint PAT returned HTTP ${patRes.status} (expected 200 with HTML body)`,
+    );
+  }
   const patBody = await patRes.text();
-  const match = patBody.match(/id="t"[^>]*value="([a-f0-9]{40})"/);
+  const match = patBody.match(/<input[^>]*id="t"[^>]*value="([a-f0-9]{40})"/)
+    ?? patBody.match(/<input[^>]*value="([a-f0-9]{40})"[^>]*id="t"/);
   if (!match || !match[1]) {
     throw new InstallError(`could not extract PAT from token-create response`);
   }
