@@ -49,6 +49,7 @@ export interface IssueRow {
   author: string;
   created_at: string;
   updated_at: string;
+  closed_at: string | null;
 }
 
 export interface IssueWithMeta extends IssueRow {
@@ -308,18 +309,36 @@ export function listAllIssues(opts: ListIssuesOpts = {}): IssueWithMeta[] {
   return rawDB().query(sql).all(...args) as IssueWithMeta[];
 }
 
+export interface CreateIssueOpts {
+  createdAt?: string;
+  updatedAt?: string;
+  state?: "open" | "closed";
+  closedAt?: string | null;
+}
+
+function isoOr(value: string | undefined, fallback: string): string {
+  if (value === undefined || value === "") return fallback;
+  const parsed = Date.parse(value);
+  if (Number.isNaN(parsed)) throw new StoreError(400, "非法 ISO8601 时间戳");
+  return new Date(parsed).toISOString();
+}
+
 export function createIssue(
   projectId: number,
   title: string,
   body: string,
-  author: string
+  author: string,
+  opts: CreateIssueOpts = {}
 ): IssueRow {
   title = title.trim();
   if (!title) throw new StoreError(400, "标题不能为空");
   if (title.length > 255) throw new StoreError(400, "标题过长（≤255）");
   if (body.length > 65536) throw new StoreError(413, "正文过长（≤65536）");
   ensureUser(author);
-  const ts = now();
+  const createdAt = isoOr(opts.createdAt, now());
+  const updatedAt = opts.updatedAt ? isoOr(opts.updatedAt, createdAt) : createdAt;
+  const state: "open" | "closed" = opts.state ?? "open";
+  const closedAt = state === "closed" ? isoOr(opts.closedAt ?? undefined, updatedAt) : null;
   const db = rawDB();
   return tx(db, () => {
     const next = (
@@ -329,19 +348,29 @@ export function createIssue(
     ).n;
     const info = db
       .query(
-        "INSERT INTO issues (project_id, number, title, body, state, author, created_at, updated_at) VALUES (?, ?, ?, ?, 'open', ?, ?, ?)"
+        "INSERT INTO issues (project_id, number, title, body, state, author, created_at, updated_at, closed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
       )
-      .run(projectId, next, title, body, author, ts, ts);
-    db.query("UPDATE projects SET updated_at = ? WHERE id = ?").run(ts, projectId);
+      .run(projectId, next, title, body, state, author, createdAt, updatedAt, closedAt);
+    db.query("UPDATE projects SET updated_at = ? WHERE id = ?").run(updatedAt, projectId);
     return getIssueById(Number(info.lastInsertRowid))!;
   });
 }
 
-export function setIssueState(issueId: number, state: "open" | "closed"): void {
-  const ts = now();
+export function setIssueState(
+  issueId: number,
+  state: "open" | "closed",
+  opts: { closedAt?: string; updatedAt?: string } = {}
+): void {
+  const ts = opts.updatedAt ? isoOr(opts.updatedAt, now()) : now();
+  const closedAt = state === "closed" ? isoOr(opts.closedAt ?? undefined, ts) : null;
   const db = rawDB();
   tx(db, () => {
-    db.query("UPDATE issues SET state = ?, updated_at = ? WHERE id = ?").run(state, ts, issueId);
+    db.query("UPDATE issues SET state = ?, updated_at = ?, closed_at = ? WHERE id = ?").run(
+      state,
+      ts,
+      closedAt,
+      issueId
+    );
     const row = db.query("SELECT project_id FROM issues WHERE id = ?").get(issueId) as { project_id: number };
     db.query("UPDATE projects SET updated_at = ? WHERE id = ?").run(ts, row.project_id);
   });
@@ -351,11 +380,13 @@ export interface IssuePatch {
   title?: string;
   body?: string;
   state?: "open" | "closed";
+  closedAt?: string | null;
+  updatedAt?: string;
 }
 
 export function editIssue(issueId: number, patch: IssuePatch): void {
   const sets: string[] = [];
-  const args: (string | number)[] = [];
+  const args: (string | number | null)[] = [];
   if (patch.title !== undefined) {
     const t = patch.title.trim();
     if (!t) throw new StoreError(400, "标题不能为空");
@@ -374,10 +405,20 @@ export function editIssue(issueId: number, patch: IssuePatch): void {
     }
     sets.push("state = ?");
     args.push(patch.state);
+    const ts = patch.updatedAt ? isoOr(patch.updatedAt, now()) : now();
+    sets.push("updated_at = ?");
+    args.push(ts);
+    sets.push("closed_at = ?");
+    args.push(patch.state === "closed" ? isoOr(patch.closedAt ?? undefined, ts) : null);
+  } else if (patch.updatedAt !== undefined) {
+    sets.push("updated_at = ?");
+    args.push(isoOr(patch.updatedAt, now()));
   }
   if (sets.length === 0) return;
-  sets.push("updated_at = ?");
-  args.push(now());
+  if (!patch.state && !patch.updatedAt) {
+    sets.push("updated_at = ?");
+    args.push(now());
+  }
   args.push(issueId);
   const db = rawDB();
   tx(db, () => {
@@ -434,19 +475,30 @@ export function listCommentsForIssue(issueId: number): CommentRow[] {
     .all(issueId) as CommentRow[];
 }
 
-export function postComment(issueId: number, body: string, author: string): CommentRow {
+export interface CreateCommentOpts {
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export function postComment(
+  issueId: number,
+  body: string,
+  author: string,
+  opts: CreateCommentOpts = {}
+): CommentRow {
   if (!body || !body.trim()) throw new StoreError(400, "评论不能为空");
   if (body.length > 65536) throw new StoreError(413, "评论过长（≤65536）");
   ensureUser(author);
-  const ts = now();
+  const createdAt = isoOr(opts.createdAt, now());
+  const updatedAt = opts.updatedAt ? isoOr(opts.updatedAt, createdAt) : createdAt;
   const db = rawDB();
   return tx(db, () => {
     const info = db
       .query("INSERT INTO comments (issue_id, author, body, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
-      .run(issueId, author, body, ts, ts);
-    db.query("UPDATE issues SET updated_at = ? WHERE id = ?").run(ts, issueId);
+      .run(issueId, author, body, createdAt, updatedAt);
+    db.query("UPDATE issues SET updated_at = ? WHERE id = ?").run(updatedAt, issueId);
     const row = db.query("SELECT project_id FROM issues WHERE id = ?").get(issueId) as { project_id: number };
-    db.query("UPDATE projects SET updated_at = ? WHERE id = ?").run(ts, row.project_id);
+    db.query("UPDATE projects SET updated_at = ? WHERE id = ?").run(updatedAt, row.project_id);
     return db.query(
       `SELECT c.*, u.kind AS author_kind
        FROM comments c LEFT JOIN users u ON u.login = c.author
