@@ -100,7 +100,7 @@ Keeping these in a separate, explicitly-invoked step is intentional:
 ```
 ework-aio install [options]    Install or upgrade the stack
 ework-aio uninstall            Stop services and remove units (data preserved)
-ework-aio status               Show service status
+ework-aio status               Show service status (systemd mode)
 ework-aio logs [web|daemon]    Tail logs
 ework-aio env                  Print key paths (no secrets)
 ework-aio config <subcommand>  Read / change runtime .env keys
@@ -109,6 +109,12 @@ ework-aio config <subcommand>  Read / change runtime .env keys
   config set <KEY> <VALUE>    Set a key, then restart affected service
                               (use --no-restart to defer)
   config restart <web|daemon|both>  Restart one or both services
+
+# PID-file mode (no systemd required — see below)
+ework-aio start [web|daemon|both] [--foreground]  Start services in background
+ework-aio stop [web|daemon|both]                  Stop services (SIGTERM, 5s, SIGKILL)
+ework-aio restart [web|daemon|both]               Stop + start
+ework-aio ps                                       Show PID-file mode status
 ```
 
 ### Install options
@@ -211,6 +217,45 @@ rm -rf ~/.local/share/ework-aio    # also delete data
 npm uninstall -g ework-aio ework-web ework-daemon opencode-ework
 # Remove the plugin entry from ~/.config/opencode/opencode.json manually
 ```
+
+## PID-file mode (no systemd)
+
+`install` / `status` / `config` / `uninstall` go through `systemctl`, which assumes systemd. If you're on a system without systemd — **macOS, WSL1, Alpine without systemd, Docker containers, dev laptops** — use the parallel PID-file mode instead:
+
+| Mode        | Start                         | Stop                          | Status              | Restart                          |
+| ----------- | ----------------------------- | ----------------------------- | ------------------- | -------------------------------- |
+| systemd     | `ework-aio install`           | `ework-aio uninstall`         | `ework-aio status`  | `ework-aio config restart both`  |
+| **PID-file**| `ework-aio start`             | `ework-aio stop`              | `ework-aio ps`      | `ework-aio restart`              |
+
+PID-file mode writes per-service PID + log under `~/.local/share/ework-aio/run/`:
+
+```
+~/.local/share/ework-aio/run/
+  ├── web.pid          # ework-web PID
+  ├── web.log          # nohup stdout+stderr
+  ├── daemon.pid
+  └── daemon.log
+```
+
+```bash
+# One-time setup: scaffold .env + data dir (no systemd required if you skip the unit install)
+ework-aio install --no-start
+
+# Then control with PID-file mode:
+ework-aio start                # start web + daemon in background
+ework-aio start web            # just web
+ework-aio start daemon --foreground   # run in current terminal
+ework-aio stop                 # SIGTERM, 5s grace, SIGKILL if needed
+ework-aio restart web          # stop + start
+ework-aio ps                   # show PID + log path for each service
+```
+
+Override the data dir with `EWORK_AIO_DATA_DIR=/path ework-aio start`.
+
+**Notes**:
+- `install` (with `--no-start`) is still required once to scaffold `.env` and the data directory. The systemd units it writes are inert when nothing manages them.
+- PID-file mode does NOT auto-restart on crash. Consider a process supervisor (`pm2`, `supervisord`, `runit`, `launchd`) if you need that.
+- Both modes can coexist (systemd-managed services ignore PID files, and vice versa) but you should pick one to avoid port conflicts.
 
 ## Alternatives
 
