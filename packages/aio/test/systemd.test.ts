@@ -59,6 +59,56 @@ describe("generateUnitFile", () => {
     const unit = generateUnitFile("ework-web", sampleCtx);
     expect(unit).toContain("WantedBy=default.target");
   });
+
+  it("uses WantedBy=multi-user.target for system-scope install (S-5)", () => {
+    const unit = generateUnitFile("ework-web", { ...sampleCtx, scope: "system" });
+    expect(unit).toContain("WantedBy=multi-user.target");
+    expect(unit).not.toContain("WantedBy=default.target");
+  });
+
+  it("quotes WorkingDirectory path containing spaces (B-2)", () => {
+    const unit = generateUnitFile("ework-web", {
+      ...sampleCtx,
+      workingDirectory: "/home/alice/my ework/data dir",
+    });
+    expect(unit).toContain('WorkingDirectory="/home/alice/my ework/data dir"');
+  });
+
+  it("quotes EnvironmentFile path containing spaces (B-2)", () => {
+    const unit = generateUnitFile("ework-web", {
+      ...sampleCtx,
+      envFile: "/home/alice/my dir/.env",
+    });
+    expect(unit).toContain('EnvironmentFile="/home/alice/my dir/.env"');
+  });
+
+  it("quotes StandardOutput log path containing spaces (B-2)", () => {
+    const unit = generateUnitFile("ework-web", {
+      ...sampleCtx,
+      logFile: "/var/log/my ework/web.log",
+    });
+    expect(unit).toContain('StandardOutput=append:"/var/log/my ework/web.log"');
+  });
+
+  it("rejects User containing characters outside systemd name set (B-2)", () => {
+    expect(() => generateUnitFile("ework-web", { ...sampleCtx, user: "alice\nRestart=always" }))
+      .toThrow(/systemd User=/);
+  });
+
+  it("rejects Group containing characters outside systemd name set (B-2)", () => {
+    expect(() => generateUnitFile("ework-web", { ...sampleCtx, group: "g;rm -rf" }))
+      .toThrow(/systemd Group=/);
+  });
+
+  it("rejects relative WorkingDirectory (B-2)", () => {
+    expect(() => generateUnitFile("ework-web", { ...sampleCtx, workingDirectory: "relative/dir" }))
+      .toThrow(/must be an absolute path/);
+  });
+
+  it("rejects WorkingDirectory containing newlines (B-2)", () => {
+    expect(() => generateUnitFile("ework-web", { ...sampleCtx, workingDirectory: "/x\nRestart=always" }))
+      .toThrow(/must not contain newlines/);
+  });
 });
 
 describe("writeUnitFile", () => {
