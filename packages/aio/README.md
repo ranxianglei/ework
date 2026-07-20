@@ -13,11 +13,21 @@ All-in-one installer for the **ework** self-hosted AI development stack:
 ## Quick start
 
 ```bash
-# Recommended: user-level install (no sudo needed)
+# Recommended: user-level install (no sudo needed, no systemd needed)
 npm install -g ework-aio --prefix ~/.local && ework-aio install
 ```
 
-That's the whole install. When it finishes it prints your login URL, operator login, and token.
+That's the whole install. It runs in **PID-file mode** (services via `nohup`, no `systemctl` calls, no linger prompt) and prints your login URL, operator login, and token when done.
+
+### When to use `install systemd`
+
+If you want systemd to supervise the services (auto-restart on crash, start on boot, journal logging), add the `systemd` subcommand:
+
+```bash
+ework-aio install systemd           # writes units, daemon-reload, enable, restart
+```
+
+This is **opt-in**. Without `systemd`, install never touches `systemctl`, works on hosts without systemd (containers, macOS, WSL without systemd), and doesn't prompt for linger.
 
 > **PATH heads-up:** `--prefix ~/.local` puts bin shims at `~/.local/bin/`.
 > Most distros already have `~/.local/bin` on PATH (via `systemd-user-sessions`
@@ -32,19 +42,24 @@ That's the whole install. When it finishes it prints your login URL, operator lo
 
 The install command checks for these and aborts with a hint if any are missing:
 
-| Tool        | Min ver | Install from                         |
-| ----------- | ------- | ------------------------------------ |
-| `bun`       | 1.1.0   | https://bun.sh                       |
-| `opencode`  | 1.14    | https://opencode.ai                  |
-| `npm`       | any     | ships with bun or node               |
-| `systemctl` | any     | systemd-based Linux                  |
-| `openssl`/`curl`/`jq`/`awk` | any | your distro package manager |
+| Tool        | Min ver | When required                             | Install from                         |
+| ----------- | ------- | ----------------------------------------- | ------------------------------------ |
+| `bun`       | 1.1.0   | always                                    | https://bun.sh                       |
+| `opencode`  | 1.14    | always                                    | https://opencode.ai                  |
+| `npm`       | any     | always                                    | ships with bun or node               |
+| `systemctl` | any     | only `install systemd` (not default)      | systemd-based Linux                  |
+| `openssl`/`curl`/`jq`/`awk` | any | always                       | your distro package manager          |
 
 ### Install variants
 
 ```bash
-# System-level install (needs sudo; services run as root, units in /etc/systemd/system)
-sudo npm install -g ework-aio && sudo ework-aio install --system
+# PID-file mode (default): no systemctl, works anywhere
+ework-aio install
+
+# systemd mode: writes units + enables + starts via systemd
+ework-aio install systemd
+# (system-level variant: services run as root, units in /etc/systemd/system)
+sudo npm install -g ework-aio && sudo ework-aio install systemd --system
 
 # Run without installing globally (downloads + runs once)
 npx ework-aio install
@@ -58,7 +73,8 @@ User-level (default in this README) keeps everything under your home directory:
 - bins: `~/.local/bin/`
 - npm package files: `~/.local/lib/node/`
 - data: `~/.local/share/ework-aio/`
-- systemd units: `~/.config/systemd/user/`
+- PID files + logs: `~/.local/share/ework-aio/run/{web,daemon}.{pid,log}`
+- systemd units (only with `install systemd`): `~/.config/systemd/user/`
 
 `sudo` is never required; uninstall is `rm -rf ~/.local/share/ework-aio && npm uninstall -g ework-aio --prefix ~/.local`.
 

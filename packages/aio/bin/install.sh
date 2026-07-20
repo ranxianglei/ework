@@ -17,7 +17,7 @@ set -euo pipefail
 # scope + polkit redirect, missing systemd PID 1, journalctl-as-root) all
 # manifest as silent exit at a systemctl call — without this trace, the user
 # just sees the prompt return and assumes install succeeded.
-trap 'rc=$?; if [[ $rc -ne 0 ]]; then echo "${c_red}✗${c_reset} install.sh exited with code $rc at line $LINENO (most recent command: ${BASH_COMMAND})" >&2; echo "  If systemd is unavailable on this host, retry with: ework-aio install --no-start" >&2; echo "  Then start services with: ework-aio start" >&2; fi' ERR
+trap 'rc=$?; if [[ $rc -ne 0 ]]; then echo "${c_red}✗${c_reset} install.sh exited with code $rc at line $LINENO (most recent command: ${BASH_COMMAND})" >&2; echo "  If running in PID-file mode (default), this is a real bug — please report." >&2; echo "  If running with '\''systemd'\'' subcommand and systemd is unavailable, retry without it." >&2; fi' ERR
 
 # ─── Pretty output ──────────────────────────────────────────────────────────
 c_reset=$'\033[0m'; c_bold=$'\033[1m'; c_dim=$'\033[2m'
@@ -42,13 +42,22 @@ AS_USER=""
 ALLOW_ROOT=0
 CFG_ARGS=()
 MODE_ARGS=()
+# USE_SYSTEMD=1 only when user runs `install systemd`. Default install is
+# pure PID-file mode (no systemctl calls, no unit files, no linger prompt).
+# This is the inverse of v0.1.x behavior where install always tried systemd
+# first. PID-file mode is simpler, works on hosts without systemd, and
+# matches the dominant failure mode we've seen in the wild.
+USE_SYSTEMD=0
 
 usage() {
   cat <<'EOF'
 ework-aio <command> [options]
 
 Commands:
-  install [options]              Install or upgrade the ework stack (default)
+  install [systemd] [options]     Install or upgrade the ework stack (default)
+                                 Add 'systemd' to also write+enable systemd
+                                 units. Without 'systemd', runs in pure
+                                 PID-file mode (no systemctl calls).
   uninstall                      Stop services and remove units (data preserved)
   status                         Show service status
   logs [web|daemon]              Tail logs
@@ -61,13 +70,15 @@ Commands:
     config restart <web|daemon>  Restart one or both services
 
 Install options:
-  --user                         Use user-level systemd units (default if non-root)
-  --system                       Use system-level systemd units (default if root)
+  systemd                        Also install systemd units + enable them.
+                                 Without this flag, install is PID-file only.
+  --user                         (with systemd) user-level units (default)
+  --system                       (with systemd) system-level units (needs sudo)
   --data-dir <path>              Override data directory (default: ~/.local/share/ework-aio)
   --port <n>                     ework-web port (default: 3002)
   --daemon-port <n>              ework-daemon port (default: 3101)
   --bot-name <login>             Bot username (default: ework-daemon)
-  --no-start                     Install units but don't start services
+  --no-start                     Install but don't start services
   --yes                          Skip all prompts (use generated defaults)
   --as-user <login>              (sudo only) drop priv: re-exec install as <login>
                                  after enabling linger. Data + opencode + npm
@@ -196,6 +207,7 @@ fi
 # know about installed units). Auto-export the runtime dir + bus socket if we
 # can find them. No-op for --system scope.
 ensure_user_session() {
+  [[ "$USE_SYSTEMD" == "1" ]] || return 0
   [[ "$SCOPENAME" == "--user" ]] || return 0
   local uid
   uid="$(id -u)"
@@ -227,17 +239,33 @@ ensure_user_session() {
 }
 ensure_user_session || true   # warn but don't hard-fail — let later steps report specifics
 
+# ─── Post-parse: detect `install systemd` sub-variant ──────────────────────
+# `install systemd` (or `systemd install`, or `install ... systemd`) opts in
+# to writing+enabling systemd units. Without this token, install is pure
+# PID-file mode (no systemctl calls, no unit files, no linger prompt).
+if [[ "$MODE" == "install" ]]; then
+  new_mode_args=()
+  for a in "${MODE_ARGS[@]:-}"; do
+    [[ -z "$a" ]] && continue
+    if [[ "$a" == "systemd" ]]; then
+      USE_SYSTEMD=1
+    else
+      new_mode_args+=("$a")
+    fi
+  done
+  MODE_ARGS=("${new_mode_args[@]:-}")
+fi
+
 # ─── Pre-flight: command dependencies ───────────────────────────────────────
 need_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1. $2"
 }
 need_cmd awk        "Should be present on any Linux."
 
-# install needs systemctl (to write unit files + reload). Other modes
-# (status/logs/env/config/uninstall) can fall back to PID-file mode via
-# the 'ework-aio' dispatcher if systemd is unreachable on this host.
+# systemctl only required when user opts into systemd variant. Default
+# install path is PID-file only and works on hosts without systemd.
 if [[ "$MODE" == "install" ]]; then
-  need_cmd systemctl  "Install requires systemd. For hosts without systemd, run 'npm install -g ework-aio' and use 'ework-aio start' directly (PID-file mode)."
+  [[ "$USE_SYSTEMD" == "1" ]] && need_cmd systemctl  "Install with 'systemd' subcommand requires systemctl. Drop 'systemd' to install in PID-file mode."
   need_cmd bun        "Install from https://bun.sh"
   need_cmd npm        "Install Node.js or Bun (ships npm)"
   need_cmd opencode   "Install from https://opencode.ai"
@@ -809,14 +837,14 @@ esac
 # ─── Install mode ───────────────────────────────────────────────────────────
 hr
 log "ework-aio install"
-log "  scope      : $SCOPENAME"
+log "  mode       : $([[ "$USE_SYSTEMD" == "1" ]] && echo "systemd" || echo "PID-file (no systemd)")"
 log "  data dir   : $DATA_DIR"
 log "  web bin    : $EWORK_WEB_BIN"
 log "  daemon bin : $EWORK_DAEMON_BIN"
 log "  opencode   : $(command -v opencode) ($($(command -v opencode) --version 2>&1 | head -1))"
 hr
 
-if [[ "$SCOPENAME" == "--user" ]] && ! loginctl show-user "$USER" 2>/dev/null | grep -q '^Linger=yes'; then
+if [[ "$USE_SYSTEMD" == "1" && "$SCOPENAME" == "--user" ]] && ! loginctl show-user "$USER" 2>/dev/null | grep -q '^Linger=yes'; then
   warn "User-level systemd requires lingering to keep services alive after logout."
   if [[ "$ASSUME_YES" == "1" ]]; then
     warn "Run this manually: sudo loginctl enable-linger $USER"
@@ -832,56 +860,57 @@ mkdir -p "$WEB_DATA_DIR" "$DAEMON_DATA_DIR" "$DATA_DIR/opencode-workdir"
 
 write_web_env
 
-# ─── Write ework-web systemd unit ──────────────────────────────────────────
-WEB_UNIT="$UNIT_DIR/ework-web.service"
-write_unit_file \
-  "ework-web" \
-  "ework — multi-project issue tracker" \
-  "$EWORK_WEB_BIN" \
-  "$WEB_DATA_DIR" \
-  "$WEB_ENV" \
-  "$WEB_UNIT"
-ok "Wrote $WEB_UNIT"
+# ─── Write ework-web systemd unit (only with `install systemd`) ────────────
+SYSTEMD_OK=0
+if [[ "$USE_SYSTEMD" == "1" ]]; then
+  WEB_UNIT="$UNIT_DIR/ework-web.service"
+  write_unit_file \
+    "ework-web" \
+    "ework — multi-project issue tracker" \
+    "$EWORK_WEB_BIN" \
+    "$WEB_DATA_DIR" \
+    "$WEB_ENV" \
+    "$WEB_UNIT"
+  ok "Wrote $WEB_UNIT"
 
-# ─── Reload + start ework-web ──────────────────────────────────────────────
-# systemd calls here are best-effort. If systemd isn't functional on this host
-# (containers without systemd PID 1, polkit redirects under sudo, missing
-# /etc/systemd/system) we still want install to complete so the user can run
-# `ework-aio start` (PID-file mode) against the scaffolded .env.
-SYSTEMD_OK=1
-if ! ctl daemon-reload; then
-  warn "systemctl daemon-reload failed — systemd may be unavailable on this host."
-  SYSTEMD_OK=0
+  # systemd calls here are best-effort. If systemd isn't functional on this host
+  # (containers without systemd PID 1, polkit redirects under sudo, missing
+  # /etc/systemd/system) we still want install to complete so the user can run
+  # `ework-aio start` (PID-file mode) against the scaffolded .env.
+  SYSTEMD_OK=1
+  if ! ctl daemon-reload; then
+    warn "systemctl daemon-reload failed — systemd may be unavailable on this host."
+    SYSTEMD_OK=0
+  fi
+
+  if [[ "$NO_START" == "0" && "$SYSTEMD_OK" == "1" ]]; then
+    log "Starting ework-web (systemd)..."
+    ctl enable ework-web.service || { warn "systemctl enable failed"; SYSTEMD_OK=0; }
+    if [[ "$SYSTEMD_OK" == "1" ]]; then
+      ctl restart ework-web.service || { warn "systemctl restart failed"; SYSTEMD_OK=0; }
+    fi
+    if [[ "$SYSTEMD_OK" == "1" ]]; then
+      for i in $(seq 1 60); do
+        if curl -sf -o /dev/null "http://127.0.0.1:$WORK_PORT/login"; then
+          ok "ework-web listening on :$WORK_PORT (after ${i} half-seconds)"
+          break
+        fi
+        sleep 0.5
+        [[ $i -eq 60 ]] && { warn "ework-web did not come up via systemd in 30s. Falling back to PID-file mode."; SYSTEMD_OK=0; }
+      done
+    fi
+  else
+    warn "--no-start: unit enabled but not started"
+    ctl enable ework-web.service 2>/dev/null || true
+  fi
 fi
 
-if [[ "$NO_START" == "0" && "$SYSTEMD_OK" == "1" ]]; then
-  log "Starting ework-web..."
-  ctl enable ework-web.service || { warn "systemctl enable failed"; SYSTEMD_OK=0; }
-  if [[ "$SYSTEMD_OK" == "1" ]]; then
-    ctl restart ework-web.service || { warn "systemctl restart failed"; SYSTEMD_OK=0; }
-  fi
-  if [[ "$SYSTEMD_OK" == "1" ]]; then
-    for i in $(seq 1 60); do
-      if curl -sf -o /dev/null "http://127.0.0.1:$WORK_PORT/login"; then
-        ok "ework-web listening on :$WORK_PORT (after ${i} half-seconds)"
-        break
-      fi
-      sleep 0.5
-      [[ $i -eq 60 ]] && { warn "ework-web did not come up via systemd in 30s. Falling back to PID-file mode."; SYSTEMD_OK=0; }
-    done
-  fi
-else
-  warn "--no-start: unit enabled but not started"
-  ctl enable ework-web.service 2>/dev/null || true
-fi
-
-# ─── PID-file mode fallback for bot bootstrap ──────────────────────────────
-# If systemd couldn't start web (or we're on a host without systemd), bring
-# web up briefly via the PID-file path so the bot user + PAT bootstrap can
-# still complete. We leave web running in PID-file mode so subsequent curl
-# calls to :WORK_PORT succeed.
+# ─── Start ework-web in PID-file mode ──────────────────────────────────────
+# Default path (no `systemd` arg) OR systemd fallback. We bring web up via
+# setsid+nohup so the bot bootstrap below can HTTP-probe it. Web stays
+# running in PID-file mode after install — use `ework-aio stop` to kill it.
 if [[ "$NO_START" == "0" && "$SYSTEMD_OK" == "0" ]]; then
-  log "Starting ework-web via PID-file mode (nohup) for bot bootstrap..."
+  log "Starting ework-web (PID-file mode)..."
   WEB_LOG_FILE="$DATA_DIR/run/web.log"
   mkdir -p "$(dirname "$WEB_LOG_FILE")"
   setsid nohup "$EWORK_WEB_BIN" >>"$WEB_LOG_FILE" 2>&1 </dev/null &
@@ -975,42 +1004,55 @@ fi
 # ─── Write ework-daemon .env ───────────────────────────────────────────────
 write_daemon_env "$BOT_TOKEN"
 
-# ─── Write ework-daemon systemd unit ───────────────────────────────────────
-DAEMON_UNIT="$UNIT_DIR/ework-daemon.service"
-write_unit_file \
-  "ework-daemon" \
-  "ework-daemon — issue-driven AI dev daemon" \
-  "$EWORK_DAEMON_BIN" \
-  "$DAEMON_DATA_DIR" \
-  "$DAEMON_ENV" \
-  "$DAEMON_UNIT" \
-  " \"\""
-# (trailing " \"\"" is a no-op separator; kept for future extra env injection)
-ok "Wrote $DAEMON_UNIT"
+# ─── Write + start ework-daemon (systemd path, only with `install systemd`) ─
+if [[ "$USE_SYSTEMD" == "1" ]]; then
+  DAEMON_UNIT="$UNIT_DIR/ework-daemon.service"
+  write_unit_file \
+    "ework-daemon" \
+    "ework-daemon — issue-driven AI dev daemon" \
+    "$EWORK_DAEMON_BIN" \
+    "$DAEMON_DATA_DIR" \
+    "$DAEMON_ENV" \
+    "$DAEMON_UNIT" \
+    " \"\""
+  # (trailing " \"\"" is a no-op separator; kept for future extra env injection)
+  ok "Wrote $DAEMON_UNIT"
 
-ctl daemon-reload 2>/dev/null || true
-if [[ "$NO_START" == "0" && "$SYSTEMD_OK" == "1" ]]; then
-  log "Starting ework-daemon..."
-  ctl enable ework-daemon.service 2>/dev/null || true
-  ctl restart ework-daemon.service 2>/dev/null || warn "ework-daemon restart via systemd failed; use 'ework-aio start daemon' for PID-file mode"
-  sleep 1
-  if ctl is-active --quiet ework-daemon.service 2>/dev/null; then
-    ok "ework-daemon active"
+  ctl daemon-reload 2>/dev/null || true
+  if [[ "$NO_START" == "0" && "$SYSTEMD_OK" == "1" ]]; then
+    log "Starting ework-daemon (systemd)..."
+    ctl enable ework-daemon.service 2>/dev/null || true
+    ctl restart ework-daemon.service 2>/dev/null || warn "ework-daemon restart via systemd failed; falling back to PID-file mode"
+    sleep 1
+    if ctl is-active --quiet ework-daemon.service 2>/dev/null; then
+      ok "ework-daemon active (systemd)"
+    else
+      warn "ework-daemon not active via systemd — falling back to PID-file mode"
+      SYSTEMD_OK=0
+    fi
   else
-    warn "ework-daemon did not report active; run 'ework-aio start daemon' for PID-file mode"
+    ctl enable ework-daemon.service 2>/dev/null || true
   fi
-else
-  ctl enable ework-daemon.service 2>/dev/null || true
 fi
 
-if [[ "$SYSTEMD_OK" == "0" ]]; then
+# ─── Start ework-daemon in PID-file mode (default path) ────────────────────
+# Mirrors the web PID-file start. Skipped if systemd already brought it up.
+if [[ "$NO_START" == "0" && "$SYSTEMD_OK" == "0" ]]; then
+  log "Starting ework-daemon (PID-file mode)..."
+  DAEMON_LOG_FILE="$DATA_DIR/run/daemon.log"
+  mkdir -p "$(dirname "$DAEMON_LOG_FILE")"
+  setsid nohup "$EWORK_DAEMON_BIN" >>"$DAEMON_LOG_FILE" 2>&1 </dev/null &
+  DAEMON_PID=$!
+  disown "$DAEMON_PID" 2>/dev/null || true
+  printf '%s\n' "$DAEMON_PID" > "$DATA_DIR/run/daemon.pid"
+  ok "ework-daemon started in PID-file mode (pid $DAEMON_PID, log $DAEMON_LOG_FILE)"
+fi
+
+if [[ "$USE_SYSTEMD" == "1" && "$SYSTEMD_OK" == "0" ]]; then
   hr
   warn "systemd mode did not come up cleanly on this host."
-  warn "Services are scaffolded but not auto-started under systemd."
-  warn "Use PID-file mode instead:"
-  echo "    ework-aio start          # start web + daemon in background"
-  echo "    ework-aio ps             # check status"
-  echo "    ework-aio logs web       # tail web log"
+  warn "Services started in PID-file mode instead. systemd unit files were"
+  warn "written but are not active. To clean them up: ework-aio uninstall"
   hr
 fi
 
@@ -1071,7 +1113,7 @@ fi
 
 # ─── Done ──────────────────────────────────────────────────────────────────
 hr
-ok "Install complete."
+ok "Install complete ($([[ "$USE_SYSTEMD" == "1" ]] && echo "systemd mode" || echo "PID-file mode"))."
 hr
 printf '\n%s→%s Open %shttp://127.0.0.1:%s/login%s\n' \
   "$c_bold" "$c_reset" "$c_dim" "$WORK_PORT" "$c_reset"
@@ -1083,7 +1125,14 @@ printf '  Bot user:       %s%s%s (auto-created, used by ework-daemon)\n' \
 printf '  Data dir:       %s%s%s\n' "$c_dim" "$DATA_DIR" "$c_reset"
 printf '  Logs:           ework-aio logs web | ework-aio logs daemon\n'
 printf '  Status:         ework-aio status\n'
+printf '  Stop:           ework-aio stop\n'
 printf '  Uninstall:      ework-aio uninstall\n'
+if [[ "$USE_SYSTEMD" != "1" ]]; then
+  hr
+  printf '\n%sPID-file mode note%s (services run via nohup, not systemd)\n' "$c_bold" "$c_reset"
+  printf '  • To enable auto-restart on boot, re-run with: ework-aio install systemd\n'
+  printf '  • Services stop when you kill them (no supervisor). Use ework-aio stop to stop cleanly.\n'
+fi
 hr
 printf '\n%sNext steps (optional config)%s\n' "$c_bold" "$c_reset"
 printf '  • 朗读 (TTS):     %shttp://127.0.0.1:%s/admin/tts%s — needs an OpenAI-compat /audio/speech endpoint\n' \
