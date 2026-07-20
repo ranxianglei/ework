@@ -447,19 +447,25 @@ EOF
   fi
 }
 
-# ctl wraps `systemctl $SCOPENAME` with two hardenings over the bare command:
+# ctl wraps `systemctl $SCOPENAME` with three hardenings over the bare command:
 #   1. If output contains "Unit ... not found", retry once after daemon-reload
 #      — fresh user sessions (no linger, post-ssh-reconnect) often have a stale
 #      unit cache and this is the standard fix.
-#   2. If output mentions bus connection failure, print an actionable hint
-#      instead of letting the raw "No medium found" / "Failed to connect to
-#      bus" message through unchanged.
+#   2. If output mentions any D-Bus / user-bus connection failure, print an
+#      actionable hint. The user-bus daemon emits several variants across
+#      hosts and bash versions ("Failed to connect to bus", "No medium found",
+#      "Failed to get D-Bus connection: Operation not permitted",
+#      "Call to org.freedesktop.DBus ... failed"); we match the common stem
+#      "bus" / "D-Bus" so a new variant can't slip past.
+#   3. ALWAYS return systemctl's real exit code. Previously the trailing
+#      `printf` masked the failure (returning 0) when no pattern matched,
+#      which made every caller's `|| fallback` silently not fire.
 ctl() {
   local out rc
   out="$(systemctl "$SCOPENAME" "$@" 2>&1)"
   rc=$?
   if [[ $rc -ne 0 ]]; then
-    if [[ "$out" == *"Failed to connect to bus"* || "$out" == *"No medium found"* ]]; then
+    if [[ "$out" == *([Bb]us|D-Bus|No medium found)* ]]; then
       cat >&2 <<EOF
 ${c_red}systemctl $SCOPENAME failed to reach the user bus.${c_reset}
   $out
@@ -485,6 +491,7 @@ EOF
     fi
   fi
   printf '%s\n' "$out"
+  return "$rc"
 }
 
 # ─── Config mode: read/change runtime .env keys ─────────────────────────────
