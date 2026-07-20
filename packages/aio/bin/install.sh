@@ -204,7 +204,12 @@ ensure_user_session() {
   if [[ -z "${XDG_RUNTIME_DIR:-}" && -d "$rundir" ]]; then
     export XDG_RUNTIME_DIR="$rundir"
   fi
-  if [[ -z "${DBUS_SESSION_BUS_ADDRESS:-}" && -S "${XDG_RUNTIME_DIR}/bus" ]]; then
+  # ${XDG_RUNTIME_DIR:-} not bare ${XDG_RUNTIME_DIR}: the first if above only
+  # exports when /run/user/$uid exists. On hosts without linger / without any
+  # login session, /run/user/$uid is absent, XDG_RUNTIME_DIR stays unset, and
+  # `set -u` would kill install here before the systemd_reachable() fallback
+  # can route to PID-file mode.
+  if [[ -z "${DBUS_SESSION_BUS_ADDRESS:-}" && -S "${XDG_RUNTIME_DIR:-}/bus" ]]; then
     export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
   fi
 
