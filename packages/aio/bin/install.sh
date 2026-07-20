@@ -38,6 +38,8 @@ BOT_NAME="ework-daemon"
 NO_START=0
 ASSUME_YES=0
 NO_RESTART=0
+AS_USER=""
+ALLOW_ROOT=0
 CFG_ARGS=()
 MODE_ARGS=()
 
@@ -67,6 +69,10 @@ Install options:
   --bot-name <login>             Bot username (default: ework-daemon)
   --no-start                     Install units but don't start services
   --yes                          Skip all prompts (use generated defaults)
+  --as-user <login>              (sudo only) drop priv: re-exec install as <login>
+                                 after enabling linger. Data + opencode + npm
+                                 resolved under that user's HOME.
+  --allow-root                   (sudo only) override default refuse-on-root
 
 Global options:
   --no-restart                   With `config set`: edit .env but skip the restart
@@ -107,11 +113,76 @@ while [[ $# -gt 0 ]]; do
     --no-start) NO_START=1; shift ;;
     --no-restart) NO_RESTART=1; shift ;;
     --yes|-y) ASSUME_YES=1; shift ;;
+    --as-user) AS_USER="$2"; shift 2 ;;
+    --allow-root) ALLOW_ROOT=1; shift ;;
     -h|--help) usage; exit 0 ;;
     --*) die "Unknown option: $1 (try --help)" ;;
     *) MODE_ARGS+=("$1"); shift ;;
   esac
 done
+
+# ─── Root guard: refuse install as root by default ──────────────────────────
+# Running install as root puts data under /root/.local/share/ework-aio, bakes
+# root-only paths into systemd units, and looks for opencode in root's PATH
+# (usually missing). The right answer is almost always: don't use sudo.
+# --as-user re-execs the script as the named user after enabling linger.
+# --allow-root is an explicit acknowledgement that you've set up root's
+# environment (opencode installed, npm prefix configured, etc.).
+if [[ "$MODE" == "install" && "${EUID:-$(id -u)}" == "0" ]]; then
+  if [[ -n "$AS_USER" ]]; then
+    AS_USER_HOME="$(getent passwd "$AS_USER" 2>/dev/null | cut -d: -f6 || true)"
+    AS_USER_UID="$(getent passwd "$AS_USER" 2>/dev/null | cut -d: -f3 || true)"
+    if [[ -z "$AS_USER_HOME" || -z "$AS_USER_UID" ]]; then
+      die "--as-user: user '$AS_USER' not found in passwd database"
+    fi
+    if [[ "$AS_USER_UID" == "0" ]]; then
+      die "--as-user: target user is root — just use --allow-root instead"
+    fi
+    log "Enable linger for '$AS_USER' so --user services survive logout..."
+    loginctl enable-linger "$AS_USER" \
+      || die "Failed to enable linger for '$AS_USER'. Try: sudo loginctl enable-linger $AS_USER"
+    ok "Linger enabled for '$AS_USER'"
+    log "Re-execing as '$AS_USER' (HOME=$AS_USER_HOME)..."
+    # Strip --as-user <name> from argv, preserve everything else.
+    new_args=()
+    skip=0
+    for a in "$@"; do
+      if [[ "$skip" == "1" ]]; then skip=0; continue; fi
+      if [[ "$a" == "--as-user" ]]; then skip=1; continue; fi
+      new_args+=("$a")
+    done
+    # Resolve our own path (can't rely on $0 after sudo changes PATH).
+    SELF="$(command -v ework-aio 2>/dev/null || true)"
+    [[ -n "$SELF" ]] || SELF="${BASH_SOURCE[0]:-$0}"
+    exec sudo -u "$AS_USER" --login -- "$SELF" "${new_args[@]}"
+  fi
+  if [[ "$ALLOW_ROOT" != "1" ]]; then
+    cat >&2 <<EOF
+${c_red}ework-aio install refuses to run as root by default.${c_reset}
+
+Why this matters:
+  - Data goes under /root/.local/share/ework-aio (unreadable by other users)
+  - opencode is searched in root's PATH (usually not installed there)
+  - npm packages install to system-wide prefix owned by root
+  - systemd units bake root-only paths that other users can't run
+
+${c_bold}Option A (recommended):${c_reset} run as a regular user.
+  npm config set prefix '~/.local'        # one-time, makes -g user-writable
+  npm install -g ework-aio                # no sudo needed
+  ework-aio install                       # uses --user systemd scope
+
+${c_bold}Option B:${c_reset} install with sudo but target a regular user.
+  sudo ework-aio install --as-user $(logname 2>/dev/null || echo '<your-user>')
+  # All data + opencode + npm resolved under that user's HOME.
+  # systemd --user scope (linger auto-enabled for the target user).
+
+${c_bold}Option C:${c_reset} really install as root (you've set up root's env).
+  sudo ework-aio install --allow-root
+EOF
+    exit 1
+  fi
+  warn "Running install as root with --allow-root — data will live under /root."
+fi
 
 # Resolve scope: default by uid
 if [[ "$SCOPENAME" == "--user" && "${EUID:-$(id -u)}" == "0" ]]; then
