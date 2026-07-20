@@ -107,6 +107,14 @@ export async function configSet(
       `Key '${key}' is a secret — use 'rm .env && ework-aio install' to regenerate.`,
     );
   }
+  // .env is a line-oriented format; a value containing a newline would be
+  // parsed as two entries by parseEnvFile. Reject it outright so a stray
+  // shell expansion (e.g. $'alice\nWORK_TOKEN=evil') can't inject keys.
+  if (/[\r\n]/.test(value)) {
+    throw new InstallError(
+      `Value for ${key} contains a newline — multi-line values are not allowed in .env (got ${value.length} chars)`,
+    );
+  }
 
   const paths = resolvePaths({ dataDir: opts.dataDir, scope: opts.scope, useSystemd: opts.useSystemd });
   const envFile = envFileForService(entry.service, paths);
