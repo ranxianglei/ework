@@ -201,8 +201,7 @@ export async function runInstall(
   }
   if (!webStarted && opts.noStart) {
     logger.warn(`--no-start: skipping ework-web startup (write .env only)`);
-  }
-  if (!webStarted && systemdOk) {
+  } else if (!webStarted && systemdOk) {
     try {
       await startUnit("ework-web", { scope: opts.scope });
       webStarted = true;
@@ -222,7 +221,7 @@ export async function runInstall(
       systemdOk = false;
     }
   }
-  if (!webStarted) {
+  if (!webStarted && !opts.noStart) {
     logger.log(`starting ework-web (PID-file mode)...`);
     const env = await loadEnvIntoProcess(paths.webEnvFile);
     const { pid } = await startProcess({

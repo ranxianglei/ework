@@ -128,7 +128,7 @@ describe("startProcess + stopProcess (real subprocess)", () => {
   });
 
   it("throws PidFileError when pidfile missing", async () => {
-    expect(stopProcess(path.join(tmpDir, "never-existed.pid"))).rejects.toThrow(PidFileError);
+    await expect(stopProcess(path.join(tmpDir, "never-existed.pid"))).rejects.toThrow(PidFileError);
   });
 
   it("falls back to SIGKILL after grace period", async () => {

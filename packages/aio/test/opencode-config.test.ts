@@ -38,17 +38,17 @@ describe("readConfig", () => {
 
   it("throws typed InstallError on malformed JSON", async () => {
     await fs.promises.writeFile(configPath, "{not valid json");
-    expect(async () => { await readConfig(configPath); }).toThrow(/malformed JSON/);
+    await expect(readConfig(configPath)).rejects.toThrow(/malformed JSON/);
   });
 
   it("throws typed InstallError on top-level array", async () => {
     await fs.promises.writeFile(configPath, "[1, 2, 3]");
-    expect(async () => { await readConfig(configPath); }).toThrow(/JSON object at the top level/);
+    await expect(readConfig(configPath)).rejects.toThrow(/JSON object at the top level/);
   });
 
   it("throws typed InstallError on top-level null", async () => {
     await fs.promises.writeFile(configPath, "null");
-    expect(async () => { await readConfig(configPath); }).toThrow(/JSON object at the top level/);
+    await expect(readConfig(configPath)).rejects.toThrow(/JSON object at the top level/);
   });
 });
 

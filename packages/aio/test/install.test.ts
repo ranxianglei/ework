@@ -306,4 +306,76 @@ WORK_DAEMON_WEBHOOK_SECRET=somesecret
     await expect(runInstall(opts, silentLogger(), { fetchImpl: makeMockFetch(state) }))
       .rejects.toThrow(/ework-web binary not found/);
   });
+
+  test("bootstrap failure: create-user returns 5xx → InstallError (B-5)", async () => {
+    // Override /admin/users/create to return 500.
+    state.routes.set("POST http://127.0.0.1:3002/admin/users/create", async () => {
+      return new Response("internal error", { status: 500 });
+    });
+    await expect(runInstall(opts, silentLogger(), { fetchImpl: makeMockFetch(state) }))
+      .rejects.toThrow(/install completed with degraded state/);
+
+    // Cleanup
+    try {
+      const webPid = parseInt(await Bun.file(path.join(tmpDir, "run", "web.pid")).text(), 10);
+      process.kill(webPid, "SIGKILL");
+    } catch { /* already gone */ }
+    try {
+      const daemonPid = parseInt(await Bun.file(path.join(tmpDir, "run", "daemon.pid")).text(), 10);
+      process.kill(daemonPid, "SIGKILL");
+    } catch { /* already gone */ }
+  });
+
+  test("bootstrap failure: PAT regex misses → InstallError (B-5)", async () => {
+    // /me/tokens/create returns HTML WITHOUT the expected <input id="t">.
+    state.routes.set("POST http://127.0.0.1:3002/me/tokens/create", async () => {
+      return new Response("<html>no token input here</html>", { status: 200, headers: { "Content-Type": "text/html" } });
+    });
+    await expect(runInstall(opts, silentLogger(), { fetchImpl: makeMockFetch(state) }))
+      .rejects.toThrow(/install completed with degraded state/);
+
+    // Cleanup
+    try {
+      const webPid = parseInt(await Bun.file(path.join(tmpDir, "run", "web.pid")).text(), 10);
+      process.kill(webPid, "SIGKILL");
+    } catch { /* already gone */ }
+    try {
+      const daemonPid = parseInt(await Bun.file(path.join(tmpDir, "run", "daemon.pid")).text(), 10);
+      process.kill(daemonPid, "SIGKILL");
+    } catch { /* already gone */ }
+  });
+
+  test("--no-start skips service startup entirely (B-3)", async () => {
+    const noStartOpts = { ...opts, noStart: true };
+    const result = await runInstall(noStartOpts, silentLogger(), { fetchImpl: makeMockFetch(state) });
+
+    expect(result.webStarted).toBe(false);
+    expect(result.daemonStarted).toBe(false);
+    expect(result.botBootstrapped).toBe(false);
+    expect(result.botToken).toBe("");
+
+    // .env files are still written.
+    expect(await Bun.file(path.join(tmpDir, "ework-web", ".env")).text()).toContain("WORK_PORT=3002");
+    expect(await Bun.file(path.join(tmpDir, "ework-daemon", ".env")).text()).toContain("DAEMON_PORT=3101");
+
+    // No PID files (services weren't started).
+    expect(fs.existsSync(path.join(tmpDir, "run", "web.pid"))).toBe(false);
+    expect(fs.existsSync(path.join(tmpDir, "run", "daemon.pid"))).toBe(false);
+  });
+
+  test("--bot-name other-bot uses a separate token file (B-6)", async () => {
+    const opts2 = { ...opts, botName: "other-bot" };
+    const result = await runInstall(opts2, silentLogger(), { fetchImpl: makeMockFetch(state) });
+
+    expect(result.botName).toBe("other-bot");
+    // bot-token file for non-default name should include the name suffix.
+    expect(fs.existsSync(path.join(tmpDir, "bot-token.other-bot"))).toBe(true);
+    expect(fs.existsSync(path.join(tmpDir, "bot-token"))).toBe(false);
+
+    // Cleanup
+    const webPid = parseInt(await Bun.file(path.join(tmpDir, "run", "web.pid")).text(), 10);
+    const daemonPid = parseInt(await Bun.file(path.join(tmpDir, "run", "daemon.pid")).text(), 10);
+    try { process.kill(webPid, "SIGKILL"); } catch { /* already gone */ }
+    try { process.kill(daemonPid, "SIGKILL"); } catch { /* already gone */ }
+  });
 });
