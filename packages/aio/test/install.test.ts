@@ -71,6 +71,7 @@ function baseOpts(tmpDir: string): GlobalOptions {
     assumeYes: true,
     allowRoot: false,
     noRestart: false,
+    noStart: false,
     dataDir: tmpDir,
   };
 }

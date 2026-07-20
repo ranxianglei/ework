@@ -23,6 +23,7 @@ export interface GlobalOptions {
   allowRoot: boolean;          // --allow-root
   asUser?: string;             // --as-user <login> (re-exec target)
   noRestart: boolean;          // --no-restart (config set)
+  noStart: boolean;            // --no-start (install)
   // Optional path overrides.
   dataDir?: string;            // --data-dir
 }

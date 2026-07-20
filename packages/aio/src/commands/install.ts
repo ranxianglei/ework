@@ -34,6 +34,7 @@ import {
 } from "../systemd.ts";
 import { ensurePluginInFile } from "../opencode-config.ts";
 import type { GlobalOptions } from "../types.ts";
+import { DEFAULTS } from "../types.ts";
 
 export interface InstallOutcome {
   mode: "pidfile" | "systemd";
@@ -142,6 +143,27 @@ export async function runInstall(
     logger.ok(`web .env up to date`);
   }
 
+  // B-4: --port / --daemon-port only apply to FRESH installs (forward-fill
+  // never overwrites). If the user passed --port but .env already has a
+  // different WORK_PORT, warn — the value didn't take effect. Use
+  // `config set WORK_PORT <N>` to change a running install's port.
+  if (!webEnvResult.created) {
+    const existingWorkPort = await readEnvKey(paths.webEnvFile, "WORK_PORT");
+    if (existingWorkPort && parseInt(existingWorkPort, 10) !== opts.workPort) {
+      logger.warn(
+        `--port ${opts.workPort} ignored: existing .env has WORK_PORT=${existingWorkPort}. ` +
+        `Use 'ework-aio config set WORK_PORT ${opts.workPort}' to change it.`,
+      );
+    }
+    const existingDaemonPort = await readEnvKey(paths.daemonEnvFile, "DAEMON_PORT");
+    if (existingDaemonPort && parseInt(existingDaemonPort, 10) !== opts.daemonPort) {
+      logger.warn(
+        `--daemon-port ${opts.daemonPort} ignored: existing .env has DAEMON_PORT=${existingDaemonPort}. ` +
+        `Use 'ework-aio config set DAEMON_PORT ${opts.daemonPort}' to change it.`,
+      );
+    }
+  }
+
   // 6. (Systemd only) Write unit, daemon-reload, enable.
   let systemdOk = false;
   if (opts.useSystemd && paths.webUnitFile) {
@@ -168,11 +190,17 @@ export async function runInstall(
   }
 
   // 7. Start ework-web (PID-file mode, unless systemd already brought it up).
+  // --no-start skips service startup entirely; .env is written but the user
+  // runs `ework-aio start` themselves later. Bot bootstrap is also skipped
+  // (web isn't reachable).
   let webStarted = false;
   const webPidExisting = await readPidFile(paths.webPidFile);
   if (webPidExisting !== null && isProcessRunning(webPidExisting)) {
     webStarted = true;
     logger.log(`ework-web already running (pid ${webPidExisting})`);
+  }
+  if (!webStarted && opts.noStart) {
+    logger.warn(`--no-start: skipping ework-web startup (write .env only)`);
   }
   if (!webStarted && systemdOk) {
     try {
@@ -209,12 +237,22 @@ export async function runInstall(
     webStarted = true;
   }
 
-  // 8. Wait for ework-web to answer on its HTTP port.
+  // 8. Wait for ework-web to answer on its HTTP port. Skipped under --no-start.
   const baseUrl = `http://127.0.0.1:${opts.workPort}`;
-  await pollHttpUp(baseUrl + "/login", hooks.fetchImpl);
-  logger.ok(`ework-web listening on :${opts.workPort}`);
+  if (webStarted) {
+    try {
+      await pollHttpUp(baseUrl + "/login", hooks.fetchImpl);
+      logger.ok(`ework-web listening on :${opts.workPort}`);
+    } catch (err) {
+      if (!opts.noStart) throw err;
+      logger.warn(`ework-web not reachable (start failed under --no-start): ${(err as Error).message}`);
+    }
+  }
 
   // 9. Bootstrap bot user + PAT (idempotent — reuse saved token if present).
+  // Skipped under --no-start (no point — web isn't reachable to drive the API).
+  // botTokenFile is per-botName so changing --bot-name invalidates the cache
+  // (otherwise we'd reuse a PAT minted for a different bot user).
   const workToken = await readEnvKey(paths.webEnvFile, "WORK_TOKEN");
   const cookieSecret = await readEnvKey(paths.webEnvFile, "WORK_COOKIE_SECRET");
   if (!workToken || !cookieSecret) {
@@ -223,17 +261,20 @@ export async function runInstall(
     );
   }
 
-  const botTokenFile = paths.botTokenFile;
+  const botTokenFile = opts.botName === DEFAULTS.botName
+    ? paths.botTokenFile
+    : `${paths.botTokenFile}.${opts.botName}`;
   let botToken = "";
   let botBootstrapped = false;
-  if (exists(botTokenFile)) {
+  let bootstrapFailed = false;
+  if (webStarted && exists(botTokenFile)) {
     botToken = (await fs.promises.readFile(botTokenFile, "utf8")).trim();
     if (botToken) {
       logger.ok(`reusing saved bot token from ${botTokenFile}`);
       botBootstrapped = true;
     }
   }
-  if (!botBootstrapped) {
+  if (webStarted && !botBootstrapped) {
     try {
       botToken = await bootstrapBot({
         baseUrl,
@@ -245,9 +286,14 @@ export async function runInstall(
       logger.ok(`bot PAT saved to ${botTokenFile}`);
       botBootstrapped = true;
     } catch (err) {
-      logger.warn(`bot bootstrap failed: ${(err as Error).message}`);
-      logger.warn(`daemon will start with empty token — re-run install to retry`);
+      // B-5: surface this as a real failure, not just a warn. The daemon
+      // would silently fail every authenticated call otherwise.
+      logger.error(`bot bootstrap failed: ${(err as Error).message}`);
+      logger.error(`daemon .env will have empty BOT_TOKEN — re-run install to retry`);
+      bootstrapFailed = true;
     }
+  } else if (!webStarted) {
+    logger.warn(`--no-start: skipping bot bootstrap (web not running)`);
   }
 
   // 10. Write daemon .env (forward-fill, includes BOT_TOKEN if known).
@@ -265,7 +311,7 @@ export async function runInstall(
   }
 
   // 11. (Systemd only) Write + install daemon unit.
-  if (opts.useSystemd && paths.daemonUnitFile && systemdOk) {
+  if (opts.useSystemd && paths.daemonUnitFile && systemdOk && !opts.noStart) {
     const userInfo = os.userInfo();
     const unit = generateUnitFile("ework-daemon", {
       user: userInfo.username,
@@ -295,25 +341,30 @@ export async function runInstall(
   }
 
   // 12. Start ework-daemon (PID-file mode if systemd didn't bring it up).
+  // Skipped under --no-start.
   let daemonStarted = false;
-  const daemonPid = await readPidFile(paths.daemonPidFile);
-  if (daemonPid !== null && isProcessRunning(daemonPid)) {
-    daemonStarted = true;
-    logger.log(`ework-daemon already running (pid ${daemonPid})`);
-  }
-  if (!daemonStarted) {
-    logger.log(`starting ework-daemon (PID-file mode)...`);
-    const env = await loadEnvIntoProcess(paths.daemonEnvFile);
-    const { pid } = await startProcess({
-      cmd: daemonBin,
-      args: [],
-      cwd: paths.daemonDataDir,
-      env,
-      logFile: paths.daemonLogFile,
-      pidFile: paths.daemonPidFile,
-    });
-    logger.ok(`ework-daemon started (pid ${pid}, log ${paths.daemonLogFile})`);
-    daemonStarted = true;
+  if (opts.noStart) {
+    logger.warn(`--no-start: skipping ework-daemon startup`);
+  } else {
+    const daemonPid = await readPidFile(paths.daemonPidFile);
+    if (daemonPid !== null && isProcessRunning(daemonPid)) {
+      daemonStarted = true;
+      logger.log(`ework-daemon already running (pid ${daemonPid})`);
+    }
+    if (!daemonStarted) {
+      logger.log(`starting ework-daemon (PID-file mode)...`);
+      const env = await loadEnvIntoProcess(paths.daemonEnvFile);
+      const { pid } = await startProcess({
+        cmd: daemonBin,
+        args: [],
+        cwd: paths.daemonDataDir,
+        env,
+        logFile: paths.daemonLogFile,
+        pidFile: paths.daemonPidFile,
+      });
+      logger.ok(`ework-daemon started (pid ${pid}, log ${paths.daemonLogFile})`);
+      daemonStarted = true;
+    }
   }
 
   // 13. Register opencode-ework plugin in opencode.json (idempotent).
@@ -337,6 +388,17 @@ export async function runInstall(
     operatorLogin,
     workToken,
   });
+
+  // B-5: bootstrap failure must not masquerade as success. Throw a typed
+  // error so cli.ts main() exits non-zero and the user knows to re-run.
+  if (bootstrapFailed) {
+    throw new InstallError(
+      `install completed with degraded state: bot bootstrap failed. ` +
+      `Services may have started but the daemon will not authenticate. ` +
+      `Re-run 'ework-aio install' to retry.`,
+      2,
+    );
+  }
 
   return {
     mode: opts.useSystemd && systemdOk ? "systemd" : "pidfile",

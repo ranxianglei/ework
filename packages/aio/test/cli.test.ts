@@ -58,7 +58,8 @@ describe("parseArgs: global flags", () => {
   });
 
   test("--no-start", () => {
-    expect(parseArgs(["--no-start"]).noStart).toBe(true);
+    const r = parseArgs(["--no-start"]);
+    expect(r.opts.noStart).toBe(true);
   });
 
   test("--no-restart", () => {

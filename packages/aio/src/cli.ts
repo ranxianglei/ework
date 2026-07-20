@@ -89,7 +89,6 @@ export interface ParsedArgs {
   subcommand: string;
   opts: GlobalOptions;
   positionals: string[];
-  noStart: boolean;
   configArgs: ConfigArgs;
 }
 
@@ -103,6 +102,7 @@ function defaultOpts(): GlobalOptions {
     assumeYes: false,
     allowRoot: false,
     noRestart: false,
+    noStart: false,
   };
 }
 
@@ -113,7 +113,6 @@ export function parseArgs(argv: string[]): ParsedArgs {
   const opts = defaultOpts();
   const positionals: string[] = [];
   const configArgs: ConfigArgs = { subcommand: "list" };
-  let noStart = false;
   let inConfig = false;
   let useSystemdFromPositional = false;
 
@@ -182,7 +181,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     if (a === "--system") { opts.scope = "system"; i++; continue; }
     if (a === "--yes" || a === "-y") { opts.assumeYes = true; i++; continue; }
     if (a === "--allow-root") { opts.allowRoot = true; i++; continue; }
-    if (a === "--no-start") { noStart = true; i++; continue; }
+    if (a === "--no-start") { opts.noStart = true; i++; continue; }
     if (a === "--no-restart") { opts.noRestart = true; i++; continue; }
 
     // Value flags (--flag <value>)
@@ -246,9 +245,17 @@ export function parseArgs(argv: string[]): ParsedArgs {
     opts.scope = "system";
   }
 
+  // S-10: --port and --daemon-port must differ (otherwise both services
+  // fight for the same port and neither binds).
+  if (opts.workPort === opts.daemonPort) {
+    throw new InstallError(
+      `--port and --daemon-port must differ (both are ${opts.workPort})`,
+    );
+  }
+
   const subcommand = positionals[0] ?? "install";
 
-  return { subcommand, opts, positionals, noStart, configArgs };
+  return { subcommand, opts, positionals, configArgs };
 }
 
 function parseServiceTarget(arg: string | undefined): ServiceTarget {
