@@ -19,7 +19,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { Logger, InstallError } from "../log.ts";
 import { resolvePaths } from "../paths.ts";
-import { parseEnvFile } from "../env.ts";
+import { parseEnvFile, patchEnvKey } from "../env.ts";
 import { SECRET_ENV_VARS } from "../config.ts";
 import {
   SETTABLE_KEYS,
@@ -46,31 +46,6 @@ async function readEnvKey(envFile: string, key: string): Promise<string | null> 
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw err;
   }
-}
-
-// patchEnvKey: rewrite a single key in .env, preserving all other lines.
-async function patchEnvKey(envFile: string, key: string, value: string): Promise<void> {
-  await fs.promises.mkdir(path.dirname(envFile), { recursive: true });
-  let content = "";
-  try {
-    content = await Bun.file(envFile).text();
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-  }
-  const lines = content.split(/\r?\n/);
-  let found = false;
-  for (const [i, line] of lines.entries()) {
-    if (line.startsWith(`${key}=`)) {
-      lines[i] = `${key}=${value}`;
-      found = true;
-      break;
-    }
-  }
-  if (!found) {
-    if (lines.length > 0 && lines[lines.length - 1] !== "") lines.push("");
-    lines.push(`${key}=${value}`);
-  }
-  await fs.promises.writeFile(envFile, lines.join("\n") + "\n", { mode: 0o600 });
 }
 
 export async function configList(opts: GlobalOptions, logger: Logger): Promise<void> {

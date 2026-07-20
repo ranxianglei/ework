@@ -170,3 +170,35 @@ export async function ensureEnvFile(opts: EnsureEnvOptions): Promise<{ added: st
   await writeEnvFileAtomic(opts.filePath, body);
   return { added: result.added, created: false };
 }
+
+// patchEnvKey: rewrite a single key in .env, preserving all other lines,
+// then write atomically (temp + rename, mode 0600). Used by config set
+// and install.ts (BOT_TOKEN injection after forward-fill).
+//
+// If the file doesn't exist, it's created with just this key. If the key
+// already exists, its value is replaced in-place. Otherwise the key is
+// appended after the last non-blank line.
+export async function patchEnvKey(envFile: string, key: string, value: string): Promise<void> {
+  let content = "";
+  try {
+    content = await Bun.file(envFile).text();
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  }
+  const lines = content.split(/\r?\n/);
+  let found = false;
+  for (const [i, line] of lines.entries()) {
+    if (line.startsWith(`${key}=`)) {
+      lines[i] = `${key}=${value}`;
+      found = true;
+      break;
+    }
+  }
+  if (!found) {
+    // Trim trailing blank lines, then append.
+    while (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+    if (lines.length > 0) lines.push("");
+    lines.push(`${key}=${value}`);
+  }
+  await writeEnvFileAtomic(envFile, lines.join("\n") + "\n");
+}

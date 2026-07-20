@@ -81,11 +81,6 @@ export class Logger {
   dim(msg: string): string {
     return this.paint(this.stdout, this.stdoutColor, `${C.dim}${msg}${C.reset}`);
   }
-
-  die(msg: string, code: number = 1): never {
-    this.error(msg);
-    process.exit(code);
-  }
 }
 
 export const log = new Logger();
