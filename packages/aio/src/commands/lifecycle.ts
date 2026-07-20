@@ -179,8 +179,14 @@ export async function runStatus(opts: GlobalOptions, logger: Logger): Promise<St
 
     let listening: boolean | null = null;
     if (port !== null) {
+      // web exposes /login; daemon doesn't. Probe a per-service URL so the
+      // status line doesn't lie about the daemon being "not responding"
+      // when it's actually healthy.
+      const probeUrl = svc === "web"
+        ? `http://127.0.0.1:${port}/login`
+        : `http://127.0.0.1:${port}/`;
       try {
-        const r = await fetch(`http://127.0.0.1:${port}/login`, { method: "GET" });
+        const r = await fetch(probeUrl, { method: "GET" });
         listening = r.status < 500;
       } catch {
         listening = false;

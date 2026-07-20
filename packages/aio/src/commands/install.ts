@@ -169,16 +169,29 @@ export async function runInstall(
 
   // 7. Start ework-web (PID-file mode, unless systemd already brought it up).
   let webStarted = false;
-  if (!opts.assumeYes && !opts.useSystemd) {
-    // no-op; PID-file mode default doesn't prompt
+  const webPidExisting = await readPidFile(paths.webPidFile);
+  if (webPidExisting !== null && isProcessRunning(webPidExisting)) {
+    webStarted = true;
+    logger.log(`ework-web already running (pid ${webPidExisting})`);
   }
-  if (systemdOk) {
+  if (!webStarted && systemdOk) {
     try {
       await startUnit("ework-web", { scope: opts.scope });
       webStarted = true;
+      systemdOk = true;
       logger.ok(`started ework-web via systemd`);
     } catch (err) {
       logger.warn(`systemd start failed: ${(err as Error).message}`);
+      logger.warn(`disabling ework-web unit and falling back to PID-file mode`);
+      // Disable the already-enabled unit so it doesn't auto-start on next
+      // boot and fight the PID-file mode process for the port.
+      try {
+        const { disableUnit } = await import("./../systemd.ts");
+        await disableUnit("ework-web", { scope: opts.scope });
+      } catch (disableErr) {
+        logger.warn(`could not disable ework-web unit: ${(disableErr as Error).message}`);
+      }
+      systemdOk = false;
     }
   }
   if (!webStarted) {
@@ -270,7 +283,13 @@ export async function runInstall(
       logger.ok(`started ework-daemon via systemd`);
     } catch (err) {
       logger.warn(`daemon systemd start failed: ${(err as Error).message}`);
-      logger.warn(`falling back to PID-file mode for ework-daemon`);
+      logger.warn(`disabling ework-daemon unit and falling back to PID-file mode`);
+      try {
+        const { disableUnit } = await import("./../systemd.ts");
+        await disableUnit("ework-daemon", { scope: opts.scope });
+      } catch (disableErr) {
+        logger.warn(`could not disable ework-daemon unit: ${(disableErr as Error).message}`);
+      }
       systemdOk = false;
     }
   }
