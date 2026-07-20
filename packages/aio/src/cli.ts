@@ -115,6 +115,11 @@ export function parseArgs(argv: string[]): ParsedArgs {
   const configArgs: ConfigArgs = { subcommand: "list" };
   let inConfig = false;
   let useSystemdFromPositional = false;
+  // S-1: track if scope was explicitly chosen. Under EUID=0 we used to
+  // silently flip default "user" → "system"; that hid the fact that root
+  // can't run user-scope systemd (XDG_RUNTIME_DIR unset). Now: defaulted
+  // scope still flips (back-compat), explicit --user under root throws.
+  let scopeExplicit = false;
 
   let i = 0;
   while (i < argv.length) {
@@ -148,10 +153,17 @@ export function parseArgs(argv: string[]): ParsedArgs {
           const value = peek(i);
           if (value !== undefined) { configArgs.value = value; i++; }
         } else if (sub === "restart") {
-          const t = peek(i);
-          if (t === "web" || t === "daemon" || t === "both") {
-            configArgs.target = t;
+          // Distinguish "no target given" (default to both) from "typo
+          // target given" (reject). Without this, `config restart bogus`
+          // silently restarts both services — a real foot-gun in production.
+          const next = argv[i];
+          if (next === "web" || next === "daemon" || next === "both") {
+            configArgs.target = next;
             i++;
+          } else if (next !== undefined && !next.startsWith("-")) {
+            throw new InstallError(
+              `config restart: invalid target '${next}'. Expected: web | daemon | both`,
+            );
           }
         }
       } else {
@@ -177,8 +189,8 @@ export function parseArgs(argv: string[]): ParsedArgs {
       i++;
       continue;
     }
-    if (a === "--user") { opts.scope = "user"; i++; continue; }
-    if (a === "--system") { opts.scope = "system"; i++; continue; }
+    if (a === "--user") { opts.scope = "user"; scopeExplicit = true; i++; continue; }
+    if (a === "--system") { opts.scope = "system"; scopeExplicit = true; i++; continue; }
     if (a === "--yes" || a === "-y") { opts.assumeYes = true; i++; continue; }
     if (a === "--allow-root") { opts.allowRoot = true; i++; continue; }
     if (a === "--no-start") { opts.noStart = true; i++; continue; }
@@ -240,8 +252,16 @@ export function parseArgs(argv: string[]): ParsedArgs {
 
   if (useSystemdFromPositional) opts.useSystemd = true;
 
-  // Default scope based on EUID if not set explicitly.
+  // S-1: explicit --user under root would silently fail later (systemd
+  // user-scope needs XDG_RUNTIME_DIR which root doesn't have). Default
+  // scope (no flag) still flips to "system" under root for back-compat.
   if (process.getuid && process.getuid() === 0 && opts.scope === "user") {
+    if (scopeExplicit) {
+      throw new InstallError(
+        "--user cannot be used when running as root: user-scope systemd needs XDG_RUNTIME_DIR which root does not have. " +
+        "Either drop privileges (run as a regular user) or use --system.",
+      );
+    }
     opts.scope = "system";
   }
 

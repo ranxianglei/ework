@@ -112,6 +112,47 @@ describe('main(): dispatch + exit codes', () => {
     expect(code).toBe(0);
   });
 
+  test("'config restart bogus' exits 1 — typo target must NOT silently restart both (G6)", async () => {
+    const code = await main(["config", "restart", "bogus"], silentLogger());
+    expect(code).toBe(1);
+  });
+
+  test("'config restart web' parses (G6 — valid target still accepted)", async () => {
+    const r = parseArgs(["config", "restart", "web"]);
+    expect(r.configArgs.subcommand).toBe("restart");
+    expect(r.configArgs.target).toBe("web");
+  });
+
+  test("'config restart' (no target) still defaults to both (G6 back-compat)", async () => {
+    const r = parseArgs(["config", "restart"]);
+    expect(r.configArgs.subcommand).toBe("restart");
+    expect(r.configArgs.target).toBeUndefined();
+  });
+
+  test("'config restart --no-restart' (target is a flag) leaves target undefined (G6 back-compat)", async () => {
+    const r = parseArgs(["config", "restart", "--no-restart"]);
+    expect(r.configArgs.subcommand).toBe("restart");
+    expect(r.configArgs.target).toBeUndefined();
+  });
+
+  test("'config set WORK_OPERATOR_LOGIN' with newline value exits 1 (G18 env-injection)", async () => {
+    const webDataDir = path.join(tmpDir, ".local", "share", "ework-aio", "ework-web");
+    await fs.promises.mkdir(webDataDir, { recursive: true });
+    const envPath = path.join(webDataDir, ".env");
+    await fs.promises.writeFile(envPath, "WORK_OPERATOR_LOGIN=alice\n", { mode: 0o600 });
+    // Attack shape: $'alice\nWORK_TOKEN=evil' becomes a single argv element
+    // containing a newline. Without rejection, patchEnvKey would write two
+    // lines and parseEnvFile would surface the injected WORK_TOKEN.
+    const code = await main(
+      ["config", "set", "WORK_OPERATOR_LOGIN", "alice\nWORK_TOKEN=evil"],
+      silentLogger(),
+    );
+    expect(code).toBe(1);
+    const after = await fs.promises.readFile(envPath, "utf8");
+    expect(after).toBe("WORK_OPERATOR_LOGIN=alice\n");
+    expect(after).not.toContain("evil");
+  });
+
   test("'status' / 'ps' exit 0 even with no services running", async () => {
     const code1 = await main(["status"], silentLogger());
     expect(code1).toBe(0);

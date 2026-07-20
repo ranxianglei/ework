@@ -2,7 +2,7 @@
 // mutation, no command execution. main() dispatch is exercised by the
 // integration test in install.test.ts (with mocked commands).
 
-import { test, expect, describe } from "bun:test";
+import { test, expect, describe, beforeEach, afterEach } from "bun:test";
 import { parseArgs } from "../src/cli.ts";
 
 describe("parseArgs: subcommand detection", () => {
@@ -145,10 +145,11 @@ describe("parseArgs: config subcommand", () => {
     expect(r.configArgs.target).toBeUndefined();
   });
 
-  test("config restart with invalid target → target undefined", () => {
-    // Invalid target is silently dropped here; lifecycle parses at call time.
-    const r = parseArgs(["config", "restart", "bogus"]);
-    expect(r.configArgs.target).toBeUndefined();
+  test("config restart with invalid target → throws InstallError (G6)", () => {
+    // G6: invalid target must NOT silently default to "both" — that would
+    // restart both services in production on a typo.
+    expect(() => parseArgs(["config", "restart", "bogus"]))
+      .toThrow(/config restart: invalid target 'bogus'/);
   });
 
   test("config unknown subcommand → help", () => {
@@ -202,5 +203,45 @@ describe("parseArgs: combination cases", () => {
     const r = parseArgs(["--system", "install"]);
     expect(r.opts.scope).toBe("system");
     expect(r.subcommand).toBe("install");
+  });
+});
+
+describe("parseArgs: scope under root (S-1)", () => {
+  // S-1: explicit --user under root used to silently flip to --system,
+  // hiding the fact that user-scope systemd can't work for root
+  // (XDG_RUNTIME_DIR unset). Now it throws. Default scope (no flag)
+  // still flips under root for back-compat.
+  let originalGetuid: typeof process.getuid | undefined;
+
+  beforeEach(() => {
+    originalGetuid = process.getuid;
+    Object.defineProperty(process, "getuid", {
+      value: () => 0,
+      configurable: true,
+    });
+  });
+
+  afterEach(() => {
+    if (originalGetuid !== undefined) {
+      Object.defineProperty(process, "getuid", {
+        value: originalGetuid,
+        configurable: true,
+      });
+    }
+  });
+
+  test("explicit --user under root throws (S-1)", () => {
+    expect(() => parseArgs(["install", "systemd", "--user"]))
+      .toThrow(/--user cannot be used when running as root/);
+  });
+
+  test("default scope under root silently flips to system (back-compat)", () => {
+    const r = parseArgs(["install", "systemd"]);
+    expect(r.opts.scope).toBe("system");
+  });
+
+  test("explicit --system under root is honored", () => {
+    const r = parseArgs(["install", "systemd", "--system"]);
+    expect(r.opts.scope).toBe("system");
   });
 });
