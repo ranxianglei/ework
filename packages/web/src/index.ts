@@ -89,6 +89,10 @@ const cfg: Config = loadConfig();
 const opencode = new OpencodeClient(cfg);
 
 function autoWireDaemon(projectId: number, origin: string): void {
+  if (!cfg.autowireActive) {
+    log.info("autoWireDaemon: skipped (WORK_AUTOWIRE_ACTIVE=false)", { projectId });
+    return;
+  }
   const botLogin = cfg.daemonBotLogin.trim();
   const hookUrl = cfg.daemonWebhookUrl.trim();
   if (botLogin) {

@@ -78,6 +78,8 @@ export const configSchema = z.object({
   daemonBotLogin: z.string().default(""),
   daemonWebhookUrl: z.string().default(""),
   daemonWebhookSecret: z.string().default(""),
+  autowireActive: z.coerce.boolean().default(true),
+  webhookMaxConcurrent: z.coerce.number().int().min(1).max(64).default(6),
 });
 
 export type Config = z.infer<typeof configSchema>;
@@ -160,6 +162,8 @@ export function loadConfig(): Config {
     daemonBotLogin: process.env.WORK_DAEMON_BOT_LOGIN ?? "",
     daemonWebhookUrl: process.env.WORK_DAEMON_WEBHOOK_URL ?? "",
     daemonWebhookSecret: process.env.WORK_DAEMON_WEBHOOK_SECRET ?? "",
+    autowireActive: process.env.WORK_AUTOWIRE_ACTIVE !== "false",
+    webhookMaxConcurrent: Number(process.env.WORK_WEBHOOK_MAX_CONCURRENT ?? "6"),
   });
 }
 
