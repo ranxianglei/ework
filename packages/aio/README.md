@@ -48,7 +48,8 @@ The install command checks for these and aborts with a hint if any are missing:
 | `opencode`  | 1.14    | always                                    | https://opencode.ai                  |
 | `npm`       | any     | always                                    | ships with bun or node               |
 | `systemctl` | any     | only `install systemd` (not default)      | systemd-based Linux                  |
-| `openssl`/`curl`/`jq`/`awk` | any | always                       | your distro package manager          |
+
+Everything else (HTTP requests, AES/HMAC, JSON parsing, env-file editing) is done in-process via Bun — no `curl`/`openssl`/`jq`/`awk` needed.
 
 ### Install variants
 
@@ -101,7 +102,7 @@ Keeping these in a separate, explicitly-invoked step is intentional:
 
 ## What it does
 
-1. **Verifies prerequisites** (bun, npm, opencode, systemctl, openssl, curl, jq).
+1. **Verifies prerequisites** (bun, npm, opencode; systemctl only if `install systemd`).
 2. **Installs the 3 npm packages** globally (if not already present).
 3. **Generates `.env`** with random tokens at `~/.local/share/ework-aio/{ework-web,ework-daemon}/.env` (preserved across re-runs).
 4. **Writes systemd units** (`ework-web.service`, `ework-daemon.service`) — user-level by default, system-level when run as root.
@@ -116,7 +117,7 @@ Keeping these in a separate, explicitly-invoked step is intentional:
 ```
 ework-aio install [options]    Install or upgrade the stack
 ework-aio uninstall            Stop services and remove units (data preserved)
-ework-aio status               Show service status (systemd mode)
+ework-aio status               Show service status (works in PID-file and systemd mode)
 ework-aio logs [web|daemon]    Tail logs
 ework-aio env                  Print key paths (no secrets)
 ework-aio config <subcommand>  Read / change runtime .env keys
@@ -127,24 +128,25 @@ ework-aio config <subcommand>  Read / change runtime .env keys
   config restart <web|daemon|both>  Restart one or both services
 
 # PID-file mode (no systemd required — see below)
-ework-aio start [web|daemon|both] [--foreground]  Start services in background
-ework-aio stop [web|daemon|both]                  Stop services (SIGTERM, 5s, SIGKILL)
-ework-aio restart [web|daemon|both]               Stop + start
-ework-aio ps                                       Show PID-file mode status
+ework-aio start [web|daemon|both]        Start services in background (detached)
+ework-aio stop [web|daemon|both]         Stop services (SIGTERM, 5s, SIGKILL)
+ework-aio restart [web|daemon|both]      Stop + start
+ework-aio ps                             Show PID-file mode status
 ```
 
 ### Install options
 
-| Flag                    | Default                              | Description                                |
-| ----------------------- | ------------------------------------ | ------------------------------------------ |
-| `--user`                | (auto: `--user` unless EUID=0)       | Use `systemctl --user`                     |
-| `--system`              | (auto: `--system` if EUID=0)         | Use `systemctl` (system-level, needs root) |
-| `--data-dir <path>`     | `~/.local/share/ework-aio`           | Override data root                         |
-| `--port <n>`            | `3002`                               | ework-web port                             |
-| `--daemon-port <n>`     | `3101`                               | ework-daemon port                          |
-| `--bot-name <login>`    | `ework-daemon`                       | Bot username in ework-web                  |
-| `--no-start`            | (off)                                | Install units but don't start              |
-| `--yes`                 | (off)                                | Skip prompts (use generated defaults)      |
+| Flag                    | Default                              | Description                                                       |
+| ----------------------- | ------------------------------------ | ----------------------------------------------------------------- |
+| `--user`                | default when EUID≠0                  | Use `systemctl --user` (only with `install systemd` subcommand)  |
+| `--system`              | default when EUID=0                  | Use `systemctl` system-level (only with `install systemd`, sudo)  |
+| `--data-dir <path>`     | `~/.local/share/ework-aio`           | Override data root                                                |
+| `--port <n>`            | `3002`                               | ework-web port                                                    |
+| `--daemon-port <n>`     | `3101`                               | ework-daemon port                                                 |
+| `--bot-name <login>`    | `ework-daemon`                       | Bot username in ework-web                                         |
+| `--no-start`            | (off)                                | Install but don't start services                                  |
+| `--yes` / `-y`          | (off)                                | Skip prompts (use generated defaults)                             |
+| `--as-user <login>`     | (off)                                | **sudo only:** drop privileges — re-exec install as `<login>`     |
 
 ## File layout
 
@@ -258,15 +260,14 @@ PID-file mode writes per-service PID + log under `~/.local/share/ework-aio/run/`
 ework-aio install --no-start
 
 # Then control with PID-file mode:
-ework-aio start                # start web + daemon in background
+ework-aio start                # start web + daemon in background (detached)
 ework-aio start web            # just web
-ework-aio start daemon --foreground   # run in current terminal
 ework-aio stop                 # SIGTERM, 5s grace, SIGKILL if needed
 ework-aio restart web          # stop + start
 ework-aio ps                   # show PID + log path for each service
 ```
 
-Override the data dir with `EWORK_AIO_DATA_DIR=/path ework-aio start`.
+Override the data dir with `ework-aio start --data-dir /path` (or pass `--data-dir` to `install`).
 
 **Notes**:
 - `install` (with `--no-start`) is still required once to scaffold `.env` and the data directory. The systemd units it writes are inert when nothing manages them.
