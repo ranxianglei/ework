@@ -39,6 +39,7 @@ NO_START=0
 ASSUME_YES=0
 NO_RESTART=0
 CFG_ARGS=()
+MODE_ARGS=()
 
 usage() {
   cat <<'EOF'
@@ -80,10 +81,19 @@ while [[ $# -gt 0 ]]; do
       MODE="config"
       shift
       # Consume remaining args as config subcommand + its positionals.
+      # Global flags (--data-dir, --user, --system, etc.) are still
+      # respected here so `config set K V --data-dir X` works as expected.
       while [[ $# -gt 0 ]]; do
         case "$1" in
           --no-restart) NO_RESTART=1; shift ;;
           -h|--help) CFG_ARGS=("help"); shift ;;
+          --user)   SCOPENAME="--user"; shift ;;
+          --system) SCOPENAME="--system"; shift ;;
+          --data-dir) DATA_DIR="$2"; shift 2 ;;
+          --port)   WORK_PORT="$2"; shift 2 ;;
+          --daemon-port) DAEMON_PORT="$2"; shift 2 ;;
+          --bot-name) BOT_NAME="$2"; shift 2 ;;
+          --yes|-y) ASSUME_YES=1; shift ;;
           *) CFG_ARGS+=("$1"); shift ;;
         esac
       done
@@ -98,7 +108,8 @@ while [[ $# -gt 0 ]]; do
     --no-restart) NO_RESTART=1; shift ;;
     --yes|-y) ASSUME_YES=1; shift ;;
     -h|--help) usage; exit 0 ;;
-    *) die "Unknown argument: $1 (try --help)" ;;
+    --*) die "Unknown option: $1 (try --help)" ;;
+    *) MODE_ARGS+=("$1"); shift ;;
   esac
 done
 
@@ -144,12 +155,13 @@ ensure_user_session || true   # warn but don't hard-fail — let later steps rep
 need_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1. $2"
 }
-# Commands every mode needs (status/logs/env/config/uninstall all use systemctl).
-need_cmd systemctl  "This installer requires systemd."
 need_cmd awk        "Should be present on any Linux."
 
-# Install-only deps. Other modes work even if these are missing.
+# install needs systemctl (to write unit files + reload). Other modes
+# (status/logs/env/config/uninstall) can fall back to PID-file mode via
+# the 'ework-aio' dispatcher if systemd is unreachable on this host.
 if [[ "$MODE" == "install" ]]; then
+  need_cmd systemctl  "Install requires systemd. For hosts without systemd, run 'npm install -g ework-aio' and use 'ework-aio start' directly (PID-file mode)."
   need_cmd bun        "Install from https://bun.sh"
   need_cmd npm        "Install Node.js or Bun (ships npm)"
   need_cmd opencode   "Install from https://opencode.ai"
@@ -157,6 +169,23 @@ if [[ "$MODE" == "install" ]]; then
   need_cmd curl       "Install curl."
   need_cmd jq         "Install jq (for opencode.json merge)."
 fi
+
+# EWORK_AIO_BIN: always resolvable (used by status/logs/config/uninstall
+# to delegate to PID-file mode operations when systemd is unreachable).
+EWORK_AIO_BIN="$(command -v ework-aio 2>/dev/null || true)"
+[[ -n "$EWORK_AIO_BIN" ]] || EWORK_AIO_BIN="$(npm root -g 2>/dev/null)/ework-aio/bin/ework-aio"
+
+# systemd_reachable: 0 if `systemctl $SCOPENAME` can talk to systemd, 1 if not.
+# Used by status/logs/config/uninstall to decide whether to use systemd
+# (preferred) or fall back to PID-file mode via the ework-aio dispatcher.
+# Hosts where this returns 1: containers without systemd PID 1, polkit
+# redirects under sudo that drop the bus, hosts where the user isn't
+# permissioned for the system bus.
+systemd_reachable() {
+  command -v systemctl >/dev/null 2>&1 || return 1
+  systemctl "$SCOPENAME" is-system-running >/dev/null 2>&1 \
+    || systemctl "$SCOPENAME" list-units --no-pager >/dev/null 2>&1
+}
 
 # Verify the 3 npm packages are reachable. If not, try to install them now.
 ensure_pkg() {
@@ -469,6 +498,19 @@ service_for_key() {
 restart_service() {
   local svc="$1"
   local rc=0
+  if ! systemd_reachable; then
+    log "systemd not reachable — using PID-file mode restart"
+    if [[ "$svc" == "both" ]]; then
+      "$EWORK_AIO_BIN" restart both && ok "Restarted ework-web + ework-daemon (PID-file mode)" || rc=$?
+    else
+      "$EWORK_AIO_BIN" restart "$svc" && ok "Restarted ework-$svc (PID-file mode)" || rc=$?
+    fi
+    if [[ $rc -ne 0 ]]; then
+      warn "PID-file restart of '$svc' failed (exit $rc)."
+      warn "The .env changes are saved; run 'ework-aio restart $svc' manually."
+    fi
+    return $rc
+  fi
   case "$svc" in
     web)    ctl restart ework-web.service    && ok "Restarted ework-web"    || rc=$? ;;
     daemon) ctl restart ework-daemon.service && ok "Restarted ework-daemon" || rc=$? ;;
@@ -622,7 +664,22 @@ config)
   ;;
 
 status)
-  hr; log "ework-aio status ($SCOPENAME)"; hr
+  hr; log "ework-aio status"; hr
+  if ! systemd_reachable; then
+    log "(systemd unreachable — showing PID-file mode status)"
+    "$EWORK_AIO_BIN" ps 2>/dev/null || warn "ework-aio ps failed"
+    hr
+    log "Port listeners:"
+    p=""
+    for p in $(grep -hE '^(WORK_PORT|DAEMON_PORT)=' "$WEB_ENV" "$DAEMON_ENV" 2>/dev/null | cut -d= -f2 | sort -u); do
+      if curl -sf -o /dev/null --max-time 1 "http://127.0.0.1:$p/login" 2>/dev/null; then
+        printf '  :%s  ✓ listening\n' "$p"
+      else
+        printf '  :%s  ✗ not responding\n' "$p"
+      fi
+    done
+    exit 0
+  fi
   ctl is-active ework-web.service    || true
   ctl is-active ework-daemon.service || true
   ctl status --no-pager --lines=0 ework-web.service    2>/dev/null || true
@@ -632,18 +689,34 @@ status)
   ;;
 
 logs)
-  svc="${1:-ework-web.service}"
+  svc="${MODE_ARGS[0]:-ework-web.service}"
   [[ "$svc" == "daemon" || "$svc" == "ework-daemon" ]] && svc="ework-daemon.service"
   [[ "$svc" == "web"     || "$svc" == "ework-web" ]]    && svc="ework-web.service"
+  if ! systemd_reachable; then
+    svc_short="${svc%.service}"
+    svc_short="${svc_short#ework-}"
+    log_file="$DATA_DIR/run/${svc_short}.log"
+    if [[ ! -f "$log_file" ]]; then
+      die "systemd unreachable and no PID-file log at $log_file. Start services with: ework-aio start $svc_short"
+    fi
+    log "(systemd unreachable — tailing PID-file log $log_file)"
+    exec tail -n 200 -f "$log_file"
+  fi
   exec journalctl "$SCOPENAME" -u "$svc" -f
   ;;
 
 uninstall)
   hr; log "Uninstalling ework-aio services (keeping data)"; hr
-  ctl stop    ework-web.service ework-daemon.service 2>/dev/null || true
-  ctl disable ework-web.service ework-daemon.service 2>/dev/null || true
-  rm -f "$UNIT_DIR/ework-web.service" "$UNIT_DIR/ework-daemon.service"
-  ctl daemon-reload
+  "$EWORK_AIO_BIN" stop both 2>/dev/null || true
+  if systemd_reachable; then
+    ctl stop    ework-web.service ework-daemon.service 2>/dev/null || true
+    ctl disable ework-web.service ework-daemon.service 2>/dev/null || true
+    rm -f "$UNIT_DIR/ework-web.service" "$UNIT_DIR/ework-daemon.service"
+    ctl daemon-reload 2>/dev/null || true
+  else
+    log "(systemd unreachable — skipped unit cleanup; PID-file mode services stopped above)"
+    rm -f "$UNIT_DIR/ework-web.service" "$UNIT_DIR/ework-daemon.service" 2>/dev/null || true
+  fi
   ok "Services removed. Data preserved at $DATA_DIR"
   warn "To fully remove: rm -rf $DATA_DIR && npm uninstall -g ework-aio ework-web ework-daemon opencode-ework"
   exit 0
