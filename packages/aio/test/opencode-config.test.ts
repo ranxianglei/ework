@@ -146,6 +146,38 @@ describe("writeConfig + ensurePluginInFile (end-to-end)", () => {
     expect(config.plugins).toEqual(["opencode-ework"]);
   });
 
+  // G32: object-form plugin entry (with opts) must be preserved verbatim
+  // when adding a new plugin. A regression that normalizes object-form to
+  // string-form would silently drop user configuration (plugin opts,
+  // enabled flag, etc).
+  it("preserves object-form plugin entries (with opts) when adding a new plugin (G32)", async () => {
+    await writeConfig(configPath, {
+      plugins: [
+        { name: "existing-plugin", opts: { foo: 1, bar: ["a", "b"] } },
+        { name: "another", enabled: true },
+      ],
+    });
+    const result = await ensurePluginInFile(configPath, "opencode-ework");
+    expect(result.added).toBe(true);
+
+    const { config } = await readConfig(configPath);
+    expect(config.plugins).toHaveLength(3);
+    // Object-form entries preserved exactly (deep equality).
+    expect(config.plugins![0]).toEqual({ name: "existing-plugin", opts: { foo: 1, bar: ["a", "b"] } });
+    expect(config.plugins![1]).toEqual({ name: "another", enabled: true });
+    // New plugin appended.
+    expect(config.plugins![2]).toBe("opencode-ework");
+  });
+
+  it("preserves object-form entry alongside string-form entries", async () => {
+    await writeConfig(configPath, {
+      plugins: ["string-form", { name: "object-form", opts: 42 }],
+    });
+    await ensurePluginInFile(configPath, "new-plugin");
+    const { config } = await readConfig(configPath);
+    expect(config.plugins).toEqual(["string-form", { name: "object-form", opts: 42 }, "new-plugin"]);
+  });
+
   it("writeConfig writes mode 0644", async () => {
     await writeConfig(configPath, { plugins: [] });
     const stat = await fs.promises.stat(configPath);
