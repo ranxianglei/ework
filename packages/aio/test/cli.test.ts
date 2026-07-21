@@ -3,7 +3,7 @@
 // integration test in install.test.ts (with mocked commands).
 
 import { test, expect, describe, beforeEach, afterEach } from "bun:test";
-import { parseArgs } from "../src/cli.ts";
+import { parseArgs, stripAsUserFlag } from "../src/cli.ts";
 
 describe("parseArgs: subcommand detection", () => {
   test("empty argv → default subcommand 'install'", () => {
@@ -203,6 +203,103 @@ describe("parseArgs: combination cases", () => {
     const r = parseArgs(["--system", "install"]);
     expect(r.opts.scope).toBe("system");
     expect(r.subcommand).toBe("install");
+  });
+});
+
+// G1: --flag=value equals form. Unix-conventional alternative to `--flag value`.
+// Without this, users trying `--port=8080` get "Unknown option: --port=8080"
+// and have no hint that space-form is the only accepted syntax.
+describe("parseArgs: --flag=value equals form (G1)", () => {
+  test("--port=8080", () => {
+    expect(parseArgs(["--port=8080"]).opts.workPort).toBe(8080);
+  });
+
+  test("--daemon-port=4000", () => {
+    expect(parseArgs(["--daemon-port=4000"]).opts.daemonPort).toBe(4000);
+  });
+
+  test("--data-dir=/path", () => {
+    expect(parseArgs(["--data-dir=/tmp/x"]).opts.dataDir).toBe("/tmp/x");
+  });
+
+  test("--bot-name=mybot", () => {
+    expect(parseArgs(["--bot-name=mybot"]).opts.botName).toBe("mybot");
+  });
+
+  test("--as-user=alice", () => {
+    expect(parseArgs(["--as-user=alice"]).opts.asUser).toBe("alice");
+  });
+
+  test("--yes=true splits to --yes + positional 'true' (boolean flags ignore =value)", () => {
+    // --yes is a boolean flag; --yes=true normalizes to [--yes, true].
+    // The flag is set, and "true" becomes a positional. Boolean flags
+    // don't consume the value after =.
+    const r = parseArgs(["--yes=true"]);
+    expect(r.opts.assumeYes).toBe(true);
+    expect(r.positionals).toContain("true");
+  });
+
+  test("value with embedded = (URL querystring)", () => {
+    // --data-dir=http://x/?a=b splits on FIRST =, value is "http://x/?a=b"
+    const r = parseArgs(["--data-dir=http://x/?a=b"]);
+    expect(r.opts.dataDir).toBe("http://x/?a=b");
+  });
+
+  test("equals form mixes freely with space form", () => {
+    const r = parseArgs(["install", "systemd", "--port=8080", "--yes", "--data-dir", "/tmp/x"]);
+    expect(r.opts.useSystemd).toBe(true);
+    expect(r.opts.workPort).toBe(8080);
+    expect(r.opts.assumeYes).toBe(true);
+    expect(r.opts.dataDir).toBe("/tmp/x");
+  });
+
+  test("value with leading dashes survives equals form", () => {
+    // --data-dir=--weird: value after the first = is "--weird", which the
+    // --data-dir branch consumes as its value verbatim.
+    const r = parseArgs(["--data-dir=--weird"]);
+    expect(r.opts.dataDir).toBe("--weird");
+  });
+});
+
+// Regression for handleAsUser's stripAsUserFlag: stripping must be
+// index-based (drop `--as-user <value>`) and NOT value-based (drop every
+// token matching the username). If the username appears as a value for
+// another flag (e.g. --bot-name matches operator login), value-based
+// stripping would silently corrupt the child's argv.
+describe("stripAsUserFlag (handleAsUser helper)", () => {
+  test("removes --as-user and its immediately-following value", () => {
+    expect(stripAsUserFlag(["install", "--as-user", "alice", "--yes"]))
+      .toEqual(["install", "--yes"]);
+  });
+
+  test("preserves other args whose value happens to equal the username", () => {
+    // Operator "alice" runs: sudo ework-aio install --as-user alice --bot-name alice
+    // Value-based filter would strip BOTH "alice" tokens, leaving
+    // ["install", "--bot-name"] — broken (flag missing its value).
+    expect(stripAsUserFlag(["install", "--as-user", "alice", "--bot-name", "alice"]))
+      .toEqual(["install", "--bot-name", "alice"]);
+  });
+
+  test("preserves username appearing as substring of a path", () => {
+    expect(stripAsUserFlag(["install", "--as-user", "dog", "--data-dir", "/home/dog/x"]))
+      .toEqual(["install", "--data-dir", "/home/dog/x"]);
+  });
+
+  test("handles --as-user at end with no value (defensive)", () => {
+    // Real parseArgs would throw "--as-user requires a value" first, but
+    // the helper itself must not read past the end.
+    expect(stripAsUserFlag(["install", "--as-user"]))
+      .toEqual(["install"]);
+  });
+
+  test("handles multiple --as-user occurrences (only first is real)", () => {
+    // Unusual but well-defined: strip both pairs.
+    expect(stripAsUserFlag(["--as-user", "a", "--as-user", "b", "install"]))
+      .toEqual(["install"]);
+  });
+
+  test("returns empty array for empty input", () => {
+    expect(stripAsUserFlag([])).toEqual([]);
   });
 });
 

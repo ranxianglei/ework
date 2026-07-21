@@ -110,6 +110,22 @@ function defaultOpts(): GlobalOptions {
 // on unknown flags / missing values. The shape is stable so tests can
 // exercise it without touching process.argv.
 export function parseArgs(argv: string[]): ParsedArgs {
+  // G1: normalize `--flag=value` (Unix-conventional equals form) into
+  // `--flag value` so the rest of the parser only handles the space
+  // form. Short flags (-h, -v, -y) don't get this treatment (they never
+  // take `=` syntax). Plain `--` (end-of-options marker) and tokens
+  // without `--` prefix are left alone.
+  const expanded: string[] = [];
+  for (const tok of argv) {
+    if (tok.length > 3 && tok.startsWith("--") && tok.indexOf("=") > 2) {
+      const eqIdx = tok.indexOf("=");
+      expanded.push(tok.slice(0, eqIdx), tok.slice(eqIdx + 1));
+    } else {
+      expanded.push(tok);
+    }
+  }
+  argv = expanded;
+
   const opts = defaultOpts();
   const positionals: string[] = [];
   const configArgs: ConfigArgs = { subcommand: "list" };
@@ -286,6 +302,27 @@ function parseServiceTarget(arg: string | undefined): ServiceTarget {
   );
 }
 
+// stripAsUserFlag: return argv without `--as-user <login>` (the flag and
+// its value), so the sudo'd child doesn't re-enter handleAsUser and loop.
+//
+// Iterates by index, NOT Array.filter on value. If the username happens to
+// appear in another argument (path component, common word like "install",
+// or a --bot-name matching the operator login), filter-on-value would
+// silently drop that token and corrupt the child's argv.
+export function stripAsUserFlag(argv: readonly string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    const tok = argv[i];
+    if (tok === undefined) break;
+    if (tok === "--as-user") {
+      i++; // also skip the value
+      continue;
+    }
+    out.push(tok);
+  }
+  return out;
+}
+
 // handleAsUser: when invoked with --as-user (typically via sudo), re-exec
 // the install as the named user after enabling linger. Skipped if not root
 // or no --as-user flag.
@@ -319,9 +356,9 @@ function handleAsUser(opts: GlobalOptions, argv: string[]): void {
     );
   }
 
-  // Re-exec as target user with --as-user stripped from argv.
+  // Re-exec as target user.
   const self = process.argv[1]!;
-  const newArgs = argv.filter((a) => a !== "--as-user" && a !== opts.asUser!);
+  const newArgs = stripAsUserFlag(argv);
   const result = spawnSync("sudo", ["-u", target, "--login", self, ...newArgs], {
     stdio: "inherit",
     env: process.env,
