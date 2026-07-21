@@ -38,6 +38,26 @@ export interface EnvKeySpec {
 
 const hex = (bytes: number): string => randomBytes(bytes).toString("hex");
 
+// ework-web signs outgoing webhook POSTs with WORK_DAEMON_WEBHOOK_SECRET
+// and ework-daemon verifies them with GITEA_WEBHOOK_SECRET. They MUST be
+// the same value — pre-v0.2.6 each key had an independent hex(20) generator,
+// so the two secrets never matched and every webhook was rejected with
+// "invalid signature" on the daemon side.
+//
+// The closure-memoized `sharedWebhookSecret` returns the same value across
+// both calls within a single install run, so first install is correct.
+// Reconciliation for already-broken installs lives in install.ts (it reads
+// both .env files and, if they differ, overwrites the daemon side from the
+// web side — web is the source of truth because ework-web's DB has webhooks
+// signed with whatever WORK_DAEMON_WEBHOOK_SECRET was at creation time).
+let _sharedWebhookSecret: string | null = null;
+function sharedWebhookSecret(): string {
+  if (_sharedWebhookSecret === null) {
+    _sharedWebhookSecret = hex(20);
+  }
+  return _sharedWebhookSecret;
+}
+
 export const WEB_ENV_KEYS: readonly EnvKeySpec[] = [
   { envVar: "WORK_PORT",                   file: "web", generate: (c) => String(c.workPort) },
   { envVar: "WORK_HOST",                   file: "web", generate: () => "127.0.0.1" },
@@ -48,9 +68,13 @@ export const WEB_ENV_KEYS: readonly EnvKeySpec[] = [
   { envVar: "WORK_DB_PATH",                file: "web", generate: (c) => c.paths.webDbPath },
   { envVar: "WORK_ATTACHMENT_ROOT",        file: "web", generate: (c) => c.paths.webAttachmentRoot },
   { envVar: "WORK_FILE_ROOTS",             file: "web", generate: (c) => `/tmp,${c.paths.dataDir}` },
+  // Without this, ework-web falls back to /tmp/ework-access.log which is
+  // owned by whichever user touched it first. On shared boxes the runtime
+  // user can't append → "EACCES: permission denied" on every request.
+  { envVar: "WORK_ACCESS_LOG",             file: "web", generate: (c) => `${c.paths.runDir}/web-access.log` },
   { envVar: "WORK_DAEMON_BOT_LOGIN",       file: "web", generate: (c) => c.botName },
   { envVar: "WORK_DAEMON_WEBHOOK_URL",     file: "web", generate: (c) => `http://127.0.0.1:${c.daemonPort}` },
-  { envVar: "WORK_DAEMON_WEBHOOK_SECRET",  file: "web", secret: true, generate: () => hex(20) },
+  { envVar: "WORK_DAEMON_WEBHOOK_SECRET",  file: "web", secret: true, generate: sharedWebhookSecret },
 ] as const;
 
 export const DAEMON_ENV_KEYS: readonly EnvKeySpec[] = [
@@ -62,7 +86,7 @@ export const DAEMON_ENV_KEYS: readonly EnvKeySpec[] = [
   // These tokens come from the bot bootstrap flow — empty placeholder here,
   // filled in by write_daemon_env after PAT is minted.
   { envVar: "GITEA_TOKEN",            file: "daemon", secret: true, generate: () => "" },
-  { envVar: "GITEA_WEBHOOK_SECRET",   file: "daemon", secret: true, generate: (c) => hex(20) },
+  { envVar: "GITEA_WEBHOOK_SECRET",   file: "daemon", secret: true, generate: sharedWebhookSecret },
   { envVar: "BOT_USERNAME",           file: "daemon", generate: (c) => c.botName },
   { envVar: "BOT_TOKEN",              file: "daemon", secret: true, generate: () => "" },
   { envVar: "OPENCODE_BINARY",        file: "daemon", generate: (c) => c.opencodeBin },
