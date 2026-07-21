@@ -1,6 +1,6 @@
 {
   "name": "ework-aio",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "description": "All-in-one installer for ework (issue tracker) + ework-daemon (AI bridge) + opencode-ework (plugin). One command: npm i -g ework-aio && ework-aio install.",
   "type": "module",
   "license": "MIT",
@@ -41,6 +41,8 @@
     "start": "bun bin/ework-aio.js",
     "check": "tsc --noEmit",
     "test": "bun test",
+    "test:e2e": "bash scripts/e2e-install.sh",
+    "test:regression": "bash scripts/regression.sh",
     "postinstall": "echo '\\n  ework-aio installed. Run \\033[1mework-aio install\\033[0m to set up services.\\n  Help: ework-aio --help\\n'"
   },
   "dependencies": {
