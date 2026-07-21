@@ -129,6 +129,19 @@ function mintPatHandlerReverseAttrs(): (req: Request) => Promise<Response> {
   };
 }
 
+// Case-insensitive PAT scrape: ework-web template tweaks (XHTML uppercase,
+// mixed-case templating) must not silently break scraping. The regex's `i`
+// flag accepts <INPUT VALUE="..." ID="t"> in addition to lowercase.
+function mintPatHandlerUppercase(): (req: Request) => Promise<Response> {
+  return async () => {
+    const pat = "c".repeat(40);
+    const html = `<!DOCTYPE html><html><body>
+      <INPUT ID="t" VALUE="${pat}" READONLY>
+      </body></html>`;
+    return new Response(html, { status: 200, headers: { "Content-Type": "text/html" } });
+  };
+}
+
 describe("buildAuthCookie", () => {
   test("produces ework_auth=<token>.<base64url hmac>", () => {
     const token = "abc123";
@@ -447,6 +460,117 @@ WORK_DAEMON_WEBHOOK_SECRET=somesecret
     try {
       const webPid = parseInt(await Bun.file(path.join(tmpDir, "run", "web.pid")).text(), 10);
       process.kill(webPid, "SIGKILL");
+    } catch { /* already gone */ }
+  });
+
+  // G13: login returning 200 (no redirect) without set-cookie means the
+  // credentials were wrong OR ework-web changed its login flow. bootstrapBot
+  // has two guard branches that must throw typed errors (not crash on null
+  // deref or silently continue with botCookie=""):
+  //   - status !== 302 → "bot login failed (HTTP <status>)"
+  //   - status === 302 but no set-cookie → "missing ework_auth cookie"
+  // Both are wrapped by B-5's "degraded state" InstallError; we assert on
+  // the wrapper and inspect captured stderr for the underlying message.
+  test("login 200 without set-cookie → InstallError (G13, status-check branch)", async () => {
+    const stderrChunks: string[] = [];
+    const stderrStream = {
+      write(chunk: string | Uint8Array): boolean {
+        stderrChunks.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString());
+        return true;
+      },
+      isTTY: false,
+    };
+    const captured = new Logger({ stdout: stderrStream, stderr: stderrStream });
+    state.routes.set(
+      "POST http://127.0.0.1:3002/login",
+      async () => new Response("<html>bad credentials</html>", { status: 200, headers: { "Content-Type": "text/html" } }),
+    );
+    await expect(runInstall(opts, captured, { fetchImpl: makeMockFetch(state) }))
+      .rejects.toThrow(/install completed with degraded state/);
+    expect(stderrChunks.join("")).toMatch(/bot login failed \(HTTP 200\)/);
+
+    try {
+      const webPid = parseInt(await Bun.file(path.join(tmpDir, "run", "web.pid")).text(), 10);
+      process.kill(webPid, "SIGKILL");
+    } catch { /* already gone */ }
+  });
+
+  test("login 302 without set-cookie → InstallError (G13, cookie-missing branch)", async () => {
+    const stderrChunks: string[] = [];
+    const stderrStream = {
+      write(chunk: string | Uint8Array): boolean {
+        stderrChunks.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString());
+        return true;
+      },
+      isTTY: false,
+    };
+    const captured = new Logger({ stdout: stderrStream, stderr: stderrStream });
+    // 302 with Location but no set-cookie — login appears to succeed but
+    // no session cookie was issued. parseFirstCookie must return null and
+    // bootstrapBot must throw naming the missing cookie.
+    state.routes.set(
+      "POST http://127.0.0.1:3002/login",
+      async () => new Response(null, { status: 302, headers: { Location: "/" } }),
+    );
+    await expect(runInstall(opts, captured, { fetchImpl: makeMockFetch(state) }))
+      .rejects.toThrow(/install completed with degraded state/);
+    expect(stderrChunks.join("")).toMatch(/missing ework_auth cookie/);
+
+    try {
+      const webPid = parseInt(await Bun.file(path.join(tmpDir, "run", "web.pid")).text(), 10);
+      process.kill(webPid, "SIGKILL");
+    } catch { /* already gone */ }
+  });
+
+  // G15: bot create returns 400 (already exists) on re-run. This is the
+  // re-run bootstrap path — install must NOT treat it as failure, must
+  // proceed to login + mint PAT. Without this test, a regression that
+  // throws on 400 would make every re-install fail.
+  test("bot create returning 400 (already exists) is treated as success (G15)", async () => {
+    let createCount = 0;
+    state.routes.set(
+      "POST http://127.0.0.1:3002/admin/users/create",
+      async () => {
+        createCount++;
+        // First call: 303 (created). Subsequent: 400 (already exists).
+        if (createCount === 1) {
+          return new Response(null, { status: 303, headers: { Location: "/admin/users" } });
+        }
+        return new Response("user already exists", { status: 400 });
+      },
+    );
+    const result = await runInstall(opts, silentLogger(), { fetchImpl: makeMockFetch(state) });
+    expect(result.botBootstrapped).toBe(true);
+
+    try {
+      const webPid = parseInt(await Bun.file(path.join(tmpDir, "run", "web.pid")).text(), 10);
+      process.kill(webPid, "SIGKILL");
+    } catch { /* already gone */ }
+    try {
+      const daemonPid = parseInt(await Bun.file(path.join(tmpDir, "run", "daemon.pid")).text(), 10);
+      process.kill(daemonPid, "SIGKILL");
+    } catch { /* already gone */ }
+  });
+
+  test("PAT scrape matches uppercase XHTML <INPUT VALUE=... ID=...> (case-insensitive regex)", async () => {
+    // ework-web template might emit uppercase tag/attr names (XHTML style,
+    // server-side template quirks). Without the regex `i` flag this returns
+    // "could not extract PAT" and install fails.
+    state.routes.set(
+      "POST http://127.0.0.1:3002/me/tokens/create",
+      mintPatHandlerUppercase(),
+    );
+    const result = await runInstall(opts, silentLogger(), { fetchImpl: makeMockFetch(state) });
+    expect(result.botBootstrapped).toBe(true);
+    expect(result.botToken).toBe("c".repeat(40));
+
+    try {
+      const webPid = parseInt(await Bun.file(path.join(tmpDir, "run", "web.pid")).text(), 10);
+      process.kill(webPid, "SIGKILL");
+    } catch { /* already gone */ }
+    try {
+      const daemonPid = parseInt(await Bun.file(path.join(tmpDir, "run", "daemon.pid")).text(), 10);
+      process.kill(daemonPid, "SIGKILL");
     } catch { /* already gone */ }
   });
 });

@@ -194,7 +194,6 @@ export async function runInstall(
       // this, `install systemd --user` produces units that die when the
       // user logs out — defeating the point of systemd mode. Best-effort.
       if (opts.scope === "user") {
-        const userInfo = os.userInfo();
         const linger = Bun.spawnSync(["loginctl", "enable-linger", userInfo.username], {
           env: process.env,
           stdout: "pipe", stderr: "pipe",
@@ -576,8 +575,12 @@ async function bootstrapBot(opts: BootstrapBotOpts): Promise<string> {
     );
   }
   const patBody = await patRes.text();
-  const match = patBody.match(/<input[^>]*id="t"[^>]*value="([a-f0-9]{40})"/)
-    ?? patBody.match(/<input[^>]*value="([a-f0-9]{40})"[^>]*id="t"/);
+  // S-2: scrape regex is attribute-order-independent — accepts both
+  // `<input id="t" value="...">` and `<input value="..." id="t">`.
+  // Case-insensitive (i flag) so XHTML-style `<INPUT VALUE="...">` from
+  // ework-web template tweaks doesn't silently break scraping.
+  const match = patBody.match(/<input[^>]*id="t"[^>]*value="([a-f0-9]{40})"/i)
+    ?? patBody.match(/<input[^>]*value="([a-f0-9]{40})"[^>]*id="t"/i);
   if (!match || !match[1]) {
     throw new InstallError(`could not extract PAT from token-create response`);
   }
