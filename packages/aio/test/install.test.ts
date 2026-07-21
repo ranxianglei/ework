@@ -127,22 +127,24 @@ function loginHandler(): (req: Request) => Promise<Response> {
   };
 }
 
-// /me/tokens/create returns HTML with the PAT embedded (matches install.sh).
+// /me/tokens/create returns HTML with the PAT embedded. Matches the
+// ACTUAL ework-web response shape: <code id="t">VALUE</code> (see
+// src/views/tokens.ts:141 in ework-web). Earlier versions of this mock
+// used <input value="..."> which did not match production HTML — that
+// false-positive hid the real scrape bug until a user hit it in v0.2.2.
 function mintPatHandler(): (req: Request) => Promise<Response> {
   return async () => {
     const pat = "a".repeat(40);
     const html = `<!DOCTYPE html><html><body>
-      <p>Your new token (shown once):</p>
-      <input id="t" value="${pat}" readonly>
+      <h1>Token 已创建</h1>
+      <div class="tok-box"><code id="t">${pat}</code><button>复制</button></div>
       </body></html>`;
     return new Response(html, { status: 200, headers: { "Content-Type": "text/html" } });
   };
 }
 
-// G11: alternative HTML shape — attribute order swapped (`value=… id="t"`).
-// Without the second regex in bootstrapBot, this fixture fails to match
-// and install throws "could not extract PAT". Catches a false-positive
-// test gap where the second regex gets deleted but all tests still pass.
+// Legacy HTML shape: <input value="..." id="t"> (attribute order swapped).
+// Keeps the second regex in bootstrapBot exercised so it doesn't rot.
 function mintPatHandlerReverseAttrs(): (req: Request) => Promise<Response> {
   return async () => {
     const pat = "b".repeat(40);
@@ -456,6 +458,43 @@ WORK_DAEMON_WEBHOOK_SECRET=somesecret
     const result = await runInstall(opts, silentLogger(), { fetchImpl: makeMockFetch(state) });
     expect(result.botBootstrapped).toBe(true);
     expect(result.botToken).toMatch(/^[a-f0-9]{40}$/);
+
+    const webPid = parseInt(await Bun.file(path.join(tmpDir, "run", "web.pid")).text(), 10);
+    const daemonPid = parseInt(await Bun.file(path.join(tmpDir, "run", "daemon.pid")).text(), 10);
+    try { process.kill(webPid, "SIGKILL"); } catch { /* already gone */ }
+    try { process.kill(daemonPid, "SIGKILL"); } catch { /* already gone */ }
+  });
+
+  // Real-world regression: ework-web's actual /me/tokens/create response is
+  // a verbose multi-line HTML page with warning banner, copy button, and
+  // the token inside <code id="t">VALUE</code>. v0.2.0-v0.2.2 scraped only
+  // <input value="..."> and failed on this shape — user hit it in production.
+  // Test mirrors the real HTML byte-for-byte from src/views/tokens.ts:116-145.
+  test("PAT scrape matches ework-web's actual <code id=\"t\"> HTML shape (v0.2.2 user regression)", async () => {
+    const pat = "c".repeat(40);
+    state.routes.set(
+      "POST http://127.0.0.1:3002/me/tokens/create",
+      async () => new Response(
+        `<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<title>Token 已创建 · ework-daemon</title>
+<style>.tok-box{display:flex;gap:.5rem}</style></head><body>
+<header class="topbar"><span style="font-weight:600">🔑 Token 已创建</span></header>
+<main class="wrap">
+<h1>aio-1700000000000</h1>
+<div class="card">
+<div class="warn">⚠️ 这是 token 的明文，<b>仅显示这一次</b>。关闭此页后无法再次查看。请立即复制到密码管理器或 agent 配置中。</div>
+<h2>token</h2>
+<div class="tok-box"><code id="t">${pat}</code><button type="button" onclick="navigator.clipboard.writeText(document.getElementById('t').innerText).then(()=>{this.textContent='已复制 ✓';setTimeout(()=>this.textContent='复制',1500)})">复制</button></div>
+<div class="hint">用法：HTTP 请求加 <code>Authorization: Bearer &lt;token&gt;</code>。</div>
+</div>
+</main></body></html>`,
+        { status: 200, headers: { "Content-Type": "text/html; charset=utf-8" } },
+      ),
+    );
+    const result = await runInstall(opts, silentLogger(), { fetchImpl: makeMockFetch(state) });
+    expect(result.botBootstrapped).toBe(true);
+    expect(result.botToken).toBe(pat);
 
     const webPid = parseInt(await Bun.file(path.join(tmpDir, "run", "web.pid")).text(), 10);
     const daemonPid = parseInt(await Bun.file(path.join(tmpDir, "run", "daemon.pid")).text(), 10);

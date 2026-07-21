@@ -592,14 +592,18 @@ async function bootstrapBot(opts: BootstrapBotOpts): Promise<string> {
   }
 
   // 3. Mint PAT via /me/tokens/create. Response is HTML containing the
-  // clear-text token in `<input id="t" value="<40-hex>">`. We only get one
-  // chance to see the clear-text — must scrape it now.
+  // clear-text token. ework-web renders it inside `<code id="t">VALUE</code>`
+  // (verified at src/views/tokens.ts:141 in ework-web at time of writing);
+  // the legacy install.sh-era HTML used `<input id="t" value="VALUE">`. We
+  // scrape both shapes so an ework-web template change doesn't silently
+  // break install.
   //
   // S-3: pin redirect:"manual" so a PRG-style 303→GET doesn't land us on
   // a "token list" page where the clear-text value isn't present.
   //
-  // S-2: scrape regex is attribute-order-independent — accepts both
-  // `<input id="t" value="...">` and `<input value="..." id="t">`.
+  // Token shape: 40 lowercase hex chars (ework-web createPat uses
+  // randomHex(20) — 20 bytes → 40 hex). Case-insensitive `i` flag for
+  // XHTML-style `<INPUT VALUE="...">` and uppercase hex (defensive).
   const patRes = await fetchImpl(`${opts.baseUrl}/me/tokens/create`, {
     method: "POST",
     headers: { Cookie: botCookie, "Content-Type": "application/x-www-form-urlencoded" },
@@ -612,14 +616,14 @@ async function bootstrapBot(opts: BootstrapBotOpts): Promise<string> {
     );
   }
   const patBody = await patRes.text();
-  // S-2: scrape regex is attribute-order-independent — accepts both
-  // `<input id="t" value="...">` and `<input value="..." id="t">`.
-  // Case-insensitive (i flag) so XHTML-style `<INPUT VALUE="...">` from
-  // ework-web template tweaks doesn't silently break scraping.
-  const match = patBody.match(/<input[^>]*id="t"[^>]*value="([a-f0-9]{40})"/i)
-    ?? patBody.match(/<input[^>]*value="([a-f0-9]{40})"[^>]*id="t"/i);
+  const match =
+    patBody.match(/<code[^>]*id="t"[^>]*>\s*([a-f0-9]{40})\s*<\/code>/i) ??
+    patBody.match(/<input[^>]*id="t"[^>]*value="([a-f0-9]{40})"/i) ??
+    patBody.match(/<input[^>]*value="([a-f0-9]{40})"[^>]*id="t"/i);
   if (!match || !match[1]) {
-    throw new InstallError(`could not extract PAT from token-create response`);
+    throw new InstallError(
+      `could not extract PAT from token-create response (first 300 chars): ${patBody.slice(0, 300)}`,
+    );
   }
   return match[1];
 }
