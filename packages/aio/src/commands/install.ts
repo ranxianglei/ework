@@ -97,20 +97,35 @@ export async function runInstall(
   logger.ok(`preflight: bun, npm, opencode all on PATH`);
 
   // 2. Resolve ework-web / ework-daemon binaries (npm-installed global bins).
+  //
+  // ework-daemon ships TWO bins: `ework-daemon` (client CLI: status/issues/...)
+  // and `ework-daemon-server` (actual HTTP server). We start the SERVER, not
+  // the client — pre-v0.2.5 we spawned the client, which prints help and
+  // exits, leaving the daemon "looking dead" with a help-text log.
   const webBin = resolveCommand("ework-web");
-  const daemonBin = resolveCommand("ework-daemon");
+  const daemonClientBin = resolveCommand("ework-daemon");
+  const daemonServerBin = resolveCommand("ework-daemon-server");
   if (!webBin) {
     throw new InstallError(
       `ework-web binary not found on PATH. Install with: npm install -g ework-web`,
     );
   }
-  if (!daemonBin) {
+  if (!daemonClientBin && !daemonServerBin) {
     throw new InstallError(
-      `ework-daemon binary not found on PATH. Install with: npm install -g ework-daemon`,
+      `ework-daemon not installed. Install with: npm install -g ework-daemon`,
     );
   }
-  logger.ok(`web bin    : ${webBin}`);
-  logger.ok(`daemon bin : ${daemonBin}`);
+  if (!daemonServerBin) {
+    // Client CLI present but server bin missing — old / partial install.
+    throw new InstallError(
+      `ework-daemon-server binary not found on PATH, but ework-daemon (client) is present. ` +
+        `Your ework-daemon npm install is incomplete or outdated. Reinstall with: ` +
+        `npm install -g ework-daemon@latest`,
+    );
+  }
+  logger.ok(`web bin         : ${webBin}`);
+  logger.ok(`daemon client   : ${daemonClientBin ?? "(not on PATH)"}`);
+  logger.ok(`daemon server   : ${daemonServerBin}`);
 
   // 3. Resolve all filesystem paths.
   const paths = resolvePaths({
@@ -349,7 +364,7 @@ export async function runInstall(
       user: userInfo.username,
       group: userInfo.username,
       binPath: preflight.found.get("bun")!,
-      mainScript: daemonBin,
+      mainScript: daemonServerBin,
       envFile: paths.daemonEnvFile,
       workingDirectory: paths.daemonDataDir,
       logFile: paths.daemonLogFile,
@@ -388,7 +403,7 @@ export async function runInstall(
       logger.log(`starting ework-daemon (PID-file mode)...`);
       const env = await loadEnvIntoProcess(paths.daemonEnvFile);
       const { pid } = await startProcess({
-        cmd: daemonBin,
+        cmd: daemonServerBin,
         args: [],
         cwd: paths.daemonDataDir,
         env,

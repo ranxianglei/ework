@@ -41,7 +41,11 @@ function servicePaths(paths: PathConfig, svc: "web" | "daemon"): ServicePaths {
     };
   }
   return {
-    bin: "ework-daemon",
+    // ework-daemon ships two bins; only `ework-daemon-server` actually starts
+    // the HTTP server. The `ework-daemon` bin is a client CLI that prints help
+    // and exits — spawning it leaves the daemon "looking dead" with help text
+    // in the log. See install.ts preflight for the full rationale.
+    bin: "ework-daemon-server",
     dataDir: paths.daemonDataDir,
     envFile: paths.daemonEnvFile,
     pidFile: paths.daemonPidFile,
