@@ -61,6 +61,20 @@ function silentLogger(): Logger {
   return new Logger({ stdout: sink, stderr: sink });
 }
 
+interface CapturingSink {
+  chunks: string[];
+  write(chunk: string | Uint8Array): boolean;
+  isTTY: boolean;
+}
+
+function capturingSink(): CapturingSink {
+  return {
+    chunks: [],
+    write(chunk) { this.chunks.push(typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk)); return true; },
+    isTTY: false,
+  };
+}
+
 function baseOpts(tmpDir: string): GlobalOptions {
   return {
     workPort: 3002,
@@ -76,7 +90,9 @@ function baseOpts(tmpDir: string): GlobalOptions {
   };
 }
 
-// /admin/users/create returns 303 on first create, 409 on second.
+// /admin/users/create returns 303 with ?ok=1 on success. ework-web uses
+// the PRG pattern for BOTH success and failure (the latter would have
+// ?err= in Location), but the default happy-path mock only needs success.
 function adminCreateHandler(state: MockState): (req: Request) => Promise<Response> {
   let created = false;
   return async (req) => {
@@ -85,8 +101,17 @@ function adminCreateHandler(state: MockState): (req: Request) => Promise<Respons
     const login = params.get("login");
     created = true;
     void state; void login;
-    return new Response(null, { status: 303, headers: { Location: "/admin/users" } });
+    return new Response(null, { status: 303, headers: { Location: "/admin/users?ok=1" } });
   };
+}
+
+// /admin/users/<login>/reset-password returns 303 with ?ok=1 on success.
+// bootstrapBot now ALWAYS calls this after create (idempotent — sets the
+// password to our fresh value whether the user was just created or
+// already existed). Without this default route, the happy-path install
+// test would 404 here.
+function resetPasswordHandler(): (req: Request) => Promise<Response> {
+  return async () => new Response(null, { status: 303, headers: { Location: "/admin/users?ok=1" } });
 }
 
 // /login returns 302 with set-cookie when creds are valid.
@@ -179,6 +204,7 @@ describe("runInstall: end-to-end (mocked fetch, real FS)", () => {
       routes: new Map([
         ["GET http://127.0.0.1:3002/login", async () => new Response("ok", { status: 200 })],
         ["POST http://127.0.0.1:3002/admin/users/create", adminCreateHandler(state)],
+        ["POST http://127.0.0.1:3002/admin/users/ework-daemon/reset-password", resetPasswordHandler()],
         ["POST http://127.0.0.1:3002/login", loginHandler()],
         ["POST http://127.0.0.1:3002/me/tokens/create", mintPatHandler()],
       ]),
@@ -307,6 +333,7 @@ WORK_DAEMON_WEBHOOK_SECRET=somesecret
     // poll-then-bootstrap flow can complete.
     state.routes.set("GET http://127.0.0.1:9999/login", async () => new Response("ok", { status: 200 }));
     state.routes.set("POST http://127.0.0.1:9999/admin/users/create", adminCreateHandler(state));
+    state.routes.set("POST http://127.0.0.1:9999/admin/users/ework-daemon/reset-password", resetPasswordHandler());
     state.routes.set("POST http://127.0.0.1:9999/login", loginHandler());
     state.routes.set("POST http://127.0.0.1:9999/me/tokens/create", mintPatHandler());
 
@@ -398,6 +425,13 @@ WORK_DAEMON_WEBHOOK_SECRET=somesecret
 
   test("--bot-name other-bot uses a separate token file (B-6)", async () => {
     const opts2 = { ...opts, botName: "other-bot" };
+    // bootstrapBot always calls reset-password at /admin/users/<botName>/reset-password.
+    // The default mock route is keyed to "ework-daemon"; register one for the
+    // alternative bot name so the install completes end-to-end.
+    state.routes.set(
+      "POST http://127.0.0.1:3002/admin/users/other-bot/reset-password",
+      resetPasswordHandler(),
+    );
     const result = await runInstall(opts2, silentLogger(), { fetchImpl: makeMockFetch(state) });
 
     expect(result.botName).toBe("other-bot");
@@ -526,21 +560,29 @@ WORK_DAEMON_WEBHOOK_SECRET=somesecret
   // re-run bootstrap path — install must NOT treat it as failure, must
   // proceed to login + mint PAT. Without this test, a regression that
   // throws on 400 would make every re-install fail.
-  test("bot create returning 400 (already exists) is treated as success (G15)", async () => {
-    let createCount = 0;
+  // G15: bot create returning 400 (already exists) on re-run. The ework-web
+  // reality is that create ALWAYS returns 303 (PRG pattern) with ?err=
+  // "已存在" in Location. bootstrapBot must NOT abort on this error — it
+  // must proceed to call reset-password (which is the actual recovery).
+  test("bot create returning 'already exists' error is recovered by reset-password (G15)", async () => {
     state.routes.set(
       "POST http://127.0.0.1:3002/admin/users/create",
+      async () => new Response(null, {
+        status: 303,
+        headers: { Location: `/admin/users?err=${encodeURIComponent("用户 ework-daemon 已存在")}` },
+      }),
+    );
+    let resetCalled = false;
+    state.routes.set(
+      "POST http://127.0.0.1:3002/admin/users/ework-daemon/reset-password",
       async () => {
-        createCount++;
-        // First call: 303 (created). Subsequent: 400 (already exists).
-        if (createCount === 1) {
-          return new Response(null, { status: 303, headers: { Location: "/admin/users" } });
-        }
-        return new Response("user already exists", { status: 400 });
+        resetCalled = true;
+        return new Response(null, { status: 303, headers: { Location: "/admin/users?ok=1" } });
       },
     );
     const result = await runInstall(opts, silentLogger(), { fetchImpl: makeMockFetch(state) });
     expect(result.botBootstrapped).toBe(true);
+    expect(resetCalled).toBe(true);
 
     try {
       const webPid = parseInt(await Bun.file(path.join(tmpDir, "run", "web.pid")).text(), 10);
@@ -552,39 +594,37 @@ WORK_DAEMON_WEBHOOK_SECRET=somesecret
     } catch { /* already gone */ }
   });
 
-  // Regression: bot user pre-existing from a prior failed install. Create
-  // returns 400 (already exists) with the user's password set to a random
-  // value we don't know. Without force-resetting via /admin/users/<login>/
-  // reset-password, the subsequent /login uses our fresh random password
-  // which doesn't match the stored hash → HTTP 401 → unrecoverable.
-  // This test pins the recovery path: reset-password MUST be called when
-  // create returns 400, and login MUST succeed afterwards.
-  test("bot user pre-existing → install resets password via admin API and bootstraps successfully", async () => {
+  // Real-world regression: bot user pre-existing from a prior failed
+  // install. bootstrapBot's create returns 303 with ?err=已存在, the
+  // reset-password call sets the password to our fresh value, login
+  // succeeds. This is the exact scenario the user hit on their machine
+  // after the first install attempt failed mid-bootstrap.
+  test("bot user pre-existing (Location has ?err=已存在) → reset-password recovers, bootstrap succeeds", async () => {
     state.routes.set(
       "POST http://127.0.0.1:3002/admin/users/create",
-      async () => new Response("user already exists", { status: 400 }),
+      async () => new Response(null, {
+        status: 303,
+        headers: { Location: `/admin/users?err=${encodeURIComponent("用户 ework-daemon 已存在")}` },
+      }),
     );
-    let resetPasswordCalled = false;
-    let resetPasswordBody: string | undefined;
+    let resetCalled = false;
+    let resetBody: string | undefined;
     state.routes.set(
       "POST http://127.0.0.1:3002/admin/users/ework-daemon/reset-password",
       async (req) => {
-        resetPasswordCalled = true;
-        resetPasswordBody = await req.text();
-        return new Response(null, { status: 303, headers: { Location: "/admin/users" } });
+        resetCalled = true;
+        resetBody = await req.text();
+        return new Response(null, { status: 303, headers: { Location: "/admin/users?ok=1" } });
       },
     );
 
     const result = await runInstall(opts, silentLogger(), { fetchImpl: makeMockFetch(state) });
     expect(result.botBootstrapped).toBe(true);
     expect(result.botToken).toMatch(/^[a-f0-9]{40}$/);
-    expect(resetPasswordCalled).toBe(true);
-    // Reset body must contain the password we'll then use for login.
-    const resetParams = new URLSearchParams(resetPasswordBody ?? "");
-    expect(resetParams.get("password")?.length).toBe(48); // randomBytes(24).toString("hex")
-
-    // Login handler (default) accepts any password — but the fact that we
-    // got here at all means create→reset→login→mintPAT completed.
+    expect(resetCalled).toBe(true);
+    // Reset body must contain a 48-char hex password (randomBytes(24).hex).
+    const resetParams = new URLSearchParams(resetBody ?? "");
+    expect(resetParams.get("password")?.length).toBe(48);
 
     try {
       const webPid = parseInt(await Bun.file(path.join(tmpDir, "run", "web.pid")).text(), 10);
@@ -596,22 +636,60 @@ WORK_DAEMON_WEBHOOK_SECRET=somesecret
     } catch { /* already gone */ }
   });
 
-  // If reset-password itself fails (e.g. admin cookie expired mid-flow,
-  // or ework-web version that doesn't have the endpoint), bootstrap must
-  // throw a typed InstallError naming the failure — NOT proceed to login
-  // with a password that won't work.
-  test("reset-password failure surfaces as InstallError (not silent login 401)", async () => {
+  // If create returns 303 with a non-"already exists" error (e.g. invalid
+  // bot login), bootstrap must abort with a clear message — NOT proceed
+  // to reset-password (which would likely fail the same way).
+  test("create returning non-duplicate error → InstallError (no reset attempted)", async () => {
+    let resetCalled = false;
     state.routes.set(
       "POST http://127.0.0.1:3002/admin/users/create",
-      async () => new Response("user already exists", { status: 400 }),
+      async () => new Response(null, {
+        status: 303,
+        headers: { Location: `/admin/users?err=${encodeURIComponent("login 含非法字符")}` },
+      }),
     );
     state.routes.set(
       "POST http://127.0.0.1:3002/admin/users/ework-daemon/reset-password",
-      async () => new Response("forbidden", { status: 403 }),
+      async () => { resetCalled = true; return new Response(null, { status: 303 }); },
     );
 
-    await expect(runInstall(opts, silentLogger(), { fetchImpl: makeMockFetch(state) }))
+    // runInstall wraps bootstrap failures as "install completed with degraded
+    // state" (B-5). The underlying error is logged via logger.error — capture
+    // stderr to verify the specific message is surfaced to the user.
+    const sink = capturingSink();
+    const cap = new Logger({ stdout: sink, stderr: sink });
+    await expect(runInstall(opts, cap, { fetchImpl: makeMockFetch(state) }))
       .rejects.toThrow(/install completed with degraded state/);
+    expect(resetCalled).toBe(false);
+    const logged = sink.chunks.join("");
+    expect(logged).toContain("bot bootstrap failed");
+    expect(logged).toContain("login 含非法字符");
+
+    try {
+      const webPid = parseInt(await Bun.file(path.join(tmpDir, "run", "web.pid")).text(), 10);
+      process.kill(webPid, "SIGKILL");
+    } catch { /* already gone */ }
+  });
+
+  // If reset-password itself fails (e.g. user somehow doesn't exist, or
+  // password policy rejected our value), bootstrap must throw a typed
+  // InstallError — NOT fall through to login with a password that won't work.
+  test("reset-password failure surfaces as InstallError (not silent login 401)", async () => {
+    state.routes.set(
+      "POST http://127.0.0.1:3002/admin/users/ework-daemon/reset-password",
+      async () => new Response(null, {
+        status: 303,
+        headers: { Location: `/admin/users?err=${encodeURIComponent("用户 ework-daemon 不存在")}` },
+      }),
+    );
+
+    const sink = capturingSink();
+    const cap = new Logger({ stdout: sink, stderr: sink });
+    await expect(runInstall(opts, cap, { fetchImpl: makeMockFetch(state) }))
+      .rejects.toThrow(/install completed with degraded state/);
+    const logged = sink.chunks.join("");
+    expect(logged).toContain("bot bootstrap failed");
+    expect(logged).toContain("ework-daemon 不存在");
 
     try {
       const webPid = parseInt(await Bun.file(path.join(tmpDir, "run", "web.pid")).text(), 10);

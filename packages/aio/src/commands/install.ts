@@ -505,23 +505,30 @@ interface BootstrapBotOpts {
   fetchImpl?: FetchLike;
 }
 
-// bootstrapBot: faithful port of install.sh's bot user + PAT flow.
-// Uses the operator's token-derived cookie to drive ework-web's admin API,
-// then logs in as the bot to mint a PAT. Step-by-step idempotence:
-//   - create user: HTTP 303 = created (password is what we sent)
-//     HTTP 400/409 = already exists → force-reset password via admin API
-//     so the subsequent /login is guaranteed to work. Without this reset,
-//     a bot user left over from a previous failed install keeps its OLD
-//     random password (which we don't know), and /login returns 401 —
-//     the install can never recover without manual DB surgery.
-//   - login as bot: required to get a session cookie for /me/tokens/create
-//   - mint PAT: scrape the token out of the HTML response (the only way
-//     ework-web exposes clear-text tokens, matching install.sh)
+// bootstrapBot: faithful port of install.sh's bot user + PAT flow, with
+// one critical correctness fix the bash version got wrong too.
+//
+// ework-web's /admin/users/create and /admin/users/<login>/reset-password
+// both follow the PRG (Post/Redirect/Get) pattern: they return HTTP 303
+// for BOTH success and failure, with the outcome encoded in the Location
+// URL's query string (?ok=1 vs ?err=<msg>). Status-code checks are
+// useless; we MUST inspect Location.
+//
+// Idempotence contract:
+//   1. POST /admin/users/create — best-effort. May fail with
+//      "已存在" / "exists" if bot user was left over from a prior install.
+//      Any OTHER error (invalid login, weak password, etc) → abort.
+//   2. POST /admin/users/<login>/reset-password — always. If the user
+//      was just created, this is a redundant no-op. If the user already
+//      existed, this overwrites the OLD random password (which we don't
+//      know) with our fresh one. Either way, /login below is guaranteed.
+//   3. POST /login — uses the password we just set.
+//   4. POST /me/tokens/create — scrape clear-text PAT from HTML.
 async function bootstrapBot(opts: BootstrapBotOpts): Promise<string> {
   const fetchImpl = opts.fetchImpl ?? fetch;
   const botPassword = randomBytes(24).toString("hex");
 
-  // 1. Create bot user via admin API.
+  // 1. Create bot user (best-effort).
   const createRes = await fetchImpl(`${opts.baseUrl}/admin/users/create`, {
     method: "POST",
     headers: { Cookie: opts.adminCookie, "Content-Type": "application/x-www-form-urlencoded" },
@@ -533,30 +540,35 @@ async function bootstrapBot(opts: BootstrapBotOpts): Promise<string> {
     }).toString(),
     redirect: "manual",
   });
-  if (createRes.status === 400 || createRes.status === 409) {
-    // Bot user already exists from a previous install attempt. The
-    // password we just sent was IGNORED by ework-web (create only writes
-    // it on first creation). Without resetting, /login below uses the
-    // fresh botPassword which doesn't match the stored hash → 401.
-    // Force-reset via admin endpoint so the password we hold is real.
-    const resetRes = await fetchImpl(
-      `${opts.baseUrl}/admin/users/${encodeURIComponent(opts.botLogin)}/reset-password`,
-      {
-        method: "POST",
-        headers: { Cookie: opts.adminCookie, "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({ password: botPassword }).toString(),
-        redirect: "manual",
-      },
-    );
-    if (resetRes.status !== 303) {
-      const body = await resetRes.text();
-      throw new InstallError(
-        `bot user exists but password reset failed (HTTP ${resetRes.status}): ${body.slice(0, 200)}`,
-      );
-    }
-  } else if (createRes.status !== 303) {
+  if (createRes.status !== 303) {
     const body = await createRes.text();
-    throw new InstallError(`create bot user failed (HTTP ${createRes.status}): ${body.slice(0, 200)}`);
+    throw new InstallError(`create bot user HTTP ${createRes.status}: ${body.slice(0, 200)}`);
+  }
+  const createErr = locationErrParam(createRes.headers.get("location"));
+  if (createErr && !isAlreadyExistsError(createErr)) {
+    // Real create failure (invalid login, weak password, etc). Don't try
+    // reset — the same problem would surface there too.
+    throw new InstallError(`create bot user rejected by ework-web: ${createErr}`);
+  }
+
+  // 2. Force-reset the password. Idempotent: sets the password to our
+  //    fresh value whether the user was just created or already existed.
+  const resetRes = await fetchImpl(
+    `${opts.baseUrl}/admin/users/${encodeURIComponent(opts.botLogin)}/reset-password`,
+    {
+      method: "POST",
+      headers: { Cookie: opts.adminCookie, "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ password: botPassword }).toString(),
+      redirect: "manual",
+    },
+  );
+  if (resetRes.status !== 303) {
+    const body = await resetRes.text();
+    throw new InstallError(`bot password reset HTTP ${resetRes.status}: ${body.slice(0, 200)}`);
+  }
+  const resetErr = locationErrParam(resetRes.headers.get("location"));
+  if (resetErr) {
+    throw new InstallError(`bot password reset rejected by ework-web: ${resetErr}`);
   }
 
   // 2. Login as bot to get its session cookie.
@@ -633,6 +645,33 @@ function parseFirstCookie(headers: Headers): string | null {
     if (kv.startsWith("ework_auth=")) return kv;
   }
   return null;
+}
+
+// locationErrParam: ework-web's admin POST endpoints use the PRG pattern,
+// returning HTTP 303 with the outcome in the Location URL's query string
+// (?ok=1 on success, ?err=<encoded msg> on failure). Extracts the err
+// value (decoded) or null if absent. Used by bootstrapBot to tell
+// "duplicate user" (recoverable via reset) from real failures (abort).
+function locationErrParam(location: string | null): string | null {
+  if (!location) return null;
+  try {
+    const url = new URL(location, "http://placeholder.invalid");
+    const err = url.searchParams.get("err");
+    return err ?? null;
+  } catch {
+    // Location wasn't a parseable URL — defensive fallback via regex.
+    const m = location.match(/[?&]err=([^&]+)/);
+    return m ? decodeURIComponent(m[1]!) : null;
+  }
+}
+
+// isAlreadyExistsError: ework-web's createUser throws StoreError(409,
+// "用户 X 已存在"). The Location redirect will carry this exact string
+// (URL-encoded). We accept both Chinese and English variants in case
+// ework-web changes its message later.
+function isAlreadyExistsError(err: string): boolean {
+  const lower = err.toLowerCase();
+  return lower.includes("已存在") || lower.includes("already exists") || lower.includes("duplicate");
 }
 
 function printSummary(logger: Logger, o: InstallOutcome): void {
