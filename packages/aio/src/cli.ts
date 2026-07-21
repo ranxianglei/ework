@@ -35,7 +35,7 @@ import {
   type ConfigArgs,
 } from "./commands/config.ts";
 
-const VERSION = "0.2.2-dev";
+const VERSION = "0.2.3-dev";
 
 const USAGE = `ework-aio <command> [options]
 
