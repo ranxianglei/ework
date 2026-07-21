@@ -769,4 +769,89 @@ WORK_DAEMON_WEBHOOK_SECRET=somesecret
       process.kill(daemonPid, "SIGKILL");
     } catch { /* already gone */ }
   });
+
+  // Regression: pre-v0.2.6 the installer generated two INDEPENDENT hex(20)
+  // values for the webhook secret on each side, so every incoming webhook
+  // failed HMAC verification with "invalid signature". Both sides must end
+  // up with the same value after install.
+  test("webhook secret is identical across web and daemon .env after first install", async () => {
+    await runInstall(opts, silentLogger(), { fetchImpl: makeMockFetch(state) });
+
+    const webEnv = await Bun.file(path.join(tmpDir, "ework-web", ".env")).text();
+    const daemonEnv = await Bun.file(path.join(tmpDir, "ework-daemon", ".env")).text();
+    const webMatch = webEnv.match(/^WORK_DAEMON_WEBHOOK_SECRET=(.+)$/m);
+    const daemonMatch = daemonEnv.match(/^GITEA_WEBHOOK_SECRET=(.+)$/m);
+    expect(webMatch).not.toBeNull();
+    expect(daemonMatch).not.toBeNull();
+    expect(webMatch![1]).toBe(daemonMatch![1]);
+    expect(webMatch![1]!.length).toBeGreaterThanOrEqual(32);
+
+    try {
+      const webPid = parseInt(await Bun.file(path.join(tmpDir, "run", "web.pid")).text(), 10);
+      process.kill(webPid, "SIGKILL");
+    } catch { /* already gone */ }
+    try {
+      const daemonPid = parseInt(await Bun.file(path.join(tmpDir, "run", "daemon.pid")).text(), 10);
+      process.kill(daemonPid, "SIGKILL");
+    } catch { /* already gone */ }
+  });
+
+  // Regression: the v0.2.6 shared-secret closure only helps first install.
+  // A user with a broken pre-v0.2.6 install (two different secrets) re-runs
+  // install — forward-fill preserves both, so the bug persists unless the
+  // reconcile step explicitly overwrites the daemon side from the web side.
+  test("reconcile step overwrites mismatched daemon GITEA_WEBHOOK_SECRET from web side on re-install", async () => {
+    // Simulate a broken pre-v0.2.6 install: write both .env files ahead of
+    // time with intentionally different secrets. ensureEnvFile must NOT
+    // overwrite the user-set value (forward-fill principle).
+    await fs.promises.mkdir(path.join(tmpDir, "ework-web"), { recursive: true });
+    await fs.promises.mkdir(path.join(tmpDir, "ework-daemon"), { recursive: true });
+    await Bun.write(
+      path.join(tmpDir, "ework-web", ".env"),
+      "WORK_DAEMON_WEBHOOK_SECRET=webbestsecret1234567890\n",
+    );
+    await Bun.write(
+      path.join(tmpDir, "ework-daemon", ".env"),
+      "GITEA_WEBHOOK_SECRET=daemonbadsecret9999999999\n",
+    );
+
+    await runInstall(opts, silentLogger(), { fetchImpl: makeMockFetch(state) });
+
+    const daemonEnv = await Bun.file(path.join(tmpDir, "ework-daemon", ".env")).text();
+    expect(daemonEnv).toContain("GITEA_WEBHOOK_SECRET=webbestsecret1234567890");
+    expect(daemonEnv).not.toContain("daemonbadsecret");
+
+    try {
+      const webPid = parseInt(await Bun.file(path.join(tmpDir, "run", "web.pid")).text(), 10);
+      process.kill(webPid, "SIGKILL");
+    } catch { /* already gone */ }
+    try {
+      const daemonPid = parseInt(await Bun.file(path.join(tmpDir, "run", "daemon.pid")).text(), 10);
+      process.kill(daemonPid, "SIGKILL");
+    } catch { /* already gone */ }
+  });
+
+  // Regression: pre-v0.2.6 ework-web fell back to /tmp/ework-access.log when
+  // WORK_ACCESS_LOG was unset, which on shared boxes is owned by another
+  // user → EACCES on every request. The installer must always set this to a
+  // path under the user-owned data dir.
+  test("WORK_ACCESS_LOG is set under data dir, not left to /tmp default", async () => {
+    await runInstall(opts, silentLogger(), { fetchImpl: makeMockFetch(state) });
+
+    const webEnv = await Bun.file(path.join(tmpDir, "ework-web", ".env")).text();
+    expect(webEnv).toContain(`WORK_ACCESS_LOG=${tmpDir}/run/web-access.log`);
+    // The bug was ework-web defaulting to a bare /tmp/ework-access.log when
+    // WORK_ACCESS_LOG was unset. Catch exactly that default — not any /tmp
+    // path (test tmpDir itself is under /tmp).
+    expect(webEnv).not.toMatch(/WORK_ACCESS_LOG=\/tmp\/ework-access\.log/);
+
+    try {
+      const webPid = parseInt(await Bun.file(path.join(tmpDir, "run", "web.pid")).text(), 10);
+      process.kill(webPid, "SIGKILL");
+    } catch { /* already gone */ }
+    try {
+      const daemonPid = parseInt(await Bun.file(path.join(tmpDir, "run", "daemon.pid")).text(), 10);
+      process.kill(daemonPid, "SIGKILL");
+    } catch { /* already gone */ }
+  });
 });
