@@ -216,7 +216,7 @@ describe("runInstall: end-to-end (mocked fetch, real FS)", () => {
     // Make `command -v ework-web` find /bin/true via a stub script.
     const stubDir = path.join(tmpDir, "stubs");
     fs.mkdirSync(stubDir, { recursive: true });
-    for (const bin of ["ework-web", "ework-daemon"]) {
+    for (const bin of ["ework-web", "ework-daemon", "ework-daemon-server"]) {
       const stub = path.join(stubDir, bin);
       fs.writeFileSync(stub, `#!/bin/sh\nsleep 60\n`, { mode: 0o755 });
     }
@@ -285,6 +285,18 @@ describe("runInstall: end-to-end (mocked fetch, real FS)", () => {
     const daemonPid = parseInt(await Bun.file(path.join(tmpDir, "run", "daemon.pid")).text(), 10);
     try { process.kill(webPid, "SIGKILL"); } catch { /* already gone */ }
     try { process.kill(daemonPid, "SIGKILL"); } catch { /* already gone */ }
+  });
+
+  // Regression: v0.2.4 and earlier spawned the `ework-daemon` client CLI instead
+  // of `ework-daemon-server`, so the daemon "died" instantly with a help-text
+  // log. The installer must reject an environment where the server bin is
+  // missing even if the client CLI is present, otherwise users get the same
+  // silent-failure mode.
+  test("preflight rejects when ework-daemon-server is missing but ework-daemon client is present", async () => {
+    fs.unlinkSync(path.join(tmpDir, "stubs", "ework-daemon-server"));
+
+    await expect(runInstall(opts, silentLogger(), { fetchImpl: makeMockFetch(state) }))
+      .rejects.toThrow(/ework-daemon-server binary not found on PATH/);
   });
 
   test("second run (idempotent): reuses saved bot token, doesn't re-mint", async () => {
