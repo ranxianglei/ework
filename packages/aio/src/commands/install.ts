@@ -508,7 +508,12 @@ interface BootstrapBotOpts {
 // bootstrapBot: faithful port of install.sh's bot user + PAT flow.
 // Uses the operator's token-derived cookie to drive ework-web's admin API,
 // then logs in as the bot to mint a PAT. Step-by-step idempotence:
-//   - create user: HTTP 303 = created, 400/409 = already exists (continue)
+//   - create user: HTTP 303 = created (password is what we sent)
+//     HTTP 400/409 = already exists → force-reset password via admin API
+//     so the subsequent /login is guaranteed to work. Without this reset,
+//     a bot user left over from a previous failed install keeps its OLD
+//     random password (which we don't know), and /login returns 401 —
+//     the install can never recover without manual DB surgery.
 //   - login as bot: required to get a session cookie for /me/tokens/create
 //   - mint PAT: scrape the token out of the HTML response (the only way
 //     ework-web exposes clear-text tokens, matching install.sh)
@@ -528,8 +533,28 @@ async function bootstrapBot(opts: BootstrapBotOpts): Promise<string> {
     }).toString(),
     redirect: "manual",
   });
-  // 303 = created, 400/409 = already exists. Anything else = abort.
-  if (![303, 400, 409].includes(createRes.status)) {
+  if (createRes.status === 400 || createRes.status === 409) {
+    // Bot user already exists from a previous install attempt. The
+    // password we just sent was IGNORED by ework-web (create only writes
+    // it on first creation). Without resetting, /login below uses the
+    // fresh botPassword which doesn't match the stored hash → 401.
+    // Force-reset via admin endpoint so the password we hold is real.
+    const resetRes = await fetchImpl(
+      `${opts.baseUrl}/admin/users/${encodeURIComponent(opts.botLogin)}/reset-password`,
+      {
+        method: "POST",
+        headers: { Cookie: opts.adminCookie, "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ password: botPassword }).toString(),
+        redirect: "manual",
+      },
+    );
+    if (resetRes.status !== 303) {
+      const body = await resetRes.text();
+      throw new InstallError(
+        `bot user exists but password reset failed (HTTP ${resetRes.status}): ${body.slice(0, 200)}`,
+      );
+    }
+  } else if (createRes.status !== 303) {
     const body = await createRes.text();
     throw new InstallError(`create bot user failed (HTTP ${createRes.status}): ${body.slice(0, 200)}`);
   }

@@ -552,6 +552,73 @@ WORK_DAEMON_WEBHOOK_SECRET=somesecret
     } catch { /* already gone */ }
   });
 
+  // Regression: bot user pre-existing from a prior failed install. Create
+  // returns 400 (already exists) with the user's password set to a random
+  // value we don't know. Without force-resetting via /admin/users/<login>/
+  // reset-password, the subsequent /login uses our fresh random password
+  // which doesn't match the stored hash → HTTP 401 → unrecoverable.
+  // This test pins the recovery path: reset-password MUST be called when
+  // create returns 400, and login MUST succeed afterwards.
+  test("bot user pre-existing → install resets password via admin API and bootstraps successfully", async () => {
+    state.routes.set(
+      "POST http://127.0.0.1:3002/admin/users/create",
+      async () => new Response("user already exists", { status: 400 }),
+    );
+    let resetPasswordCalled = false;
+    let resetPasswordBody: string | undefined;
+    state.routes.set(
+      "POST http://127.0.0.1:3002/admin/users/ework-daemon/reset-password",
+      async (req) => {
+        resetPasswordCalled = true;
+        resetPasswordBody = await req.text();
+        return new Response(null, { status: 303, headers: { Location: "/admin/users" } });
+      },
+    );
+
+    const result = await runInstall(opts, silentLogger(), { fetchImpl: makeMockFetch(state) });
+    expect(result.botBootstrapped).toBe(true);
+    expect(result.botToken).toMatch(/^[a-f0-9]{40}$/);
+    expect(resetPasswordCalled).toBe(true);
+    // Reset body must contain the password we'll then use for login.
+    const resetParams = new URLSearchParams(resetPasswordBody ?? "");
+    expect(resetParams.get("password")?.length).toBe(48); // randomBytes(24).toString("hex")
+
+    // Login handler (default) accepts any password — but the fact that we
+    // got here at all means create→reset→login→mintPAT completed.
+
+    try {
+      const webPid = parseInt(await Bun.file(path.join(tmpDir, "run", "web.pid")).text(), 10);
+      process.kill(webPid, "SIGKILL");
+    } catch { /* already gone */ }
+    try {
+      const daemonPid = parseInt(await Bun.file(path.join(tmpDir, "run", "daemon.pid")).text(), 10);
+      process.kill(daemonPid, "SIGKILL");
+    } catch { /* already gone */ }
+  });
+
+  // If reset-password itself fails (e.g. admin cookie expired mid-flow,
+  // or ework-web version that doesn't have the endpoint), bootstrap must
+  // throw a typed InstallError naming the failure — NOT proceed to login
+  // with a password that won't work.
+  test("reset-password failure surfaces as InstallError (not silent login 401)", async () => {
+    state.routes.set(
+      "POST http://127.0.0.1:3002/admin/users/create",
+      async () => new Response("user already exists", { status: 400 }),
+    );
+    state.routes.set(
+      "POST http://127.0.0.1:3002/admin/users/ework-daemon/reset-password",
+      async () => new Response("forbidden", { status: 403 }),
+    );
+
+    await expect(runInstall(opts, silentLogger(), { fetchImpl: makeMockFetch(state) }))
+      .rejects.toThrow(/install completed with degraded state/);
+
+    try {
+      const webPid = parseInt(await Bun.file(path.join(tmpDir, "run", "web.pid")).text(), 10);
+      process.kill(webPid, "SIGKILL");
+    } catch { /* already gone */ }
+  });
+
   test("PAT scrape matches uppercase XHTML <INPUT VALUE=... ID=...> (case-insensitive regex)", async () => {
     // ework-web template might emit uppercase tag/attr names (XHTML style,
     // server-side template quirks). Without the regex `i` flag this returns
