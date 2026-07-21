@@ -12,7 +12,12 @@ interface WritableStreamLike {
 }
 
 function colorEnabled(stream: WritableStreamLike): boolean {
-  if (process.env.NO_COLOR) return false;
+  // Per no-color.org spec: ANY presence of NO_COLOR in the environment
+  // (including empty string) disables color. The truthy check
+  // `if (process.env.NO_COLOR)` treats `NO_COLOR=` as "not set", which
+  // violates the spec and surprises users who export the empty value
+  // explicitly (e.g. shell rc files).
+  if ("NO_COLOR" in process.env) return false;
   if (process.env.FORCE_COLOR) return true;
   return stream.isTTY ?? false;
 }
