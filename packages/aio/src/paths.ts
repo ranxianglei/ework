@@ -50,7 +50,14 @@ export interface ResolvePathsOptions {
 export function resolvePaths(opts: ResolvePathsOptions): PathConfig {
   const home = os.homedir();
   const xdgDataHome = process.env.XDG_DATA_HOME || path.join(home, ".local", "share");
-  const xdgConfigHome = process.env.XDG_CONFIG_HOME || opts.configHome || path.join(home, ".config");
+  // opts.configHome takes precedence over XDG_CONFIG_HOME so tests can
+  // pin a config dir without polluting or reading the user's real
+  // ~/.config. The previous precedence (env || opts || default) meant
+  // a developer with XDG_CONFIG_HOME set couldn't override it from tests,
+  // and test runs would leak into the real config dir.
+  const xdgConfigHome = opts.configHome
+    || process.env.XDG_CONFIG_HOME
+    || path.join(home, ".config");
 
   const dataDir = opts.dataDir || path.join(xdgDataHome, "ework-aio");
   const webDataDir = path.join(dataDir, "ework-web");
