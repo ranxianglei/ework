@@ -8,6 +8,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { randomBytes } from "node:crypto";
 import { keysForFile, type EnvFile, type InstallContext } from "./config.ts";
 
 export interface EnvMap {
@@ -46,12 +47,26 @@ export function parseEnvFile(content: string): ParsedEnvFile {
     if (eqIdx === -1) continue;
     const key = line.slice(0, eqIdx).trim();
     let value = line.slice(eqIdx + 1);
-    // Strip matching surrounding quotes if present.
+    // Strip matching surrounding quotes if present. Also unescape common
+    // backslash sequences (\\, \", \') so embedded quotes survive the
+    // round-trip. Without unescaping, a value written as KEY="a\"b"
+    // parses as `a\"b` (literal backslash) — silent data corruption
+    // when an env value contains an embedded quote (URLs with apostrophes,
+    // file paths with spaces, etc).
     if (
       (value.startsWith('"') && value.endsWith('"')) ||
       (value.startsWith("'") && value.endsWith("'"))
     ) {
+      const quote = value[0]!;
       value = value.slice(1, -1);
+      if (quote === '"') {
+        value = value.replace(/\\(.)/g, (_m, ch: string) => {
+          if (ch === "n") return "\n";
+          if (ch === "t") return "\t";
+          if (ch === "r") return "\r";
+          return ch; // \\, \", \', \$, etc → drop the backslash
+        });
+      }
     }
     if (key) entries.set(key, value);
   }
@@ -119,7 +134,11 @@ export async function readEnvFile(filePath: string): Promise<ParsedEnvFile | nul
 export async function writeEnvFileAtomic(filePath: string, content: string): Promise<void> {
   const dir = path.dirname(filePath);
   await fs.promises.mkdir(dir, { recursive: true });
-  const tmp = path.join(dir, `.env.tmp.${process.pid}.${Date.now()}`);
+  // Include randomBytes in the tmp name so two concurrent writes (e.g.
+  // install + config set racing on the same .env) don't clobber each
+  // other's tmp file. Date.now alone collides if both happen in the same ms.
+  const suffix = `${process.pid}.${Date.now()}.${randomBytes(4).toString("hex")}`;
+  const tmp = path.join(dir, `.env.tmp.${suffix}`);
   await fs.promises.writeFile(tmp, content, { mode: 0o600 });
   try {
     await fs.promises.rename(tmp, filePath);

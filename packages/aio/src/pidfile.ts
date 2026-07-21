@@ -8,6 +8,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { randomBytes } from "node:crypto";
 
 export interface StartProcessOptions {
   cmd: string;
@@ -83,7 +84,8 @@ export async function startProcess(opts: StartProcessOptions): Promise<StartProc
 export async function writePidFileAtomic(pidFile: string, pid: number): Promise<void> {
   const dir = path.dirname(pidFile);
   await fs.promises.mkdir(dir, { recursive: true });
-  const tmp = path.join(dir, `.pid.tmp.${process.pid}.${Date.now()}`);
+  const suffix = `${process.pid}.${Date.now()}.${randomBytes(4).toString("hex")}`;
+  const tmp = path.join(dir, `.pid.tmp.${suffix}`);
   await fs.promises.writeFile(tmp, `${pid}\n`, { mode: 0o644 });
   try {
     await fs.promises.rename(tmp, pidFile);

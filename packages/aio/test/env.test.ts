@@ -53,6 +53,54 @@ describe("parseEnvFile", () => {
     expect(parsed.entries.get("FOO")).toBe('"bar\'');
   });
 
+  // G17: value with `=` inside (URL with querystring, base64 data, etc).
+  // parseEnvFile uses indexOf (first =) so this always worked, but no test
+  // pinned it — a refactor to split('=') would silently truncate values.
+  it("preserves = characters inside the value (G17)", () => {
+    const parsed = parseEnvFile("WORK_TRANSLATE_URL=http://x/?a=b&c=d\n");
+    expect(parsed.entries.get("WORK_TRANSLATE_URL")).toBe("http://x/?a=b&c=d");
+  });
+
+  it("preserves = inside double-quoted value", () => {
+    const parsed = parseEnvFile('TOKEN="abc==def=="\n');
+    expect(parsed.entries.get("TOKEN")).toBe("abc==def==");
+  });
+
+  // Quote unescape: KEY="a\"b" must round-trip to literal `a"b`, not `a\"b`.
+  // Without this, env values with embedded quotes (URLs with apostrophes,
+  // JSON snippets, etc) silently corrupt across read/write cycles.
+  it("unescapes embedded double quotes inside double-quoted value", () => {
+    const parsed = parseEnvFile('FOO="a\\"b"\n');
+    expect(parsed.entries.get("FOO")).toBe('a"b');
+  });
+
+  it("unescapes \\\\ to \\", () => {
+    const parsed = parseEnvFile('FOO="a\\\\b"\n');
+    expect(parsed.entries.get("FOO")).toBe("a\\b");
+  });
+
+  it("unescapes \\n to newline character", () => {
+    const parsed = parseEnvFile('FOO="line1\\nline2"\n');
+    expect(parsed.entries.get("FOO")).toBe("line1\nline2");
+  });
+
+  it("unescapes \\t to tab character", () => {
+    const parsed = parseEnvFile('FOO="col1\\tcol2"\n');
+    expect(parsed.entries.get("FOO")).toBe("col1\tcol2");
+  });
+
+  it("passes through unknown \\x sequences by dropping the backslash", () => {
+    // \', \$, \q etc → the char itself (permissive bash-like rule).
+    const parsed = parseEnvFile('FOO="a\\\'b"\n');
+    expect(parsed.entries.get("FOO")).toBe("a'b");
+  });
+
+  it("does NOT unescape inside single-quoted values (single = literal)", () => {
+    // Single-quoted values in shell are literal — no escape processing.
+    const parsed = parseEnvFile("FOO='a\\nb'\n");
+    expect(parsed.entries.get("FOO")).toBe("a\\nb");
+  });
+
   it("preserves comments and blank lines in rawLines", () => {
     const content = "# header comment\n\nFOO=bar\n\n# trailing comment\n";
     const parsed = parseEnvFile(content);
