@@ -357,6 +357,25 @@ export async function runInstall(
     await patchEnvKey(paths.daemonEnvFile, "GITEA_TOKEN", botToken);
   }
 
+  // 10.5 Reconcile webhook secret across web and daemon .env files.
+  // Pre-v0.2.6 installs generated two independent hex(20) values for
+  // WORK_DAEMON_WEBHOOK_SECRET (web) and GITEA_WEBHOOK_SECRET (daemon),
+  // so signature verification always failed. Forward-fill won't fix this
+  // because both keys already exist. We treat web as the source of truth
+  // (ework-web's DB has webhook rows signed with whatever
+  // WORK_DAEMON_WEBHOOK_SECRET was at creation time) and overwrite daemon.
+  {
+    const webSecret = await readEnvKey(paths.webEnvFile, "WORK_DAEMON_WEBHOOK_SECRET");
+    const daemonSecret = await readEnvKey(paths.daemonEnvFile, "GITEA_WEBHOOK_SECRET");
+    if (webSecret && daemonSecret && webSecret !== daemonSecret) {
+      await patchEnvKey(paths.daemonEnvFile, "GITEA_WEBHOOK_SECRET", webSecret);
+      logger.warn(`webhook secret mismatch — overwrote daemon GITEA_WEBHOOK_SECRET to match web`);
+    } else if (webSecret && !daemonSecret) {
+      await patchEnvKey(paths.daemonEnvFile, "GITEA_WEBHOOK_SECRET", webSecret);
+      logger.ok(`propagated WORK_DAEMON_WEBHOOK_SECRET → GITEA_WEBHOOK_SECRET`);
+    }
+  }
+
   // 11. (Systemd only) Write + install daemon unit.
   if (opts.useSystemd && paths.daemonUnitFile && systemdOk && !opts.noStart) {
     const userInfo = os.userInfo();
