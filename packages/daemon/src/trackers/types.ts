@@ -29,6 +29,10 @@ export interface TrackerEvent {
     body: string;
     author: string;
   };
+  // Resolved "provider/model" string from ework-web (project override or
+  // global default). Empty/undefined = no override; engine omits --model
+  // and lets opencode pick per its own opencode.json + env.
+  model?: string;
 }
 
 /** Tracker-agnostic comment */
@@ -94,6 +98,10 @@ export interface Message {
   error?: string;
   createdAt: Date;
   updatedAt: Date;
+  // Resolved "provider/model" string from ework-web. When set, engine pushes
+  // `--model <X>` on opencode spawn to override opencode.json + env vars.
+  // Undefined = no override (let opencode pick).
+  model?: string;
 }
 
 // ─── Adapter Interface ───

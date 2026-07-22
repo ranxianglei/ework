@@ -165,9 +165,9 @@ export class Engine {
 
     switch (event.type) {
       case "issue_opened":
-        return this.handleOpened(ref, scopeKey, issueData, tracker);
+        return this.handleOpened(ref, scopeKey, issueData, tracker, event.model);
       case "comment_created":
-        return this.handleCommented(ref, scopeKey, issueData, event.comment!, tracker);
+        return this.handleCommented(ref, scopeKey, issueData, event.comment!, tracker, event.model);
       case "issue_closed":
         return this.handleClosed(ref, scopeKey, tracker);
     }
@@ -177,7 +177,8 @@ export class Engine {
     ref: TrackerRef,
     scopeKey: string,
     issueData: TrackerEvent["issue"],
-    tracker: IssueTracker
+    tracker: IssueTracker,
+    model?: string,
   ) {
     // Create or find issue
     const issue = this.store.findOrCreateIssue(ref, scopeKey, issueData.title);
@@ -217,7 +218,7 @@ export class Engine {
       this.handleLargeContent(workdir, issueData.body, "issue-body.txt"),
       issueData.author, workdir, instructions
     );
-    this.enqueueOrRun(session, issue, prompt);
+    this.enqueueOrRun(session, issue, prompt, undefined, model);
   }
 
   private async handleCommented(
@@ -225,7 +226,8 @@ export class Engine {
     scopeKey: string,
     issueData: TrackerEvent["issue"],
     comment: NonNullable<TrackerEvent["comment"]>,
-    tracker: IssueTracker
+    tracker: IssueTracker,
+    model?: string,
   ) {
     if (!comment) return;
 
@@ -281,7 +283,7 @@ export class Engine {
         // Immediate ack
         await tracker.createComment(ref, `[system] ✓ Message forwarded to **${session.name}**${this.running.has(this.sessionKey(session, issue)) ? " (running)" : ""}.\n> session: \`${session.id}\` | workdir: \`${workdir}\``);
 
-        this.enqueueOrRun(session, issue, prompt, comment.id);
+        this.enqueueOrRun(session, issue, prompt, comment.id, model);
       } else {
         // Create new session
         session = this.store.createSession(issue.id, mentionName);
@@ -299,7 +301,7 @@ export class Engine {
           this.handleLargeContent(workdir, issueData.body, "issue-body.txt"),
           issueData.author, workdir, instructions
         );
-        this.enqueueOrRun(session, issue, prompt, comment.id);
+        this.enqueueOrRun(session, issue, prompt, comment.id, model);
       }
     } else {
       // No @mention → broadcast to all sessions on this issue
@@ -317,7 +319,7 @@ export class Engine {
           session.name, this.handleLargeContent(workdir, comment.body, `comment-${comment.id}.txt`),
           comment.author, issueData.title, workdir, instructions
         );
-        this.enqueueOrRun(session, issue, prompt, comment.id);
+        this.enqueueOrRun(session, issue, prompt, comment.id, model);
       }
 
       // Immediate ack
@@ -382,13 +384,13 @@ export class Engine {
 
   // ─── Preemptive Scheduler ───
 
-  private enqueueOrRun(session: OpSession, issue: Issue, prompt: string, sourceCommentId?: string) {
+  private enqueueOrRun(session: OpSession, issue: Issue, prompt: string, sourceCommentId?: string, model?: string) {
     const k = this.sessionKey(session, issue);
 
     this.stuckNudgeRounds.delete(k);
     this.processExitNudgeRounds.delete(k);
 
-    const msg = this.store.createMessage(session.id, prompt, sourceCommentId);
+    const msg = this.store.createMessage(session.id, prompt, sourceCommentId, undefined, model);
 
     if (this.running.has(k)) {
       // PREEMPTIVE: Kill running process, new message takes priority
@@ -454,6 +456,12 @@ export class Engine {
     const args = [this.cfg.opencode.binary, "run", "--format", "json", "--dir", workdir];
     if (session.opencodeSessionId) {
       args.push("--session", session.opencodeSessionId);
+    }
+    // Push --model BEFORE the message content. Defends against env-var-
+    // registered providers stealing the slot (the original bug). Empty/
+    // undefined = omit, let opencode pick per its own opencode.json.
+    if (msg.model) {
+      args.push("--model", msg.model);
     }
     args.push(msg.content);
 

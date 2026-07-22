@@ -119,6 +119,11 @@ export class GiteaTracker implements IssueTracker {
     const repoName = repository.name as string;
     if (!repoOwner || !repoName) return null;
 
+    // ework-web extension (non-Gitea field, ignored by strict Gitea consumers).
+    // Empty/missing = no model override; engine omits --model.
+    const modelRaw = repository.ework_model;
+    const model = typeof modelRaw === "string" && modelRaw.trim() ? modelRaw.trim() : undefined;
+
     const ref: TrackerRef = {
       trackerType: "gitea",
       scope: { owner: repoOwner, repo: repoName },
@@ -137,6 +142,7 @@ export class GiteaTracker implements IssueTracker {
           state: (issue.state as string) ?? "open",
           author: issueUser?.login ?? "",
         },
+        model,
       };
     }
 
@@ -156,6 +162,7 @@ export class GiteaTracker implements IssueTracker {
           body: comment.body as string,
           author: commentUser?.login ?? "",
         },
+        model,
       };
     }
 
@@ -169,6 +176,7 @@ export class GiteaTracker implements IssueTracker {
           state: "closed",
           author: issueUser?.login ?? "",
         },
+        model,
       };
     }
 

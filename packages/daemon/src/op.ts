@@ -432,7 +432,7 @@ export class Store {
 
   // ─── Messages ───
 
-  createMessage(sessionId: string, content: string, sourceCommentId?: string, reactionCommentId?: string): Message {
+  createMessage(sessionId: string, content: string, sourceCommentId?: string, reactionCommentId?: string, model?: string): Message {
     const now = new Date().toISOString();
     const id = crypto.randomUUID();
     this.msgStmts.insert.run(
@@ -444,6 +444,7 @@ export class Store {
       id, sessionId, content, sourceCommentId, reactionCommentId,
       status: "pending", attempts: 0,
       createdAt: new Date(now), updatedAt: new Date(now),
+      model,
     };
   }
 
