@@ -76,6 +76,9 @@ async function handleChatCompletion(req: Request): Promise<Response> {
   log(`  body: stream=${body?.stream} model=${body?.model} msgs=${body?.messages?.length} tools=${body?.tools?.length ?? 0}`);
 
   const messages = Array.isArray(body?.messages) ? body.messages : [];
+  const tools = Array.isArray(body?.tools) ? body.tools : [];
+  const lastMsg = messages[messages.length - 1];
+  const lastRole = lastMsg?.role;
   const userMsgs = messages.filter((m: any) => m?.role === "user");
   const lastUser = userMsgs[userMsgs.length - 1];
   const userText = typeof lastUser?.content === "string"
@@ -83,6 +86,36 @@ async function handleChatCompletion(req: Request): Promise<Response> {
     : Array.isArray(lastUser?.content)
       ? lastUser.content.map((p: any) => p?.text ?? "").join(" ")
       : "";
+
+  const hasReplyTool = tools.some((t: any) => t?.function?.name === "reply");
+
+  // Tool-call path: when `reply` is registered and the last message is the
+  // user's initial prompt (not a tool_result), emit a tool_use so opencode
+  // actually invokes the reply tool → ework-web posts a [bot] comment on the
+  // issue. Without this the daemon only posts its [system] "picked up"
+  // notification and the LLM-driven auto-reply loop never fires.
+  //
+  // After opencode executes the tool it makes a follow-up call with
+  // role=tool in the messages — at that point we drop back to text.
+  if (hasReplyTool && lastRole === "user") {
+    const ref = parseIssueRef(userText);
+    if (ref) {
+      log(`  emitting reply tool_use → ${ref.owner}/${ref.repo}#${ref.number}`);
+      const toolReplyBody =
+        `[bot] E2E fake-LLM auto-reply.\n\n` +
+        `Picked up ${ref.owner}/${ref.repo}#${ref.number}. ` +
+        `This is a stub reply emitted by scripts/fake-llm-server.ts to exercise ` +
+        `the opencode-ework \`reply\` tool end-to-end. The real value of this ` +
+        `test is that opencode received a tool_use, executed the reply tool, ` +
+        `and ework-web posted this comment as ${process.env.BOT_USERNAME ?? "bot"}.`;
+      return toolCallResponse(body?.model ?? "fake-model", "reply", {
+        owner: ref.owner,
+        repo: ref.repo,
+        number: ref.number,
+        body: toolReplyBody,
+      }, body?.stream === true);
+    }
+  }
 
   // Deterministic, context-aware reply: echo a snippet of the user's last
   // message so the session transcript has traceable content (not just a
@@ -125,6 +158,133 @@ async function handleChatCompletion(req: Request): Promise<Response> {
       },
     ],
     usage,
+  });
+}
+
+// Parse an issue ref of the form `<owner>/<repo>#<n>` out of arbitrary text
+// (typically the user prompt built by ework-daemon's buildInitialPrompt,
+// which includes "(gitea:owner/repo#N)"). Returns null if no match.
+function parseIssueRef(text: string): { owner: string; repo: string; number: number } | null {
+  const m = text.match(/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)#(\d+)/);
+  if (!m) return null;
+  const [, owner, repo, num] = m;
+  const number = parseInt(num, 10);
+  if (!Number.isFinite(number)) return null;
+  return { owner, repo, number };
+}
+
+// Emit a tool_use response (OpenAI function-calling format). Supports both
+// streaming and non-streaming because opencode defaults to stream=true but
+// curl smoke tests use non-streaming.
+function toolCallResponse(model: string, toolName: string, args: Record<string, unknown>, stream: boolean): Response {
+  const id = `chatcmpl-fake-${crypto.randomUUID()}`;
+  const created = Math.floor(Date.now() / 1000);
+  const callId = `call_${crypto.randomUUID().replace(/-/g, "").slice(0, 24)}`;
+  const argsJson = JSON.stringify(args);
+  const usage = {
+    prompt_tokens: roughTokens(argsJson),
+    completion_tokens: roughTokens(argsJson),
+    total_tokens: roughTokens(argsJson) * 2,
+  };
+
+  if (!stream) {
+    return json({
+      id,
+      object: "chat.completion",
+      created,
+      model,
+      choices: [
+        {
+          index: 0,
+          message: {
+            role: "assistant",
+            content: null,
+            tool_calls: [
+              {
+                id: callId,
+                type: "function",
+                function: { name: toolName, arguments: argsJson },
+              },
+            ],
+          },
+          finish_reason: "tool_calls",
+        },
+      ],
+      usage,
+    });
+  }
+
+  const encoder = new TextEncoder();
+  const readable = new ReadableStream({
+    start(controller) {
+      // Initial chunk: declare the tool_call with name + empty arguments.
+      controller.enqueue(
+        encoder.encode(
+          sseLine({
+            id,
+            object: "chat.completion.chunk",
+            created,
+            model,
+            choices: [{
+              index: 0,
+              delta: {
+                role: "assistant",
+                content: null,
+                tool_calls: [{
+                  index: 0,
+                  id: callId,
+                  type: "function",
+                  function: { name: toolName, arguments: "" },
+                }],
+              },
+              finish_reason: null,
+            }],
+          }),
+        ),
+      );
+      // Arguments chunk: full JSON in one shot (splitting is optional).
+      controller.enqueue(
+        encoder.encode(
+          sseLine({
+            id,
+            object: "chat.completion.chunk",
+            created,
+            model,
+            choices: [{
+              index: 0,
+              delta: {
+                tool_calls: [{ index: 0, function: { arguments: argsJson } }],
+              },
+              finish_reason: null,
+            }],
+          }),
+        ),
+      );
+      // Final chunk: finish_reason + usage.
+      controller.enqueue(
+        encoder.encode(
+          sseLine({
+            id,
+            object: "chat.completion.chunk",
+            created,
+            model,
+            choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
+            usage,
+          }),
+        ),
+      );
+      controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+      controller.close();
+    },
+  });
+
+  return new Response(readable, {
+    headers: {
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache",
+      "connection": "keep-alive",
+      "access-control-allow-origin": "*",
+    },
   });
 }
 
