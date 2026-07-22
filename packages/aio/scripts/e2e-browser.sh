@@ -150,6 +150,9 @@ cat > "$OPENCODE_CONFIG_DIR/opencode.json" <<OCJSON
       "models": {
         "fake-model": {
           "name": "Fake Model"
+        },
+        "e2e-daemon-override": {
+          "name": "E2E Daemon Override"
         }
       }
     }
@@ -197,6 +200,28 @@ COOKIE_SIG=$(printf '%s' "$WORK_TOKEN" \
   | openssl dgst -sha256 -hmac "$WORK_COOKIE_SECRET" -binary \
   | base64 | tr '+/' '-_' | tr -d '=')
 AUTH_COOKIE="ework_auth=${WORK_TOKEN}.${COOKIE_SIG}"
+
+info "configure global defaultModel via /settings (model config E2E)"
+# Set defaultModel to a UNIQUE model name (different from the smoke test's
+# fake/fake-model) so we can distinguish daemon-driven spawn from smoke test.
+# If ework-daemon honors the new --model flag, fake-llm will see
+# `model=e2e-daemon-override` in the request body. If it doesn't, fake-llm
+# keeps seeing `model=fake-model` (opencode falls back to opencode.json).
+E2E_MODEL_ID="fake/e2e-daemon-override"
+SETTINGS_RESP=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+  "http://127.0.0.1:$WORK_PORT/settings" \
+  -H "Cookie: $AUTH_COOKIE" \
+  --data-urlencode "defaultModel=$E2E_MODEL_ID")
+[[ "$SETTINGS_RESP" == "303" ]] \
+  || fail "POST /settings defaultModel=$E2E_MODEL_ID failed (status=$SETTINGS_RESP)"
+pass "global defaultModel configured: $E2E_MODEL_ID"
+# Pre-populate the model_cache so the settings UI's select shows our entry
+# (also exercises the refresh endpoint added in ework-web 0.2.0).
+curl -sS -o /dev/null -X POST \
+  "http://127.0.0.1:$WORK_PORT/settings/models/refresh" \
+  -H "Cookie: $AUTH_COOKIE" || true
+# Mark timestamp so we can scope fake-llm log analysis to AFTER this point.
+E2E_MODEL_CONFIG_TS=$(date +%s)
 
 # Create project (idempotent — if it exists, 303 is still returned).
 curl -sS -o /dev/null -w 'project: %{http_code}\n' -X POST \
@@ -272,6 +297,24 @@ for i in $(seq 1 30); do
   sleep 1
   [[ $i -eq 30 ]] && fail "session never got assistant reply (msgs=$MSG_COUNT)";
 done
+
+info "verify daemon honored --model override from ework-web defaultModel"
+# fake-llm logs `model=<X>` for each /v1/chat/completions request. The smoke
+# test ran with fake/fake-model. The daemon-driven spawn (after we set
+# defaultModel=fake/e2e-daemon-override in /settings) MUST show
+# model=e2e-daemon-override in subsequent requests. If we still see only
+# model=fake-model → daemon didn't pass --model through (regression).
+if grep -q "model=e2e-daemon-override" /tmp/fake-llm.log; then
+  pass "daemon spawn honored ework-web defaultModel (fake-llm saw model=e2e-daemon-override)"
+else
+  echo "  --- fake-llm log (model= lines only) ---"
+  grep -E 'model=' /tmp/fake-llm.log | tail -10 || echo "(no model= entries)"
+  echo "  --- daemon.log (last 30) ---"
+  tail -30 "$DATA_DIR/run/daemon.log" 2>/dev/null || echo "(no daemon.log)"
+  echo "  --- ework-web + ework-daemon installed versions ---"
+  npm ls -g ework-web ework-daemon 2>&1 | grep -E 'ework-' | head -5
+  fail "daemon did NOT pass --model through (fake-llm never saw model=e2e-daemon-override)"
+fi
 
 info "verify session is browsable via awork-web"
 # awork-web's OpencodeClient reads opencode.db and calls `opencode export`.
