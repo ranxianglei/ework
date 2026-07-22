@@ -53,6 +53,9 @@ import {
   removeProjectMember,
   countProjectAdmins,
   getProjectMembership,
+  setProjectModel,
+  listCachedModels,
+  replaceCachedModels,
   type ProjectRole,
   type UserRow,
 } from "./store";
@@ -80,6 +83,7 @@ import { classifyActor, type CommentView } from "./render/components";
 import { buildWebhooksPage } from "./views/webhooks";
 import { buildProjectMembersPage } from "./views/projectMembers";
 import { buildProjectUpstreamsPage, trySetUpstreamUrls } from "./views/projectUpstreams";
+import { buildProjectModelPage } from "./views/projectModel";
 import { handleGiteaApi } from "./giteaApi";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -180,6 +184,7 @@ const REPO_MEMBERS_RE = /^\/([^/]+)\/([^/]+)\/settings\/members$/;
 const REPO_MEMBER_ACTION_RE = /^\/([^/]+)\/([^/]+)\/settings\/members\/([^/]+)\/(role|remove)$/;
 const REPO_MEMBER_ADD_RE = /^\/([^/]+)\/([^/]+)\/settings\/members\/add$/;
 const REPO_UPSTREAMS_RE = /^\/([^/]+)\/([^/]+)\/settings\/upstreams$/;
+const REPO_MODEL_RE = /^\/([^/]+)\/([^/]+)\/settings\/model$/;
 const WH_ACTION_RE = /^\/__wh\/(\d+)\/(delete|toggle|test)$/;
 const SESSIONS_RE = /^\/sessions$/;
 const SESSION_VIEW_RE = /^\/sessions\/([A-Za-z0-9_-]+)$/;
@@ -601,7 +606,7 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
 
   if (url.pathname === "/settings") {
     if (req.method === "GET") {
-      return html(buildSettingsPage(cfg, url.searchParams.get("saved") === "1", ctx.user!).html);
+      return html(buildSettingsPage(cfg, url.searchParams.get("saved") === "1", ctx.user!, listCachedModels()).html);
     }
     if (req.method === "POST") {
       if (!rateLimit(`settings:${ip}`, 10, 10 / 60)) return html(errorPage("太快了", "请稍后再试"), 429);
@@ -619,6 +624,15 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
       rh.set("location", "/settings?saved=1");
       return new Response(null, { status: 303, headers: rh });
     }
+  }
+
+  if (url.pathname === "/settings/models/refresh" && req.method === "POST") {
+    if (!ctx.user || ctx.user.is_admin !== 1) return html(errorPage("403", "需要管理员"), 403);
+    const ids = await opencode.listModels();
+    replaceCachedModels(ids);
+    const rh = new Headers(SEC_HEADERS);
+    rh.set("location", "/settings?saved=1");
+    return new Response(null, { status: 303, headers: rh });
   }
 
   if (url.pathname === "/me") {
@@ -1147,6 +1161,27 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
       return Response.redirect(`${back}?err=${encodeURIComponent(result.msg)}`, 303);
     }
 
+    const modelSave = url.pathname.match(REPO_MODEL_RE);
+    if (modelSave) {
+      const [, owner, repo] = modelSave;
+      if (!(owner && repo)) return html(errorPage("bad path", ""), 400);
+      const project = getProject(owner, repo);
+      if (!project) return html(errorPage("项目不存在", ""), 404);
+      const back = `${url.origin}/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/settings/model`;
+      if (!canAdminProject(project.id, ctx.user)) {
+        return Response.redirect(`${back}?err=${encodeURIComponent("无权限")}`, 303);
+      }
+      const form = await req.formData().catch(() => new FormData());
+      const raw = String(form.get("model") ?? "").trim();
+      try {
+        setProjectModel(project.id, raw);
+        return Response.redirect(`${back}?ok=1&ok_msg=${encodeURIComponent("模型已保存")}`, 303);
+      } catch (e) {
+        const msg = e instanceof StoreError ? e.message : (e instanceof Error ? e.message : "保存失败");
+        return Response.redirect(`${back}?err=${encodeURIComponent(msg)}`, 303);
+      }
+    }
+
     return json({ error: "not found" }, 404);
   }
 
@@ -1261,6 +1296,21 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     const flashMsg = flashKind === "ok" ? (url.searchParams.get("ok_msg") ?? "") : (url.searchParams.get("err") ?? "");
     const flash = flashKind ? { kind: flashKind as "ok" | "err", msg: flashMsg } : null;
     return html(buildProjectUpstreamsPage(ctx.user!, project, flash));
+  }
+
+  const modelPage = url.pathname.match(REPO_MODEL_RE);
+  if (modelPage) {
+    const [, owner, repo] = modelPage;
+    if (!(owner && repo)) return html(errorPage("404", "bad path"), 404);
+    const project = getProject(owner, repo);
+    if (!project) return html(errorPage("项目不存在", "项目未创建"), 404);
+    if (!canAdminProject(project.id, ctx.user)) {
+      return html(errorPage("无权限", "需要该项目 admin 角色才能管理模型"), 403);
+    }
+    const flashKind = url.searchParams.get("ok") === "1" ? "ok" : url.searchParams.get("err") ? "err" : null;
+    const flashMsg = flashKind === "ok" ? (url.searchParams.get("ok_msg") ?? "") : (url.searchParams.get("err") ?? "");
+    const flash = flashKind ? { kind: flashKind as "ok" | "err", msg: flashMsg } : null;
+    return html(buildProjectModelPage(project, cfg.defaultModel, listCachedModels(), flash).html);
   }
 
   const repoMatch = url.pathname.match(REPO_RE);

@@ -1,9 +1,9 @@
 import type { Config, SettingGroup } from "../config";
 import { SETTINGS_GROUPS } from "../config";
 import { THEME_CSS, escapeHtml, escapeAttr } from "../render/layout";
-import type { UserRow } from "../store";
+import type { UserRow, CachedModel } from "../store";
 
-function fieldInput(group: SettingGroup, cfg: Config): string {
+function fieldInput(group: SettingGroup, cfg: Config, models: CachedModel[]): string {
   return group.fields
     .map((f) => {
       const cur = String(cfg[f.key] ?? "");
@@ -16,21 +16,38 @@ function fieldInput(group: SettingGroup, cfg: Config): string {
           .join("");
         return `<label class="sf"><span>${escapeHtml(f.label)}</span><select name="${escapeAttr(String(f.key))}">${opts}</select></label>`;
       }
+      if (f.type === "model") {
+        // If the cache is empty (opencode not yet polled), fall back to a free
+        // text input so the user can still type a known provider/model id.
+        if (models.length === 0) {
+          return `<label class="sf"><span>${escapeHtml(f.label)}</span><input type="text" name="${escapeAttr(String(f.key))}" value="${escapeAttr(cur)}" placeholder="provider/model（点下面的刷新拉列表）"></label>`;
+        }
+        const opts = [`<option value=""${cur === "" ? " selected" : ""}>（用 opencode 默认）</option>`]
+          .concat(
+            models.map(
+              (m) =>
+                `<option value="${escapeAttr(m.id)}"${m.id === cur ? " selected" : ""}>${escapeHtml(m.label)}</option>`
+            )
+          )
+          .join("");
+        return `<label class="sf"><span>${escapeHtml(f.label)}</span><select name="${escapeAttr(String(f.key))}">${opts}</select></label>`;
+      }
       const inp = f.type === "number" ? "number" : "text";
       return `<label class="sf"><span>${escapeHtml(f.label)}</span><input type="${inp}" name="${escapeAttr(String(f.key))}" value="${escapeAttr(cur)}"></label>`;
     })
     .join("");
 }
 
-export function buildSettingsPage(cfg: Config, saved: boolean, viewer: UserRow): { html: string } {
+export function buildSettingsPage(cfg: Config, saved: boolean, viewer: UserRow, models: CachedModel[]): { html: string } {
   const groups = SETTINGS_GROUPS.map(
     (g) =>
-      `<section class="sg"><h2>${escapeHtml(g.title)}</h2>${fieldInput(g, cfg)}</section>`
+      `<section class="sg"><h2>${escapeHtml(g.title)}</h2>${fieldInput(g, cfg, models)}</section>`
   ).join("");
   const banner = saved ? `<div class="saved">✓ 已保存，立即生效</div>` : "";
   const ttsLink = viewer.is_admin === 1
     ? `<p class="hint">要增删朗读后端（kokoro / cosyvoice3 等），去 <a href="/admin/tts-backends">朗读后端管理</a>。</p>`
     : "";
+  const modelRefreshForm = `<form method="POST" action="/settings/models/refresh" style="margin-top:.4rem"><button type="submit" class="secondary">🔄 刷新 opencode 模型列表</button></form>`;
   const html = `<!doctype html>
 <html lang="zh"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -51,6 +68,7 @@ h1{font-size:18px;margin:0 0 .4rem}
 .saved{background:#1f6feb;color:#fff;padding:.5rem .8rem;border-radius:6px;font-size:13px;margin-bottom:.9rem}
 .bar{display:flex;gap:.6rem;align-items:center;margin-top:.4rem}
 button{padding:.5rem 1.2rem;border:0;border-radius:6px;background:var(--accent);color:#fff;font-size:13px;cursor:pointer}
+button.secondary{background:transparent;color:var(--text-muted);border:1px solid var(--border)}
 .a-back{color:var(--text-muted);font-size:13px}
 </style></head><body>
 <header class="nav"><a href="/" style="color:var(--header-text)">🏠 ework-web</a><span style="opacity:.8"> · 设置</span></header>
@@ -61,6 +79,7 @@ ${banner}
 <form method="POST" action="/settings">${groups}
 <div class="bar"><button type="submit">保存</button><a class="a-back" href="/">返回</a></div>
 </form>
+${modelRefreshForm}
 ${ttsLink}
 </main></body></html>`;
   return { html };

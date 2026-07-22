@@ -78,6 +78,11 @@ export const configSchema = z.object({
   daemonBotLogin: z.string().default(""),
   daemonWebhookUrl: z.string().default(""),
   daemonWebhookSecret: z.string().default(""),
+  // Default "provider/model" string passed to `opencode run --model <X>`.
+  // Empty = let opencode pick per its own opencode.json + env. ework-daemon
+  // pushes this (or the per-project override) on every spawn to defend
+  // against env-var-registered providers stealing the model slot.
+  defaultModel: z.string().default(""),
   autowireActive: z.coerce.boolean().default(true),
   webhookMaxConcurrent: z.preprocess((v) => {
     const n = typeof v === "number" ? v : Number(v);
@@ -88,7 +93,7 @@ export const configSchema = z.object({
 
 export type Config = z.infer<typeof configSchema>;
 
-export type FieldType = "text" | "number" | "backend";
+export type FieldType = "text" | "number" | "backend" | "model";
 export interface SettingField {
   key: keyof Config;
   label: string;
@@ -99,6 +104,12 @@ export interface SettingGroup {
   fields: SettingField[];
 }
 export const SETTINGS_GROUPS: SettingGroup[] = [
+  {
+    title: "AI 模型",
+    fields: [
+      { key: "defaultModel", label: "默认模型（空 = 用 opencode 自己的默认）", type: "model" },
+    ],
+  },
   {
     title: "翻译",
     fields: [
@@ -166,6 +177,7 @@ export function loadConfig(): Config {
     daemonBotLogin: process.env.WORK_DAEMON_BOT_LOGIN ?? "",
     daemonWebhookUrl: process.env.WORK_DAEMON_WEBHOOK_URL ?? "",
     daemonWebhookSecret: process.env.WORK_DAEMON_WEBHOOK_SECRET ?? "",
+    defaultModel: db.defaultModel ?? process.env.WORK_DEFAULT_MODEL,
     autowireActive: process.env.WORK_AUTOWIRE_ACTIVE !== "false",
     webhookMaxConcurrent: Number(process.env.WORK_WEBHOOK_MAX_CONCURRENT ?? "6"),
   });
