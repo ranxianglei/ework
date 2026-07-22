@@ -132,7 +132,7 @@ pass "both services responding"
 
 info "configure opencode to use fake LLM"
 # Overwrite ~/.config/opencode/opencode.json with fake provider + plugin.
-# install.ts only registers the plugin; we add the fake provider here so
+# install.ts only registers opencode-ework; we add the fake provider here so
 # the test stays isolated from any real API credentials.
 OPENCODE_CONFIG_DIR="$HOME/.config/opencode"
 mkdir -p "$OPENCODE_CONFIG_DIR"
@@ -292,6 +292,20 @@ if ! echo "$SESSIONS_HTML" | grep -q "$SESSION_ID"; then
   fail "/sessions list does not contain the new session ID"
 fi
 pass "/sessions lists the new session"
+
+# Diagnostic: capture raw `opencode export <id>` stdout to see whether plugins
+# emit banners into the JSON stream in this test environment. Production hit a
+# bug where ework-web's JSON.parse choked on these preamble lines; if they
+# appear here, the test must catch the failure rather than silently passing.
+EXPORT_RAW=$(opencode export "$SESSION_ID" 2>/dev/null </dev/null || true)
+EXPORT_LINE_COUNT=$(printf '%s\n' "$EXPORT_RAW" | wc -l)
+JSON_START_LINE=$(printf '%s\n' "$EXPORT_RAW" | grep -nE '^\s*[{]' | head -1 | cut -d: -f1 || echo 0)
+echo "  opencode export raw stdout: $EXPORT_LINE_COUNT lines, JSON object opens at line $JSON_START_LINE"
+if [[ "$EXPORT_LINE_COUNT" -gt 1 && "$JSON_START_LINE" -gt 1 ]]; then
+  echo "  --- first 5 lines (non-JSON preamble) ---"
+  printf '%s\n' "$EXPORT_RAW" | head -5 | sed 's/^/    /'
+  echo "  WARNING: stdout has non-JSON preamble — ework-web's old JSON.parse would fail here"
+fi
 
 SESSION_PAGE_HTML=$(curl -sS -H "Cookie: $AUTH_COOKIE" "http://127.0.0.1:$WORK_PORT/sessions/$SESSION_ID")
 # Look for any marker that the fake LLM reply rendered. The reply body always
