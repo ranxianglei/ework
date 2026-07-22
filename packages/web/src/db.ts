@@ -55,6 +55,9 @@ function migrateProjectsTable(db: Database): void {
   if (!have.has("upstream_urls")) {
     db.exec("ALTER TABLE projects ADD COLUMN upstream_urls TEXT NOT NULL DEFAULT '[]'");
   }
+  if (!have.has("model")) {
+    db.exec("ALTER TABLE projects ADD COLUMN model TEXT NOT NULL DEFAULT ''");
+  }
 }
 
 function migrateIssuesTable(db: Database): void {

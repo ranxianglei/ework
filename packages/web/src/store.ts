@@ -35,8 +35,14 @@ export interface ProjectRow {
   name: string;
   description: string;
   upstream_urls: string;
+  model: string;
   created_at: string;
   updated_at: string;
+}
+
+export interface CachedModel {
+  id: string;
+  label: string;
 }
 
 export interface IssueRow {
@@ -230,6 +236,58 @@ export function setProjectUpstreamUrls(projectId: number, urls: string[]): strin
     .query("UPDATE projects SET upstream_urls = ?, updated_at = ? WHERE id = ?")
     .run(JSON.stringify(cleaned), ts, projectId);
   return cleaned;
+}
+
+// `provider/model` shape (alphanumeric + ._-. on both sides of the slash).
+// Same regex as OpencodeClient.listModels — keep in sync.
+const MODEL_RE = /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/;
+
+export function setProjectModel(projectId: number, model: string): string {
+  const trimmed = String(model ?? "").trim();
+  if (trimmed && !MODEL_RE.test(trimmed)) {
+    throw new StoreError(400, `模型格式非法（须 provider/model）: ${trimmed}`);
+  }
+  rawDB()
+    .query("UPDATE projects SET model = ?, updated_at = ? WHERE id = ?")
+    .run(trimmed, now(), projectId);
+  return trimmed;
+}
+
+// Resolve the effective model for a project: project override > global
+// default. Returns "" when neither is set (caller omits --model and lets
+// opencode pick per its own config).
+export function resolveModel(projectModel: string, globalDefault: string): string {
+  const p = String(projectModel ?? "").trim();
+  if (p) return p;
+  return String(globalDefault ?? "").trim();
+}
+
+export function listCachedModels(): CachedModel[] {
+  const rows = rawDB().query("SELECT provider_model AS id, label FROM model_cache ORDER BY id").all() as CachedModel[];
+  return rows;
+}
+
+export function replaceCachedModels(ids: string[]): void {
+  const db = rawDB();
+  const ts = now();
+  // Dedupe to avoid UNIQUE constraint violations — caller may pass raw
+  // output from `opencode models` which could (theoretically) repeat.
+  const seen = new Set<string>();
+  const unique: string[] = [];
+  for (const id of ids) {
+    if (!seen.has(id)) {
+      seen.add(id);
+      unique.push(id);
+    }
+  }
+  const tx = db.transaction(() => {
+    db.exec("DELETE FROM model_cache");
+    const stmt = db.query("INSERT INTO model_cache (provider_model, label, refreshed_at) VALUES (?, ?, ?)");
+    for (const id of unique) {
+      stmt.run(id, id, ts);
+    }
+  });
+  tx();
 }
 
 export function getIssue(projectId: number, number: number): IssueRow | null {

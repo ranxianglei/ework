@@ -26,9 +26,23 @@ CREATE TABLE IF NOT EXISTS projects (
   -- repository.clone_url so it knows where AI should `git clone` from.
   -- Empty array = no upstream bound (project is purely a tracker).
   upstream_urls TEXT NOT NULL DEFAULT '[]',
+  -- Resolved "provider/model" string (e.g. "zhipuai/glm-4.6") passed to
+  -- `opencode run --model <X>` by ework-daemon. Empty = inherit global
+  -- defaultModel from the config table.
+  model         TEXT NOT NULL DEFAULT '',
   created_at  TEXT NOT NULL,
   updated_at  TEXT NOT NULL,
   UNIQUE (owner, name)
+);
+
+-- Cache of models reported by `opencode models`. Refreshed on demand from
+-- the /settings page (or on first access if empty). Stored as rows rather
+-- than a single JSON blob so the settings UI can render a select without
+-- parsing JSON in SQL.
+CREATE TABLE IF NOT EXISTS model_cache (
+  provider_model TEXT PRIMARY KEY,
+  label          TEXT NOT NULL,
+  refreshed_at   TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS issues (
