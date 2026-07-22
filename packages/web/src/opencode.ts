@@ -170,10 +170,15 @@ export class OpencodeClient {
     }
     const text = stdout.trim();
     if (!text) return null;
-    try {
-      return JSON.parse(text);
-    } catch {
+    const jsonText = stripNonJsonPreamble(text);
+    if (jsonText === null) {
       throw new OpencodeError(`opencode ${args.join(" ")}: non-JSON output`, 502);
+    }
+    try {
+      return JSON.parse(jsonText);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      throw new OpencodeError(`opencode ${args.join(" ")}: malformed JSON (${msg})`, 502);
     }
   }
 
@@ -237,6 +242,36 @@ async function readCapped(stream: ReadableStream<Uint8Array> | null, maxBytes: n
 
 function asString(v: unknown): string {
   return typeof v === "string" ? v : "";
+}
+
+// `opencode export` (and other opencode subcommands that emit JSON) write
+// status lines to stdout BEFORE the JSON payload:
+//   • plugin banners via console.log: "[omo-stable] Downloading comment-checker binary..."
+//   • plugin registration via console.log: "[omo-stable] ast-grep binary ready."
+//   • CLI status: "Exporting session: ses_..."
+//   • any other stdout-side logging from plugins
+// These break JSON.parse(). Find the first line that starts a JSON object
+// or array and slice from there. Returns null if no JSON-looking content.
+//
+// We try JSON.parse at each candidate (line starting with '{' or '[') and
+// return the first one that parses — necessary because plugin banners like
+// "[omo-stable] ..." also start with '[' but aren't JSON.
+export function stripNonJsonPreamble(s: string): string | null {
+  const lines = s.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line) continue;
+    const trimmed = line.trimStart();
+    if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) continue;
+    const candidate = lines.slice(i).join("\n");
+    try {
+      JSON.parse(candidate);
+      return candidate;
+    } catch {
+      continue;
+    }
+  }
+  return null;
 }
 
 function parseSessionExport(v: unknown): SessionExport | null {
