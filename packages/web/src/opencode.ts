@@ -159,6 +159,36 @@ export class OpencodeClient {
     return stdout;
   }
 
+  // List available models from `opencode models`. Output is plain text — one
+  // `provider/model` per line — with plugin banners (e.g. "[opencode-ework]
+  // registered 5 tools: ...") on stderr. We strip any line that doesn't
+  // match the `provider/model` shape, dedupe, sort. Errors (binary missing,
+  // non-zero exit) return an empty array — the settings UI degrades to a
+  // free-text input.
+  async listModels(): Promise<string[]> {
+    try {
+      const { stdout, code } = await this.run(["models"]);
+      if (code !== 0) return [];
+      const seen = new Set<string>();
+      const out: string[] = [];
+      for (const raw of stdout.split(/\r?\n/)) {
+        const line = raw.trim();
+        // Provider/model shape: non-empty segments on both sides of '/',
+        // alphanumeric + ._-. only. Rejects banner lines like "[omo-stable] ..."
+        // (which start with '['), "Exporting session:" (no slash), empty lines.
+        const m = line.match(/^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/);
+        if (!m) continue;
+        if (seen.has(line)) continue;
+        seen.add(line);
+        out.push(line);
+      }
+      out.sort();
+      return out;
+    } catch {
+      return [];
+    }
+  }
+
   // --- subprocess plumbing ---
 
   private async runJSON(args: string[]): Promise<unknown> {
