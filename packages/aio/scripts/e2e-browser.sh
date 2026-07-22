@@ -67,6 +67,7 @@ info() { printf '%s…%s %s\n' "$c_ylw" "$c_rst" "$*" >&2; }
 WORK_PORT="${WORK_PORT:-14002}"
 DAEMON_PORT="${DAEMON_PORT:-14101}"
 FAKE_LLM_PORT="${FAKE_LLM_PORT:-8400}"
+BOT_LOGIN="${BOT_LOGIN:-e2e-bot}"
 NPM_TAG="${NPM_TAG:-latest}"
 DATA_DIR=/tmp/aio-browser
 
@@ -232,6 +233,13 @@ OPENCODE_DB="$HOME/.local/share/opencode/opencode.db"
 sql_query() {
   bun -e "const db=require('bun:sqlite');const d=new db.Database('$1',{readonly:true,create:false});try{process.stdout.write(JSON.stringify(d.prepare(\`$2\`).all()))}catch(e){process.stdout.write('')}" 2>/dev/null
 }
+# The smoke test in the previous step already wrote a session row. To avoid
+# grabbing that one, capture its ID first and wait for a NEW session ID to
+# appear (the daemon spawns its own opencode against a different --dir, so
+# its session ID will differ).
+PREV_SESSION_ID=$(sql_query "$OPENCODE_DB" "SELECT id FROM session ORDER BY time_updated DESC LIMIT 1;" \
+  | jq -r '.[0].id // empty' 2>/dev/null || echo "")
+echo "  smoke test session: ${PREV_SESSION_ID:-(none yet)}"
 SESSION_ID=""
 # 180s window: opencode spawn + fake-LLM roundtrip + write to DB. The
 # daemon's poller picks up the issue within ~30s, then opencode takes
@@ -239,7 +247,7 @@ SESSION_ID=""
 for i in $(seq 1 180); do
   ROWS=$(sql_query "$OPENCODE_DB" "SELECT id FROM session ORDER BY time_updated DESC LIMIT 1;")
   SESSION_ID=$(echo "$ROWS" | jq -r '.[0].id // empty' 2>/dev/null || echo "")
-  if [[ -n "$SESSION_ID" ]]; then
+  if [[ -n "$SESSION_ID" && "$SESSION_ID" != "$PREV_SESSION_ID" ]]; then
     pass "session created: $SESSION_ID (after ${i}s)"
     break
   fi
@@ -249,7 +257,7 @@ for i in $(seq 1 180); do
     tail -40 "$DATA_DIR/run/daemon.log" 2>/dev/null || echo "(no daemon.log)"
     echo "--- fake-llm log (last 10) ---"
     tail -10 /tmp/fake-llm.log
-    fail "opencode did not write a session";
+    fail "daemon's opencode did not write a new session (last seen: $SESSION_ID)";
   }
 done
 
@@ -291,6 +299,35 @@ SESSION_PAGE_HTML=$(curl -sS -H "Cookie: $AUTH_COOKIE" "http://127.0.0.1:$WORK_P
 echo "$SESSION_PAGE_HTML" | grep -q "E2E fake-LLM" \
   || fail "session page does not contain fake-LLM reply text"
 pass "session page renders fake-LLM reply content"
+
+info "check whether the bot actually replied on the issue (auto-reply)"
+# ework-web exposes the issue comments via /api/v1/repos/<o>/<r>/issues/<n>/comments
+# (Gitea-compatible). Two distinct kinds of bot-authored comments exist:
+#   1. [system] "picked up this issue" — posted by the daemon on session start
+#      (NOT an LLM reply; doesn't count).
+#   2. [bot] actual reply — posted by the LLM via the opencode-ework `reply`
+#      tool. This is the auto-reply behaviour we're validating.
+COMMENTS_JSON=$(curl -sS -H "Cookie: $AUTH_COOKIE" \
+  "http://127.0.0.1:$WORK_PORT/api/v1/repos/e2e/browser-test/issues/1/comments")
+COMMENTS_COUNT=$(echo "$COMMENTS_JSON" | jq 'length' 2>/dev/null || echo 0)
+BOT_COMMENTS_COUNT=$(echo "$COMMENTS_JSON" \
+  | jq --arg bot "$BOT_LOGIN" '[.[] | select(.user.login == $bot)] | length' 2>/dev/null || echo 0)
+LLM_REPLIES=$(echo "$COMMENTS_JSON" \
+  | jq --arg bot "$BOT_LOGIN" \
+       '[.[] | select(.user.login == $bot and (.body | startswith("[bot]")))] | length' 2>/dev/null || echo 0)
+echo "  comments on issue #1: total=$COMMENTS_COUNT bot=$BOT_COMMENTS_COUNT llm-reply=$LLM_REPLIES"
+echo "  --- all bot comment bodies (first 400 chars each) ---"
+echo "$COMMENTS_JSON" | jq -r --arg bot "$BOT_LOGIN" \
+  '.[] | select(.user.login == $bot) | "  • " + (.body | .[0:400])' 2>/dev/null
+if [[ "$LLM_REPLIES" -ge 1 ]]; then
+  pass "bot auto-replied on issue #1 ($LLM_REPLIES [bot]-prefixed LLM reply)"
+else
+  echo "  --- daemon.log (last 40) ---"
+  tail -40 "$DATA_DIR/run/daemon.log" 2>/dev/null || echo "(no daemon.log)"
+  echo "  --- fake-llm.log (last 20) ---"
+  tail -20 /tmp/fake-llm.log 2>/dev/null
+  fail "bot did NOT post an LLM-driven reply on issue #1 (got $BOT_COMMENTS_COUNT bot comments but 0 starting with [bot])"
+fi
 
 info "drive headless browser through the UI"
 # bun (not tsx) because the script imports `bun:sqlite` to peek at opencode.db.
