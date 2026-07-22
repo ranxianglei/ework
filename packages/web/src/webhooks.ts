@@ -18,12 +18,14 @@
 import { createHmac, randomUUID } from "node:crypto";
 import { rawDB } from "./db";
 import { log } from "./logger";
+import { loadConfig } from "./config";
 import {
   StoreError,
   getIssueById,
   getProjectById,
   getDefaultUpstreamUrl,
   ensureUser,
+  resolveModel,
   type IssueRow,
   type ProjectRow,
   type CommentRow,
@@ -235,6 +237,10 @@ interface PayloadRepository {
   default_branch: string;
   created_at: string;
   updated_at: string;
+  // Non-Gitea extension. ework-daemon reads this to decide whether to push
+  // `--model <X>` on opencode spawn. Empty string = no override (let opencode
+  // pick). Gitea-strict consumers ignore unknown fields per JSON POST rules.
+  ework_model?: string;
 }
 
 interface PayloadIssue {
@@ -303,7 +309,7 @@ function buildUser(login: string, origin: string): PayloadUser {
   };
 }
 
-function buildRepository(project: ProjectRow, origin: string): PayloadRepository {
+function buildRepository(project: ProjectRow, origin: string, model?: string): PayloadRepository {
   const fullName = `${project.owner}/${project.name}`;
   const htmlUrl = `${origin}/${encodeURIComponent(project.owner)}/${encodeURIComponent(project.name)}`;
   // clone_url must be a real Git remote (ework-web is NOT a Git server). Use the
@@ -311,7 +317,7 @@ function buildRepository(project: ProjectRow, origin: string): PayloadRepository
   // + .git for purely tracker-only projects (recipients that don't attempt git
   // clone will still see a syntactically valid URL).
   const upstream = getDefaultUpstreamUrl(project);
-  return {
+  const repo: PayloadRepository = {
     id: project.id,
     owner: buildUser(project.owner, origin),
     name: project.name,
@@ -335,13 +341,18 @@ function buildRepository(project: ProjectRow, origin: string): PayloadRepository
     created_at: project.created_at,
     updated_at: project.updated_at,
   };
+  // Only attach ework_model when non-empty (keeps payload compact + lets
+  // Gitea-strict consumers ignore the field entirely on no-op cases).
+  if (model) repo.ework_model = model;
+  return repo;
 }
 
 function buildIssue(
   issue: IssueRow,
   project: ProjectRow,
   commentCount: number,
-  origin: string
+  origin: string,
+  model?: string,
 ): PayloadIssue {
   const repoUrl = `${origin}/${encodeURIComponent(project.owner)}/${encodeURIComponent(project.name)}`;
   const issueUrl = `${repoUrl}/issues/${issue.number}`;
@@ -364,7 +375,7 @@ function buildIssue(
     closed_at: issue.closed_at,
     due_date: null,
     pull_request: null,
-    repository: buildRepository(project, origin),
+    repository: buildRepository(project, origin, model),
     user: buildUser(issue.author, origin),
   };
 }
@@ -394,13 +405,14 @@ function buildCommentPayload(
   comment: CommentRow,
   project: ProjectRow,
   commentCount: number,
-  origin: string
+  origin: string,
+  model?: string,
 ): CommentEventPayload {
   return {
     action: "created",
-    issue: buildIssue(issue, project, commentCount, origin),
+    issue: buildIssue(issue, project, commentCount, origin, model),
     comment: buildComment(issue, comment, project, origin),
-    repository: buildRepository(project, origin),
+    repository: buildRepository(project, origin, model),
     sender: buildUser(comment.author, origin),
   };
 }
@@ -410,12 +422,13 @@ function buildIssuePayload(
   project: ProjectRow,
   commentCount: number,
   action: IssueAction,
-  origin: string
+  origin: string,
+  model?: string,
 ): IssueEventPayload {
   return {
     action,
-    issue: buildIssue(issue, project, commentCount, origin),
-    repository: buildRepository(project, origin),
+    issue: buildIssue(issue, project, commentCount, origin, model),
+    repository: buildRepository(project, origin, model),
     sender: buildUser(issue.author, origin),
   };
 }
@@ -578,7 +591,12 @@ export function emitIssueEvent(
     const issue = getIssueById(issueId);
     if (!issue) return;
     const commentCount = countCommentsSafe(issueId);
-    const payload = buildIssuePayload(issue, project, commentCount, action, origin);
+    // Resolve model: project override > global default. Empty string = no
+    // override (daemon omits --model, lets opencode pick). globalDefault
+    // comes from the config table via loadConfig() — cheap DB read.
+    const globalDefault = loadConfig().defaultModel;
+    const model = resolveModel(project.model, globalDefault);
+    const payload = buildIssuePayload(issue, project, commentCount, action, origin, model);
     const rawBody = JSON.stringify(payload);
     fanOut(projectId, "issues", rawBody);
   } catch (e) {
@@ -605,7 +623,9 @@ export function emitCommentEvent(
     const comment = getCommentByIdSafe(commentId);
     if (!comment) return;
     const commentCount = countCommentsSafe(issueId);
-    const payload = buildCommentPayload(issue, comment, project, commentCount, origin);
+    const globalDefault = loadConfig().defaultModel;
+    const model = resolveModel(project.model, globalDefault);
+    const payload = buildCommentPayload(issue, comment, project, commentCount, origin, model);
     const rawBody = JSON.stringify(payload);
     fanOut(projectId, "issue_comment", rawBody);
   } catch (e) {
