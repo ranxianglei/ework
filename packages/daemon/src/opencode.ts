@@ -474,10 +474,21 @@ export class Engine {
 
     let exitCode: number | null = null;
 
+    // M-1: build the child env explicitly. When a model IS resolved we push
+    // --model above, so opencode ignores OPENCODE_MODEL anyway. When NO model
+    // is resolved we must not let a leaked OPENCODE_MODEL from our own env
+    // silently win — strip it so opencode falls back to its opencode.json
+    // (the operator's explicit config) instead of arbitrary env pollution.
+    // Provider keys / Gitea vars are preserved (opencode + its plugin need
+    // them); only the explicit model-override var is neutralized.
+    const childEnv = { ...process.env };
+    if (!msg.model) delete childEnv.OPENCODE_MODEL;
+
     try {
       const proc = spawn({
         cmd: args,
         cwd: workdir,
+        env: childEnv,
         stdout: "pipe",
         stderr: "pipe",
         stdin: "ignore",
