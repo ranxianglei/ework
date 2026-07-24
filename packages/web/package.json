@@ -42,7 +42,8 @@
     "start": "bun src/index.ts",
     "check": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
-    "test": "bun test"
+    "test": "bun test",
+    "test:mysql": "bash scripts/test-mysql.sh"
   },
   "dependencies": {
     "@types/dompurify": "^3.2.0",
