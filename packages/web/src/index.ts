@@ -630,6 +630,18 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     if (!ctx.user || ctx.user.is_admin !== 1) return html(errorPage("403", "需要管理员"), 403);
     const ids = await opencode.listModels();
     replaceCachedModels(ids);
+    // M-1: pin a default model so opencode never falls back to env vars. The
+    // previous empty default meant the daemon omitted --model and opencode
+    // picked the model from leaked env (e.g. OPENCODE_MODEL / a provider
+    // default) — silent and wrong. Pick the first available model when none
+    // is configured; the operator can change or clear it on /settings.
+    if (!cfg.defaultModel) {
+      const picked = ids.find((id) => typeof id === "string" && id.length > 0);
+      if (picked) {
+        setConfig("defaultModel", picked);
+        Object.assign(cfg, loadConfig());
+      }
+    }
     const rh = new Headers(SEC_HEADERS);
     rh.set("location", "/settings?saved=1");
     return new Response(null, { status: 303, headers: rh });
