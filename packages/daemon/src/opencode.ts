@@ -14,6 +14,34 @@ interface TrackerRegistry {
   get(type: string): IssueTracker | undefined;
 }
 
+/**
+ * Extract the target name of an @mention from comment text.
+ *
+ * Strips fenced + inline code first (terminal pastes with "user@host" / "git@repo"),
+ * then matches `@name`. Rejects two phantom-mention shapes that previously spawned
+ * stray agent sessions (ework-daemon#2):
+ *  - scoped package refs (`@types/node`, `@babel/core` — the trailing `/` means an
+ *    npm path, not a person);
+ *  - version-like `@<digits>` (`@123`).
+ *
+ * Exported so tests can pin the exact accept/reject behavior (regression coverage).
+ */
+export function detectMention(text: string): string | null {
+  const stripped = text
+    .replace(/```[\s\S]*?```/g, "")
+    .replace(/`[^`\n]*`/g, "");
+  const re = /(?:^|\s)@([\w\u4e00-\u9fff]+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(stripped)) !== null) {
+    const name = m[1];
+    if (!name) continue;
+    if (/^\d+$/.test(name)) continue;              // @<digits> → version ref, skip
+    if (stripped[re.lastIndex] === "/") continue;  // @scope/pkg → scoped package, skip
+    return name;
+  }
+  return null;
+}
+
 // ─── Engine ───
 
 export class Engine {
@@ -107,13 +135,21 @@ export class Engine {
   }
 
   private extractMentionName(text: string): string | null {
-    // Strip fenced code blocks (```...```) and inline code (`...`) before scanning for @mentions,
-    // otherwise pasted terminal output / code containing "user@host" or "git@repo" creates phantom sessions.
-    const stripped = text
-      .replace(/```[\s\S]*?```/g, "")
-      .replace(/`[^`\n]*`/g, "");
-    const match = stripped.match(/(?:^|\s)@([\w\u4e00-\u9fff]+)/);
-    return match?.[1] ?? null;
+    return detectMention(text);
+  }
+
+  /**
+   * Whitelist gate: default only the bot itself is a valid @mention target.
+   * Unknown names (misread from plain text — `@types/node`, etc.) don't spawn a
+   * new session; they fall back to broadcast. To run multiple named agents, set
+   * `DAEMON_ALLOWED_AGENTS=ework,tester,...`.
+   */
+  private isAllowedAgent(name: string): boolean {
+    const env = process.env.DAEMON_ALLOWED_AGENTS;
+    const allowed = env && env.trim()
+      ? env.split(",").map(s => s.trim()).filter(Boolean)
+      : [this.cfg.bot.username];
+    return allowed.includes(name);
   }
 
   private parseDirCommand(text: string): string | null {
@@ -261,7 +297,14 @@ export class Engine {
     }
 
     const dirPath = this.parseDirCommand(comment.body);
-    const mentionName = this.extractMentionName(comment.body);
+    const rawMention = this.extractMentionName(comment.body);
+    // Gate extracted @mentions through the agent whitelist. An unknown name
+    // (e.g. `@types` misread from `@types/node`) is treated as no mention and
+    // falls through to broadcast instead of spawning a phantom session (ework-daemon#2).
+    const mentionName = rawMention && this.isAllowedAgent(rawMention) ? rawMention : null;
+    if (rawMention && !mentionName) {
+      log.info(`engine: @${rawMention} is not an allowed agent — broadcasting instead of spawning`);
+    }
 
     if (mentionName) {
       // @mention → targeted delivery
