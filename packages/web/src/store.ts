@@ -107,11 +107,11 @@ function now(): string {
 
 export async function ensureUser(login: string, kind: UserKind = "human"): Promise<UserRow> {
   const db = getDB();
-  const existing = await db.get<UserRow>("SELECT * FROM users WHERE login = ?", [login]);
+  const existing = await db.get<UserRow>("SELECT * FROM {{users}} WHERE login = ?", [login]);
   if (existing) return existing;
   const ts = now();
   await db.run(
-    "INSERT INTO users (login, kind, created_at, updated_at) VALUES (?, ?, ?, ?)",
+    "INSERT INTO {{users}} (login, kind, created_at, updated_at) VALUES (?, ?, ?, ?)",
     [login, kind, ts, ts]
   );
   return {
@@ -128,16 +128,16 @@ export async function ensureUser(login: string, kind: UserKind = "human"): Promi
 }
 
 export async function getProject(owner: string, name: string): Promise<ProjectRow | null> {
-  return (await getDB().get<ProjectRow>("SELECT * FROM projects WHERE owner = ? AND name = ?", [owner, name])) ?? null;
+  return (await getDB().get<ProjectRow>("SELECT * FROM {{projects}} WHERE owner = ? AND name = ?", [owner, name])) ?? null;
 }
 
 export async function getProjectById(id: number): Promise<ProjectRow | null> {
-  return (await getDB().get<ProjectRow>("SELECT * FROM projects WHERE id = ?", [id])) ?? null;
+  return (await getDB().get<ProjectRow>("SELECT * FROM {{projects}} WHERE id = ?", [id])) ?? null;
 }
 
 export async function getProjectByIssueId(issueId: number): Promise<ProjectRow | null> {
   const row = await getDB().get<ProjectRow>(
-    "SELECT p.* FROM projects p JOIN issues i ON i.project_id = p.id WHERE i.id = ?",
+    "SELECT p.* FROM {{projects}} p JOIN {{issues}} i ON i.project_id = p.id WHERE i.id = ?",
     [issueId]
   );
   return row ?? null;
@@ -153,8 +153,8 @@ export async function listProjectsWithCounts(): Promise<ProjectWithCounts[]> {
     `SELECT p.*,
        COALESCE(SUM(CASE WHEN i.state = 'open' THEN 1 ELSE 0 END), 0) AS open_count,
        COUNT(i.id) AS total_count
-     FROM projects p
-     LEFT JOIN issues i ON i.project_id = p.id
+     FROM {{projects}} p
+     LEFT JOIN {{issues}} i ON i.project_id = p.id
      GROUP BY p.id
      ORDER BY p.updated_at DESC`
   );
@@ -169,14 +169,14 @@ export async function createProject(owner: string, name: string, description: st
   const ts = now();
   const db = getDB();
   const info = await db.run(
-    "INSERT INTO projects (owner, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+    "INSERT INTO {{projects}} (owner, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
     [owner, name, description ?? "", ts, ts]
   );
   return (await getProjectById(info.insertId))!;
 }
 
 export async function touchProject(projectId: number): Promise<void> {
-  await getDB().run("UPDATE projects SET updated_at = ? WHERE id = ?", [now(), projectId]);
+  await getDB().run("UPDATE {{projects}} SET updated_at = ? WHERE id = ?", [now(), projectId]);
 }
 
 const MAX_UPSTREAM_URLS = 10;
@@ -216,7 +216,7 @@ export async function setProjectUpstreamUrls(projectId: number, urls: string[]):
   }
   const ts = now();
   await getDB().run(
-    "UPDATE projects SET upstream_urls = ?, updated_at = ? WHERE id = ?",
+    "UPDATE {{projects}} SET upstream_urls = ?, updated_at = ? WHERE id = ?",
     [JSON.stringify(cleaned), ts, projectId]
   );
   return cleaned;
@@ -232,7 +232,7 @@ export async function setProjectModel(projectId: number, model: string): Promise
     throw new StoreError(400, `模型格式非法（须 provider/model）: ${trimmed}`);
   }
   await getDB().run(
-    "UPDATE projects SET model = ?, updated_at = ? WHERE id = ?",
+    "UPDATE {{projects}} SET model = ?, updated_at = ? WHERE id = ?",
     [trimmed, now(), projectId]
   );
   return trimmed;
@@ -248,7 +248,7 @@ export function resolveModel(projectModel: string, globalDefault: string): strin
 }
 
 export async function listCachedModels(): Promise<CachedModel[]> {
-  const rows = await getDB().all<CachedModel>("SELECT provider_model AS id, label FROM model_cache ORDER BY id");
+  const rows = await getDB().all<CachedModel>("SELECT provider_model AS id, label FROM {{model_cache}} ORDER BY id");
   return rows;
 }
 
@@ -266,29 +266,29 @@ export async function replaceCachedModels(ids: string[]): Promise<void> {
     }
   }
   await db.transaction(async () => {
-    await db.exec("DELETE FROM model_cache");
+    await db.exec("DELETE FROM {{model_cache}}");
     for (const id of unique) {
-      await db.run("INSERT INTO model_cache (provider_model, label, refreshed_at) VALUES (?, ?, ?)", [id, id, ts]);
+      await db.run("INSERT INTO {{model_cache}} (provider_model, label, refreshed_at) VALUES (?, ?, ?)", [id, id, ts]);
     }
   });
 }
 
 export async function getIssue(projectId: number, number: number): Promise<IssueRow | null> {
   return (
-    (await getDB().get<IssueRow>("SELECT * FROM issues WHERE project_id = ? AND number = ?", [projectId, number])) ?? null
+    (await getDB().get<IssueRow>("SELECT * FROM {{issues}} WHERE project_id = ? AND number = ?", [projectId, number])) ?? null
   );
 }
 
 export async function getIssueById(id: number): Promise<IssueRow | null> {
-  return (await getDB().get<IssueRow>("SELECT * FROM issues WHERE id = ?", [id])) ?? null;
+  return (await getDB().get<IssueRow>("SELECT * FROM {{issues}} WHERE id = ?", [id])) ?? null;
 }
 
 export async function getIssueWithMeta(projectId: number, number: number): Promise<IssueWithMeta | null> {
   return (
     (await getDB().get<IssueWithMeta>(
       `SELECT i.*, p.owner AS project_owner, p.name AS project_name,
-              (SELECT COUNT(*) FROM comments c WHERE c.issue_id = i.id) AS comment_count
-       FROM issues i JOIN projects p ON p.id = i.project_id
+              (SELECT COUNT(*) FROM {{comments}} c WHERE c.issue_id = i.id) AS comment_count
+       FROM {{issues}} i JOIN {{projects}} p ON p.id = i.project_id
        WHERE i.project_id = ? AND i.number = ?`,
       [projectId, number]
     )) ?? null
@@ -306,8 +306,8 @@ export async function listIssues(projectId: number, opts: ListIssuesOpts = {}): 
   const q = (opts.q ?? "").trim();
   const limit = Math.min(opts.limit ?? 50, 200);
   let sql = `SELECT i.*, p.owner AS project_owner, p.name AS project_name,
-              (SELECT COUNT(*) FROM comments c WHERE c.issue_id = i.id) AS comment_count
-            FROM issues i JOIN projects p ON p.id = i.project_id
+              (SELECT COUNT(*) FROM {{comments}} c WHERE c.issue_id = i.id) AS comment_count
+            FROM {{issues}} i JOIN {{projects}} p ON p.id = i.project_id
             WHERE i.project_id = ?`;
   const args: (string | number)[] = [projectId];
   if (state !== "all") {
@@ -329,8 +329,8 @@ export async function listAllIssues(opts: ListIssuesOpts = {}): Promise<IssueWit
   const q = (opts.q ?? "").trim();
   const limit = Math.min(opts.limit ?? 50, 200);
   let sql = `SELECT i.*, p.owner AS project_owner, p.name AS project_name,
-              (SELECT COUNT(*) FROM comments c WHERE c.issue_id = i.id) AS comment_count
-            FROM issues i JOIN projects p ON p.id = i.project_id
+              (SELECT COUNT(*) FROM {{comments}} c WHERE c.issue_id = i.id) AS comment_count
+            FROM {{issues}} i JOIN {{projects}} p ON p.id = i.project_id
             WHERE 1=1`;
   const args: (string | number)[] = [];
   if (state !== "all") {
@@ -379,13 +379,13 @@ export async function createIssue(
   const closedAt = state === "closed" ? isoOr(opts.closedAt ?? undefined, updatedAt) : null;
   return await getDB().transaction(async () => {
     const next = (await getDB().get<{ n: number }>(
-      "SELECT COALESCE(MAX(number), 0) + 1 AS n FROM issues WHERE project_id = ?", [projectId]
+      "SELECT COALESCE(MAX(number), 0) + 1 AS n FROM {{issues}} WHERE project_id = ?", [projectId]
     ))!;
     const info = await getDB().run(
-      "INSERT INTO issues (project_id, number, title, body, state, author, created_at, updated_at, closed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO {{issues}} (project_id, number, title, body, state, author, created_at, updated_at, closed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
       [projectId, next.n, title, body, state, author, createdAt, updatedAt, closedAt]
     );
-    await getDB().run("UPDATE projects SET updated_at = ? WHERE id = ?", [updatedAt, projectId]);
+    await getDB().run("UPDATE {{projects}} SET updated_at = ? WHERE id = ?", [updatedAt, projectId]);
     return (await getIssueById(info.insertId))!;
   });
 }
@@ -398,14 +398,14 @@ export async function setIssueState(
   const ts = opts.updatedAt ? isoOr(opts.updatedAt, now()) : now();
   const closedAt = state === "closed" ? isoOr(opts.closedAt ?? undefined, ts) : null;
   await getDB().transaction(async () => {
-    await getDB().run("UPDATE issues SET state = ?, updated_at = ?, closed_at = ? WHERE id = ?", [
+    await getDB().run("UPDATE {{issues}} SET state = ?, updated_at = ?, closed_at = ? WHERE id = ?", [
       state,
       ts,
       closedAt,
       issueId,
     ]);
-    const row = await getDB().get<{ project_id: number }>("SELECT project_id FROM issues WHERE id = ?", [issueId]);
-    await getDB().run("UPDATE projects SET updated_at = ? WHERE id = ?", [ts, row!.project_id]);
+    const row = await getDB().get<{ project_id: number }>("SELECT project_id FROM {{issues}} WHERE id = ?", [issueId]);
+    await getDB().run("UPDATE {{projects}} SET updated_at = ? WHERE id = ?", [ts, row!.project_id]);
   });
 }
 
@@ -454,14 +454,14 @@ export async function editIssue(issueId: number, patch: IssuePatch): Promise<voi
   }
   args.push(issueId);
   await getDB().transaction(async () => {
-    await getDB().run(`UPDATE issues SET ${sets.join(", ")} WHERE id = ?`, args);
-    const row = await getDB().get<{ project_id: number }>("SELECT project_id FROM issues WHERE id = ?", [issueId]);
-    if (row) await getDB().run("UPDATE projects SET updated_at = ? WHERE id = ?", [now(), row.project_id]);
+    await getDB().run(`UPDATE {{issues}} SET ${sets.join(", ")} WHERE id = ?`, args);
+    const row = await getDB().get<{ project_id: number }>("SELECT project_id FROM {{issues}} WHERE id = ?", [issueId]);
+    if (row) await getDB().run("UPDATE {{projects}} SET updated_at = ? WHERE id = ?", [now(), row.project_id]);
   });
 }
 
 export async function countComments(issueId: number): Promise<number> {
-  const row = await getDB().get<{ n: number }>("SELECT COUNT(*) AS n FROM comments WHERE issue_id = ?", [issueId]);
+  const row = await getDB().get<{ n: number }>("SELECT COUNT(*) AS n FROM {{comments}} WHERE issue_id = ?", [issueId]);
   return row!.n;
 }
 
@@ -472,8 +472,8 @@ export async function listCommentsPage(issueId: number, page: number, pageSize: 
   const offset = (clamped - 1) * pageSize;
   const rows = await getDB().all<CommentRow>(
     `SELECT c.*, u.kind AS author_kind
-     FROM comments c
-     LEFT JOIN users u ON u.login = c.author
+     FROM {{comments}} c
+     LEFT JOIN {{users}} u ON u.login = c.author
      WHERE c.issue_id = ?
      ORDER BY c.created_at ASC, c.id ASC
      LIMIT ? OFFSET ?`,
@@ -485,8 +485,8 @@ export async function listCommentsPage(issueId: number, page: number, pageSize: 
 export async function listCommentsSince(issueId: number, sinceISO: string): Promise<CommentRow[]> {
   return await getDB().all<CommentRow>(
     `SELECT c.*, u.kind AS author_kind
-     FROM comments c
-     LEFT JOIN users u ON u.login = c.author
+     FROM {{comments}} c
+     LEFT JOIN {{users}} u ON u.login = c.author
      WHERE c.issue_id = ? AND c.created_at > ?
      ORDER BY c.created_at ASC, c.id ASC`,
     [issueId, sinceISO]
@@ -496,8 +496,8 @@ export async function listCommentsSince(issueId: number, sinceISO: string): Prom
 export async function listCommentsForIssue(issueId: number): Promise<CommentRow[]> {
   return await getDB().all<CommentRow>(
     `SELECT c.*, u.kind AS author_kind
-     FROM comments c
-     LEFT JOIN users u ON u.login = c.author
+     FROM {{comments}} c
+     LEFT JOIN {{users}} u ON u.login = c.author
      WHERE c.issue_id = ?
      ORDER BY c.created_at ASC, c.id ASC`,
     [issueId]
@@ -522,15 +522,15 @@ export async function postComment(
   const updatedAt = opts.updatedAt ? isoOr(opts.updatedAt, createdAt) : createdAt;
   return await getDB().transaction(async () => {
     const info = await getDB().run(
-      "INSERT INTO comments (issue_id, author, body, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+      "INSERT INTO {{comments}} (issue_id, author, body, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
       [issueId, author, body, createdAt, updatedAt]
     );
-    await getDB().run("UPDATE issues SET updated_at = ? WHERE id = ?", [updatedAt, issueId]);
-    const row = await getDB().get<{ project_id: number }>("SELECT project_id FROM issues WHERE id = ?", [issueId]);
-    await getDB().run("UPDATE projects SET updated_at = ? WHERE id = ?", [updatedAt, row!.project_id]);
+    await getDB().run("UPDATE {{issues}} SET updated_at = ? WHERE id = ?", [updatedAt, issueId]);
+    const row = await getDB().get<{ project_id: number }>("SELECT project_id FROM {{issues}} WHERE id = ?", [issueId]);
+    await getDB().run("UPDATE {{projects}} SET updated_at = ? WHERE id = ?", [updatedAt, row!.project_id]);
     return (await getDB().get<CommentRow>(
       `SELECT c.*, u.kind AS author_kind
-       FROM comments c LEFT JOIN users u ON u.login = c.author
+       FROM {{comments}} c LEFT JOIN {{users}} u ON u.login = c.author
        WHERE c.id = ?`,
       [info.insertId]
     ))!;
@@ -540,7 +540,7 @@ export async function postComment(
 export async function getComment(commentId: number): Promise<CommentRow | null> {
   const row = await getDB().get<CommentRow>(
     `SELECT c.*, u.kind AS author_kind
-     FROM comments c LEFT JOIN users u ON u.login = c.author
+     FROM {{comments}} c LEFT JOIN {{users}} u ON u.login = c.author
      WHERE c.id = ?`,
     [commentId]
   );
@@ -552,13 +552,13 @@ export async function editComment(commentId: number, body: string): Promise<Comm
   if (!trimmed.trim()) throw new StoreError(400, "评论不能为空");
   if (trimmed.length > 65536) throw new StoreError(413, "评论过长（≤65536）");
   const ts = now();
-  const info = await getDB().run("UPDATE comments SET body = ?, updated_at = ? WHERE id = ?", [trimmed, ts, commentId]);
+  const info = await getDB().run("UPDATE {{comments}} SET body = ?, updated_at = ? WHERE id = ?", [trimmed, ts, commentId]);
   if (info.changes === 0) throw new StoreError(404, `评论 ${commentId} 不存在`);
   return (await getComment(commentId))!;
 }
 
 export async function deleteComment(commentId: number): Promise<void> {
-  const info = await getDB().run("DELETE FROM comments WHERE id = ?", [commentId]);
+  const info = await getDB().run("DELETE FROM {{comments}} WHERE id = ?", [commentId]);
   if (info.changes === 0) throw new StoreError(404, `评论 ${commentId} 不存在`);
 }
 
@@ -573,7 +573,7 @@ export async function listReactionsFor(commentIds: number[]): Promise<ReactionAg
   const placeholders = commentIds.map(() => "?").join(",");
   return await getDB().all<ReactionAgg>(
     `SELECT comment_id, content, COUNT(*) AS n
-     FROM reactions WHERE comment_id IN (${placeholders})
+     FROM {{reactions}} WHERE comment_id IN (${placeholders})
      GROUP BY comment_id, content`,
     commentIds
   );
@@ -583,26 +583,26 @@ export async function addReaction(commentId: number, userLogin: string, content:
   if (!content || content.length > 32) throw new StoreError(400, "非法的 reaction content");
   await ensureUser(userLogin);
   await getDB().run(
-    "INSERT OR IGNORE INTO reactions (comment_id, user_login, content) VALUES (?, ?, ?)",
+    "INSERT OR IGNORE INTO {{reactions}} (comment_id, user_login, content) VALUES (?, ?, ?)",
     [commentId, userLogin, content]
   );
 }
 
 export async function removeReaction(commentId: number, userLogin: string, content: string): Promise<void> {
   await getDB().run(
-    "DELETE FROM reactions WHERE comment_id = ? AND user_login = ? AND content = ?",
+    "DELETE FROM {{reactions}} WHERE comment_id = ? AND user_login = ? AND content = ?",
     [commentId, userLogin, content]
   );
 }
 
 export async function listLabels(projectId: number): Promise<LabelRow[]> {
-  return await getDB().all<LabelRow>("SELECT * FROM labels WHERE project_id = ? ORDER BY name", [projectId]);
+  return await getDB().all<LabelRow>("SELECT * FROM {{labels}} WHERE project_id = ? ORDER BY name", [projectId]);
 }
 
 export async function listLabelsForIssue(issueId: number): Promise<LabelRow[]> {
   return await getDB().all<LabelRow>(
-    `SELECT l.* FROM labels l
-     JOIN issue_labels il ON il.label_id = l.id
+    `SELECT l.* FROM {{labels}} l
+     JOIN {{issue_labels}} il ON il.label_id = l.id
      WHERE il.issue_id = ? ORDER BY l.name`,
     [issueId]
   );
@@ -612,30 +612,30 @@ export async function createLabel(projectId: number, name: string, color: string
   name = name.trim();
   if (!name) throw new StoreError(400, "标签名不能为空");
   if (!/^#[0-9a-fA-F]{6}$/.test(color)) throw new StoreError(400, "颜色须为 #RRGGBB");
-  const info = await getDB().run("INSERT INTO labels (project_id, name, color) VALUES (?, ?, ?)", [projectId, name, color]);
-  return (await getDB().get<LabelRow>("SELECT * FROM labels WHERE id = ?", [info.insertId]))!;
+  const info = await getDB().run("INSERT INTO {{labels}} (project_id, name, color) VALUES (?, ?, ?)", [projectId, name, color]);
+  return (await getDB().get<LabelRow>("SELECT * FROM {{labels}} WHERE id = ?", [info.insertId]))!;
 }
 
 export async function setIssueLabel(issueId: number, labelId: number, on: boolean): Promise<void> {
   if (on) {
-    await getDB().run("INSERT OR IGNORE INTO issue_labels (issue_id, label_id) VALUES (?, ?)", [issueId, labelId]);
+    await getDB().run("INSERT OR IGNORE INTO {{issue_labels}} (issue_id, label_id) VALUES (?, ?)", [issueId, labelId]);
   } else {
-    await getDB().run("DELETE FROM issue_labels WHERE issue_id = ? AND label_id = ?", [issueId, labelId]);
+    await getDB().run("DELETE FROM {{issue_labels}} WHERE issue_id = ? AND label_id = ?", [issueId, labelId]);
   }
 }
 
 export async function createAttachment(a: Omit<AttachmentRow, "created_at">): Promise<AttachmentRow> {
   const ts = now();
   await getDB().run(
-    `INSERT INTO attachments (uuid, issue_id, filename, content_type, size, blob_path, uploaded_by, created_at)
+    `INSERT INTO {{attachments}} (uuid, issue_id, filename, content_type, size, blob_path, uploaded_by, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     [a.uuid, a.issue_id, a.filename, a.content_type, a.size, a.blob_path, a.uploaded_by, ts]
   );
-  return (await getDB().get<AttachmentRow>("SELECT * FROM attachments WHERE uuid = ?", [a.uuid]))!;
+  return (await getDB().get<AttachmentRow>("SELECT * FROM {{attachments}} WHERE uuid = ?", [a.uuid]))!;
 }
 
 export async function getAttachment(uuid: string): Promise<AttachmentRow | null> {
-  return (await getDB().get<AttachmentRow>("SELECT * FROM attachments WHERE uuid = ?", [uuid])) ?? null;
+  return (await getDB().get<AttachmentRow>("SELECT * FROM {{attachments}} WHERE uuid = ?", [uuid])) ?? null;
 }
 
 const LOGIN_RE = /^[A-Za-z0-9_-]{1,64}$/;
@@ -658,13 +658,13 @@ export async function createUser(input: CreateUserInput): Promise<UserRow> {
     throw new StoreError(400, "密码过长（≤200）");
   }
   const db = getDB();
-  if (await db.get("SELECT 1 FROM users WHERE login = ?", [login])) {
+  if (await db.get("SELECT 1 FROM {{users}} WHERE login = ?", [login])) {
     throw new StoreError(409, `用户 ${login} 已存在`);
   }
   const ts = now();
   const hash = await hashPassword(input.password);
   await db.run(
-    `INSERT INTO users (login, kind, display_name, password_hash, email, is_admin, is_active, created_at, updated_at)
+    `INSERT INTO {{users}} (login, kind, display_name, password_hash, email, is_admin, is_active, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       login,
@@ -682,15 +682,15 @@ export async function createUser(input: CreateUserInput): Promise<UserRow> {
 }
 
 export async function getUserByLogin(login: string): Promise<UserRow | null> {
-  return (await getDB().get<UserRow>("SELECT * FROM users WHERE login = ?", [login])) ?? null;
+  return (await getDB().get<UserRow>("SELECT * FROM {{users}} WHERE login = ?", [login])) ?? null;
 }
 
 export async function listUsers(): Promise<UserRow[]> {
-  return await getDB().all<UserRow>("SELECT * FROM users ORDER BY is_admin DESC, created_at ASC");
+  return await getDB().all<UserRow>("SELECT * FROM {{users}} ORDER BY is_admin DESC, created_at ASC");
 }
 
 export async function listAdmins(): Promise<UserRow[]> {
-  return await getDB().all<UserRow>("SELECT * FROM users WHERE is_admin = 1");
+  return await getDB().all<UserRow>("SELECT * FROM {{users}} WHERE is_admin = 1");
 }
 
 export async function verifyUserPassword(login: string, password: string): Promise<UserRow | null> {
@@ -714,7 +714,7 @@ export async function updateUser(login: string, patch: UpdateUserPatch): Promise
   const ts = now();
   const db = getDB();
   await db.run(
-    `UPDATE users SET
+    `UPDATE {{users}} SET
        email = COALESCE(?, email),
        display_name = COALESCE(?, display_name),
        is_admin = COALESCE(?, is_admin),
@@ -742,11 +742,11 @@ export async function setUserPassword(login: string, newPassword: string): Promi
   if (!existing) throw new StoreError(404, `用户 ${login} 不存在`);
   const ts = now();
   const hash = await hashPassword(newPassword);
-  await getDB().run("UPDATE users SET password_hash = ?, updated_at = ? WHERE login = ?", [hash, ts, login]);
+  await getDB().run("UPDATE {{users}} SET password_hash = ?, updated_at = ? WHERE login = ?", [hash, ts, login]);
 }
 
 export async function countAdmins(): Promise<number> {
-  const row = await getDB().get<{ n: number }>("SELECT COUNT(*) AS n FROM users WHERE is_admin = 1");
+  const row = await getDB().get<{ n: number }>("SELECT COUNT(*) AS n FROM {{users}} WHERE is_admin = 1");
   return row!.n;
 }
 
@@ -897,7 +897,7 @@ export async function createPat(input: CreatePatInput): Promise<CreatePatResult>
   const lastEight = plaintext.slice(-8);
   const ts = now();
   const info = await getDB().run(
-    `INSERT INTO personal_access_tokens
+    `INSERT INTO {{personal_access_tokens}}
        (user_login, name, salt, token_hash, token_last_eight, scopes, ip_allowlist, expires_at, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [login, name, salt, tokenHash, lastEight, JSON.stringify(scopes), JSON.stringify(ipAllowlist), expiresAt, ts]
@@ -908,12 +908,12 @@ export async function createPat(input: CreatePatInput): Promise<CreatePatResult>
 }
 
 export async function getPat(id: number): Promise<PatRow | null> {
-  return (await getDB().get<PatRow>("SELECT * FROM personal_access_tokens WHERE id = ?", [id])) ?? null;
+  return (await getDB().get<PatRow>("SELECT * FROM {{personal_access_tokens}} WHERE id = ?", [id])) ?? null;
 }
 
 export async function listPatsForUser(login: string): Promise<PatRow[]> {
   return await getDB().all<PatRow>(
-    "SELECT * FROM personal_access_tokens WHERE user_login = ? ORDER BY created_at DESC",
+    "SELECT * FROM {{personal_access_tokens}} WHERE user_login = ? ORDER BY created_at DESC",
     [login]
   );
 }
@@ -927,8 +927,8 @@ export interface PatWithUser extends PatRow {
 export async function listAllPatsWithUsers(): Promise<PatWithUser[]> {
   return await getDB().all<PatWithUser>(
     `SELECT p.*, u.kind AS user_kind, u.is_admin AS user_is_admin, u.is_active AS user_is_active
-     FROM personal_access_tokens p
-     LEFT JOIN users u ON u.login = p.user_login
+     FROM {{personal_access_tokens}} p
+     LEFT JOIN {{users}} u ON u.login = p.user_login
      ORDER BY p.created_at DESC`
   );
 }
@@ -938,7 +938,7 @@ export async function revokePat(id: number, login: string): Promise<void> {
   if (!row) throw new StoreError(404, "token 不存在");
   if (row.user_login !== login) throw new StoreError(403, "无权操作他人 token");
   if (row.revoked_at) return;
-  await getDB().run("UPDATE personal_access_tokens SET revoked_at = ? WHERE id = ?", [now(), id]);
+  await getDB().run("UPDATE {{personal_access_tokens}} SET revoked_at = ? WHERE id = ?", [now(), id]);
 }
 
 // Admin override: revoke any token regardless of owner. Caller MUST check
@@ -947,14 +947,14 @@ export async function revokePatAsAdmin(id: number): Promise<void> {
   const row = await getPat(id);
   if (!row) throw new StoreError(404, "token 不存在");
   if (row.revoked_at) return;
-  await getDB().run("UPDATE personal_access_tokens SET revoked_at = ? WHERE id = ?", [now(), id]);
+  await getDB().run("UPDATE {{personal_access_tokens}} SET revoked_at = ? WHERE id = ?", [now(), id]);
 }
 
 export async function verifyPat(rawToken: string, ip?: string | null): Promise<UserRow | null> {
   if (!/^[0-9a-f]{40}$/.test(rawToken)) return null;
   const lastEight = rawToken.slice(-8);
   const candidates = await getDB().all<PatRow>(
-    "SELECT * FROM personal_access_tokens WHERE token_last_eight = ?",
+    "SELECT * FROM {{personal_access_tokens}} WHERE token_last_eight = ?",
     [lastEight]
   );
   const nowMs = Date.now();
@@ -967,7 +967,7 @@ export async function verifyPat(rawToken: string, ip?: string | null): Promise<U
     if (!ipAllowedBy(ip, allowlist)) continue;
     const user = await getUserByLogin(row.user_login);
     if (!user || !user.is_active) return null;
-    await getDB().run("UPDATE personal_access_tokens SET last_used_at = ? WHERE id = ?", [now(), row.id]);
+    await getDB().run("UPDATE {{personal_access_tokens}} SET last_used_at = ? WHERE id = ?", [now(), row.id]);
     return user;
   }
   return null;
@@ -993,7 +993,7 @@ export interface ProjectMemberWithUser extends ProjectMembership {
 export async function listProjectMembersWithUsers(projectId: number): Promise<ProjectMemberWithUser[]> {
   return await getDB().all<ProjectMemberWithUser>(
     `SELECT m.*, u.kind AS user_kind, u.display_name AS user_display_name, u.is_active AS user_is_active
-     FROM project_members m JOIN users u ON u.login = m.user_login
+     FROM {{project_members}} m JOIN {{users}} u ON u.login = m.user_login
      WHERE m.project_id = ?
      ORDER BY CASE m.role WHEN 'admin' THEN 0 WHEN 'writer' THEN 1 ELSE 2 END, m.created_at ASC`,
     [projectId]
@@ -1002,7 +1002,7 @@ export async function listProjectMembersWithUsers(projectId: number): Promise<Pr
 
 export async function listMembershipsForUser(userLogin: string): Promise<ProjectMembership[]> {
   return await getDB().all<ProjectMembership>(
-    "SELECT * FROM project_members WHERE user_login = ? ORDER BY created_at ASC",
+    "SELECT * FROM {{project_members}} WHERE user_login = ? ORDER BY created_at ASC",
     [userLogin]
   );
 }
@@ -1010,7 +1010,7 @@ export async function listMembershipsForUser(userLogin: string): Promise<Project
 export async function getProjectMembership(projectId: number, userLogin: string): Promise<ProjectMembership | null> {
   return (
     (await getDB().get<ProjectMembership>(
-      "SELECT * FROM project_members WHERE project_id = ? AND user_login = ?",
+      "SELECT * FROM {{project_members}} WHERE project_id = ? AND user_login = ?",
       [projectId, userLogin]
     )) ?? null
   );
@@ -1042,7 +1042,7 @@ export async function addProjectMember(projectId: number, userLogin: string, rol
   if (!(await getUserByLogin(login))) throw new StoreError(404, `用户 ${login} 不存在`);
   const ts = now();
   await getDB().run(
-    "INSERT OR IGNORE INTO project_members (project_id, user_login, role, created_at) VALUES (?, ?, ?, ?)",
+    "INSERT OR IGNORE INTO {{project_members}} (project_id, user_login, role, created_at) VALUES (?, ?, ?, ?)",
     [projectId, login, role, ts]
   );
   return (await getProjectMembership(projectId, login))!;
@@ -1052,21 +1052,21 @@ export async function setProjectMemberRole(projectId: number, userLogin: string,
   const m = await getProjectMembership(projectId, userLogin);
   if (!m) throw new StoreError(404, `用户 ${userLogin} 不是该项目成员`);
   await getDB().run(
-    "UPDATE project_members SET role = ? WHERE project_id = ? AND user_login = ?",
+    "UPDATE {{project_members}} SET role = ? WHERE project_id = ? AND user_login = ?",
     [role, projectId, userLogin]
   );
 }
 
 export async function removeProjectMember(projectId: number, userLogin: string): Promise<void> {
   await getDB().run(
-    "DELETE FROM project_members WHERE project_id = ? AND user_login = ?",
+    "DELETE FROM {{project_members}} WHERE project_id = ? AND user_login = ?",
     [projectId, userLogin]
   );
 }
 
 export async function countProjectAdmins(projectId: number): Promise<number> {
   const row = await getDB().get<{ n: number }>(
-    "SELECT COUNT(*) AS n FROM project_members WHERE project_id = ? AND role = 'admin'",
+    "SELECT COUNT(*) AS n FROM {{project_members}} WHERE project_id = ? AND role = 'admin'",
     [projectId]
   );
   return row!.n;
@@ -1077,14 +1077,14 @@ export async function countProjectAdmins(projectId: number): Promise<number> {
 // site-admin first opens it on an old (pre-RBAC) project.
 export async function ensureProjectBootstrapAdmin(projectId: number, login: string): Promise<void> {
   const existing = await getDB().get<{ n: number }>(
-    "SELECT COUNT(*) AS n FROM project_members WHERE project_id = ?",
+    "SELECT COUNT(*) AS n FROM {{project_members}} WHERE project_id = ?",
     [projectId]
   );
   if (existing!.n > 0) return;
   if (!(await getUserByLogin(login))) return;
   const ts = now();
   await getDB().run(
-    "INSERT OR IGNORE INTO project_members (project_id, user_login, role, created_at) VALUES (?, ?, 'admin', ?)",
+    "INSERT OR IGNORE INTO {{project_members}} (project_id, user_login, role, created_at) VALUES (?, ?, 'admin', ?)",
     [projectId, login, ts]
   );
 }

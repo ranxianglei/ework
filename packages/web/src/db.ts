@@ -1,7 +1,14 @@
 // Storage bootstrap. Owns the AsyncDatabase singleton. SQLite today (bun:sqlite
-// wrapped async); a MySQL driver will implement the same AsyncDatabase surface
-// later. Schema + migrations run in connect(). Callers MUST `await initDB()`
-// once at boot before issuing queries.
+// wrapped async); a MySQL driver will implement the same AsyncDatabase surface.
+// Schema + migrations run in connect(). Callers MUST `await initDB()` once at
+// boot before issuing queries.
+//
+// Table prefix: every table reference in SQL is written as a {{table}} token;
+// applyPrefix() rewrites {{name}} -> <WORK_DB_PREFIX>+name before execution.
+// Default prefix "" leaves SQL identical (backward-compatible with existing
+// ework.db files). WORK_DB_PREFIX is ENV-ONLY (never stored in the config
+// table) — the prefix is needed to locate the config table itself, so it
+// cannot live inside it (chicken-and-egg).
 
 import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { mkdirSync, readFileSync } from "fs";
@@ -34,8 +41,28 @@ const DB_PATH =
   process.env.WORK_DB_PATH ||
   join(process.env.XDG_DATA_HOME || `${process.env.HOME}/.local/share`, "ework", "ework.db");
 
+// ---- table prefix (env-only; read once at module load) ----
+// Validated as a safe SQL identifier prefix. Empty = no prefix (default,
+// backward-compatible). A non-empty prefix lets multiple ework instances (or
+// ework + another app) share one database without colliding on table names.
+const DB_PREFIX = (() => {
+  const raw = (process.env.WORK_DB_PREFIX ?? "").trim();
+  if (raw && !/^[A-Za-z_][A-Za-z0-9_]{0,31}$/.test(raw)) {
+    throw new Error(
+      `Invalid WORK_DB_PREFIX "${raw}": must match ^[A-Za-z_][A-Za-z0-9_]{0,31}$`
+    );
+  }
+  return raw;
+})();
+
+/** Rewrite {{table}} tokens -> <prefix>table. No-op when sql contains no tokens. */
+export function applyPrefix(sql: string): string {
+  if (!sql.includes("{{")) return sql;
+  return sql.replace(/\{\{(\w+)\}\}/g, (_m, name: string) => DB_PREFIX + name);
+}
+
 function userTableColumns(db: Database): Set<string> {
-  const rows = db.query("PRAGMA table_info(users)").all() as { name: string }[];
+  const rows = db.query(applyPrefix("PRAGMA table_info({{users}})")).all() as { name: string }[];
   return new Set(rows.map((r) => r.name));
 }
 
@@ -45,21 +72,21 @@ function migrateUsersTable(db: Database): void {
   if (userTableColumns(db).size === 0) return; // users doesn't exist yet; schema.sql will create it
   const have = userTableColumns(db);
   const additions: { col: string; ddl: string }[] = [
-    { col: "password_hash", ddl: "ALTER TABLE users ADD COLUMN password_hash TEXT" },
-    { col: "email", ddl: "ALTER TABLE users ADD COLUMN email TEXT" },
-    { col: "is_admin", ddl: "ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0" },
-    { col: "is_active", ddl: "ALTER TABLE users ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1" },
-    { col: "updated_at", ddl: "ALTER TABLE users ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''" },
+    { col: "password_hash", ddl: "ALTER TABLE {{users}} ADD COLUMN password_hash TEXT" },
+    { col: "email", ddl: "ALTER TABLE {{users}} ADD COLUMN email TEXT" },
+    { col: "is_admin", ddl: "ALTER TABLE {{users}} ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0" },
+    { col: "is_active", ddl: "ALTER TABLE {{users}} ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1" },
+    { col: "updated_at", ddl: "ALTER TABLE {{users}} ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''" },
   ];
   for (const m of additions) {
     if (have.has(m.col)) continue;
-    db.exec(m.ddl);
+    db.exec(applyPrefix(m.ddl));
   }
-  db.exec("CREATE INDEX IF NOT EXISTS users_is_admin ON users (is_admin) WHERE is_admin = 1");
+  db.exec(applyPrefix("CREATE INDEX IF NOT EXISTS users_is_admin ON {{users}} (is_admin) WHERE is_admin = 1"));
 }
 
 function tableColumns(db: Database, name: string): Set<string> {
-  const rows = db.query(`PRAGMA table_info(${name})`).all() as { name: string }[];
+  const rows = db.query(applyPrefix(`PRAGMA table_info({{${name}}})`)).all() as { name: string }[];
   return new Set(rows.map((r) => r.name));
 }
 
@@ -67,7 +94,7 @@ function migratePatTable(db: Database): void {
   const have = tableColumns(db, "personal_access_tokens");
   if (have.size === 0) return;
   if (!have.has("ip_allowlist")) {
-    db.exec("ALTER TABLE personal_access_tokens ADD COLUMN ip_allowlist TEXT NOT NULL DEFAULT '[]'");
+    db.exec(applyPrefix("ALTER TABLE {{personal_access_tokens}} ADD COLUMN ip_allowlist TEXT NOT NULL DEFAULT '[]'"));
   }
 }
 
@@ -75,10 +102,10 @@ function migrateProjectsTable(db: Database): void {
   const have = tableColumns(db, "projects");
   if (have.size === 0) return;
   if (!have.has("upstream_urls")) {
-    db.exec("ALTER TABLE projects ADD COLUMN upstream_urls TEXT NOT NULL DEFAULT '[]'");
+    db.exec(applyPrefix("ALTER TABLE {{projects}} ADD COLUMN upstream_urls TEXT NOT NULL DEFAULT '[]'"));
   }
   if (!have.has("model")) {
-    db.exec("ALTER TABLE projects ADD COLUMN model TEXT NOT NULL DEFAULT ''");
+    db.exec(applyPrefix("ALTER TABLE {{projects}} ADD COLUMN model TEXT NOT NULL DEFAULT ''"));
   }
 }
 
@@ -86,7 +113,7 @@ function migrateIssuesTable(db: Database): void {
   const have = tableColumns(db, "issues");
   if (have.size === 0) return;
   if (!have.has("closed_at")) {
-    db.exec("ALTER TABLE issues ADD COLUMN closed_at TEXT");
+    db.exec(applyPrefix("ALTER TABLE {{issues}} ADD COLUMN closed_at TEXT"));
   }
 }
 
@@ -102,32 +129,34 @@ class SqliteDriver implements AsyncDatabase {
     db.exec("PRAGMA journal_mode = WAL");
     db.exec("PRAGMA foreign_keys = ON");
     db.exec(
-      "CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL)"
+      applyPrefix(
+        "CREATE TABLE IF NOT EXISTS {{config}} (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL)"
+      )
     );
     // Migration must run BEFORE schema.sql (same ordering as the original file).
     migrateUsersTable(db);
     migratePatTable(db);
     migrateProjectsTable(db);
     migrateIssuesTable(db);
-    db.exec(readFileSync(join(import.meta.dir, "schema.sql"), "utf8"));
+    db.exec(applyPrefix(readFileSync(join(import.meta.dir, "schema.sql"), "utf8")));
     return new SqliteDriver(db);
   }
 
   async all<T = unknown>(sql: string, params: unknown[] = []): Promise<T[]> {
-    return this.db.query(sql).all(...(params as SQLQueryBindings[])) as T[];
+    return this.db.query(applyPrefix(sql)).all(...(params as SQLQueryBindings[])) as T[];
   }
   async get<T = unknown>(sql: string, params: unknown[] = []): Promise<T | null> {
-    return (this.db.query(sql).get(...(params as SQLQueryBindings[])) as T | null) ?? null;
+    return (this.db.query(applyPrefix(sql)).get(...(params as SQLQueryBindings[])) as T | null) ?? null;
   }
   async run(sql: string, params: unknown[] = []): Promise<DbRunResult> {
-    const info = this.db.query(sql).run(...(params as SQLQueryBindings[])) as unknown as {
+    const info = this.db.query(applyPrefix(sql)).run(...(params as SQLQueryBindings[])) as unknown as {
       lastInsertRowid: number | bigint;
       changes: number;
     };
     return { insertId: Number(info.lastInsertRowid), changes: info.changes };
   }
   async exec(sql: string): Promise<void> {
-    this.db.exec(sql);
+    this.db.exec(applyPrefix(sql));
   }
   async transaction<T>(fn: () => Promise<T>): Promise<T> {
     if (this.inTx) {
@@ -171,7 +200,7 @@ export function getDB(): AsyncDatabase {
 export async function getConfigAll(): Promise<Record<string, string>> {
   try {
     const driver = getDB();
-    const rows = await driver.all<{ key: string; value: string }>("SELECT key, value FROM config");
+    const rows = await driver.all<{ key: string; value: string }>("SELECT key, value FROM {{config}}");
     const out: Record<string, string> = {};
     for (const r of rows) out[r.key] = r.value;
     return out;
@@ -183,12 +212,12 @@ export async function getConfigAll(): Promise<Record<string, string>> {
 export async function setConfig(key: string, value: string): Promise<void> {
   const now = new Date().toISOString();
   await getDB().run(
-    "INSERT INTO config (key, value, updated_at) VALUES (?, ?, ?) " +
+    "INSERT INTO {{config}} (key, value, updated_at) VALUES (?, ?, ?) " +
       "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
     [key, value, now]
   );
 }
 
 export async function deleteConfig(key: string): Promise<void> {
-  await getDB().run("DELETE FROM config WHERE key = ?", [key]);
+  await getDB().run("DELETE FROM {{config}} WHERE key = ?", [key]);
 }

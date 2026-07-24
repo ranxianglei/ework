@@ -335,7 +335,7 @@ async function reactionsList(commentId: number, origin: string): Promise<{ user:
   const aggs = await listReactionsFor([commentId]);
   if (aggs.length === 0) return [];
   const rows = await getDB().all<{ user_login: string; content: string }>(
-    "SELECT user_login, content FROM reactions WHERE comment_id = ? ORDER BY rowid",
+    "SELECT user_login, content FROM {{reactions}} WHERE comment_id = ? ORDER BY rowid",
     [commentId]
   );
   return rows.map((r) => ({

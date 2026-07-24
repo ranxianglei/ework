@@ -122,11 +122,11 @@ function parseEvents(events: unknown): WebhookEventName[] {
 // ─── CRUD ────────────────────────────────────────────────────
 
 export async function listWebhooks(projectId: number): Promise<WebhookRow[]> {
-  return await getDB().all<WebhookRow>("SELECT * FROM webhooks WHERE project_id = ? ORDER BY id", [projectId]);
+  return await getDB().all<WebhookRow>("SELECT * FROM {{webhooks}} WHERE project_id = ? ORDER BY id", [projectId]);
 }
 
 export async function getWebhook(id: number): Promise<WebhookRow | null> {
-  const row = await getDB().get<WebhookRow>("SELECT * FROM webhooks WHERE id = ?", [id]);
+  const row = await getDB().get<WebhookRow>("SELECT * FROM {{webhooks}} WHERE id = ?", [id]);
   return row ?? null;
 }
 
@@ -147,7 +147,7 @@ export async function createWebhook(input: CreateWebhookInput): Promise<WebhookR
   const events = input.events && input.events.length > 0 ? input.events : DEFAULT_EVENTS;
   const ts = now();
   const info = await getDB().run(
-    `INSERT INTO webhooks (project_id, url, secret, content_type, events, active, created_at, updated_at)
+    `INSERT INTO {{webhooks}} (project_id, url, secret, content_type, events, active, created_at, updated_at)
      VALUES (?, ?, ?, 'application/json', ?, ?, ?, ?)`,
     [
       input.project_id,
@@ -163,16 +163,16 @@ export async function createWebhook(input: CreateWebhookInput): Promise<WebhookR
 }
 
 export async function deleteWebhook(id: number): Promise<void> {
-  await getDB().run("DELETE FROM webhooks WHERE id = ?", [id]);
+  await getDB().run("DELETE FROM {{webhooks}} WHERE id = ?", [id]);
 }
 
 export async function setWebhookActive(id: number, active: boolean): Promise<void> {
-  await getDB().run("UPDATE webhooks SET active = ?, updated_at = ? WHERE id = ?", [active ? 1 : 0, now(), id]);
+  await getDB().run("UPDATE {{webhooks}} SET active = ?, updated_at = ? WHERE id = ?", [active ? 1 : 0, now(), id]);
 }
 
 export async function listDeliveries(webhookId: number, limit = 50): Promise<WebhookDeliveryRow[]> {
   return await getDB().all<WebhookDeliveryRow>(
-    "SELECT * FROM webhook_deliveries WHERE webhook_id = ? ORDER BY id DESC LIMIT ?",
+    "SELECT * FROM {{webhook_deliveries}} WHERE webhook_id = ? ORDER BY id DESC LIMIT ?",
     [webhookId, limit]
   );
 }
@@ -504,7 +504,7 @@ async function recordDelivery(
 ): Promise<void> {
   try {
     await getDB().run(
-      `INSERT INTO webhook_deliveries
+      `INSERT INTO {{webhook_deliveries}}
         (webhook_id, event, delivery_uuid, payload, response_status, response_body, duration_ms, error, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
@@ -559,7 +559,7 @@ async function fanOut(
   rawBody: string
 ): Promise<void> {
   const webhooks = await getDB().all<WebhookRow>(
-    "SELECT * FROM webhooks WHERE project_id = ? AND active = 1",
+    "SELECT * FROM {{webhooks}} WHERE project_id = ? AND active = 1",
     [projectId]
   );
   for (const wh of webhooks) {
@@ -654,7 +654,7 @@ export async function emitPingEvent(projectId: number, origin: string): Promise<
 async function countCommentsSafe(issueId: number): Promise<number> {
   try {
     const row = await getDB().get<{ n: number }>(
-      "SELECT COUNT(*) AS n FROM comments WHERE issue_id = ?",
+      "SELECT COUNT(*) AS n FROM {{comments}} WHERE issue_id = ?",
       [issueId]
     );
     return row?.n ?? 0;
@@ -665,7 +665,7 @@ async function countCommentsSafe(issueId: number): Promise<number> {
 
 async function getCommentByIdSafe(id: number): Promise<CommentRow | null> {
   try {
-    const row = await getDB().get<CommentRow>("SELECT * FROM comments WHERE id = ?", [id]);
+    const row = await getDB().get<CommentRow>("SELECT * FROM {{comments}} WHERE id = ?", [id]);
     return row ?? null;
   } catch {
     return null;
