@@ -23,7 +23,8 @@ afterEach(async () => {
   globalThis.fetch = originalFetch;
   await new Promise((r) => setTimeout(r, 60));
   const db = getDB();
-  await db.exec("PRAGMA foreign_keys = OFF");
+  const mysql = db.dialect === "mysql";
+  await db.exec(mysql ? "SET FOREIGN_KEY_CHECKS = 0" : "PRAGMA foreign_keys = OFF");
   for (const t of [
     "reactions",
     "comments",
@@ -38,10 +39,16 @@ afterEach(async () => {
     "projects",
     "users",
   ]) {
-    await db.exec(`DELETE FROM ${t}`);
+    await db.exec(`DELETE FROM {{${t}}}`);
   }
-  await db.exec("PRAGMA foreign_keys = ON");
-  await db.exec("DELETE FROM sqlite_sequence WHERE name IN ('issues','comments','projects','webhooks')");
+  await db.exec(mysql ? "SET FOREIGN_KEY_CHECKS = 1" : "PRAGMA foreign_keys = ON");
+  if (mysql) {
+    for (const t of ["issues", "comments", "projects", "webhooks", "labels", "webhook_deliveries", "personal_access_tokens"]) {
+      await db.exec(`ALTER TABLE {{${t}}} AUTO_INCREMENT = 1`);
+    }
+  } else {
+    await db.exec("DELETE FROM sqlite_sequence WHERE name IN ('issues','comments','projects','webhooks')");
+  }
 });
 
 describe("signBody: HMAC-SHA256 hex", () => {
