@@ -129,13 +129,13 @@ export function parseUpstreamUrlsForm(text: string): string[] {
     .filter((line) => line.length > 0);
 }
 
-export function trySetUpstreamUrls(
+export async function trySetUpstreamUrls(
   projectId: number,
   raw: string,
-): { ok: true; urls: string[] } | { ok: false; msg: string } {
+): Promise<{ ok: true; urls: string[] } | { ok: false; msg: string }> {
   try {
     const urls = parseUpstreamUrlsForm(raw);
-    const cleaned = setProjectUpstreamUrls(projectId, urls);
+    const cleaned = await setProjectUpstreamUrls(projectId, urls);
     return { ok: true, urls: cleaned };
   } catch (e) {
     const msg = e instanceof StoreError ? e.message : e instanceof Error ? e.message : "保存失败";

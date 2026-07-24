@@ -44,9 +44,9 @@ function toView(c: CommentRow): CommentView {
   };
 }
 
-export function viewsFromComments(rows: CommentRow[]): CommentView[] {
+export async function viewsFromComments(rows: CommentRow[]): Promise<CommentView[]> {
   const views = rows.map((r) => toView(r));
-  hydrateReactions(views);
+  await hydrateReactions(views);
   return views;
 }
 
@@ -82,23 +82,23 @@ function orderForDisplay(views: CommentView[], sort: "desc" | "asc"): CommentVie
   return sort === "asc" ? views : views.slice().reverse();
 }
 
-export function buildIssueThread(
+export async function buildIssueThread(
   cfg: Config,
   owner: string,
   repo: string,
   number: number,
   viewerLogin?: string
-): { html: string } {
-  const project = getProject(owner, repo);
+): Promise<{ html: string }> {
+  const project = await getProject(owner, repo);
   if (!project) throw new StoreError(404, `项目 ${owner}/${repo} 不存在`);
-  const issue = getIssueWithMeta(project.id, number);
+  const issue = await getIssueWithMeta(project.id, number);
   if (!issue) throw new StoreError(404, `#${number} 在 ${owner}/${repo} 不存在`);
 
-  const total = countComments(issue.id);
+  const total = await countComments(issue.id);
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const currentPage = totalPages;
-  const { rows } = listCommentsPage(issue.id, currentPage, PAGE_SIZE);
-  const views = viewsFromComments(rows);
+  const { rows } = await listCommentsPage(issue.id, currentPage, PAGE_SIZE);
+  const views = await viewsFromComments(rows);
   const hasOlder = currentPage > 1;
   const displayViews = orderForDisplay(views, cfg.commentSort);
   const payload = payloadFromComments(issue, displayViews, currentPage, hasOlder, cfg.commentSort);
@@ -140,33 +140,33 @@ export interface IssuePageData {
   hasOlder: boolean;
 }
 
-export function fetchIssuePage(
+export async function fetchIssuePage(
   owner: string,
   repo: string,
   number: number,
   page: number
-): IssuePageData {
-  const project = getProject(owner, repo);
+): Promise<IssuePageData> {
+  const project = await getProject(owner, repo);
   if (!project) throw new StoreError(404, `项目 ${owner}/${repo} 不存在`);
-  const issue = getIssueWithMeta(project.id, number);
+  const issue = await getIssueWithMeta(project.id, number);
   if (!issue) throw new StoreError(404, `#${number} 不存在`);
-  const { rows, page: clamped } = listCommentsPage(issue.id, page, PAGE_SIZE);
-  const views = viewsFromComments(rows);
+  const { rows, page: clamped } = await listCommentsPage(issue.id, page, PAGE_SIZE);
+  const views = await viewsFromComments(rows);
   return { issue, views, currentPage: clamped, hasOlder: clamped > 1 };
 }
 
-export function fetchIssueSince(
+export async function fetchIssueSince(
   owner: string,
   repo: string,
   number: number,
   sinceISO: string
-): CommentView[] {
-  const project = getProject(owner, repo);
+): Promise<CommentView[]> {
+  const project = await getProject(owner, repo);
   if (!project) throw new StoreError(404, `项目 ${owner}/${repo} 不存在`);
-  const issue = getIssueWithMeta(project.id, number);
+  const issue = await getIssueWithMeta(project.id, number);
   if (!issue) throw new StoreError(404, `#${number} 不存在`);
-  const rows = listCommentsSince(issue.id, sinceISO);
-  return viewsFromComments(rows);
+  const rows = await listCommentsSince(issue.id, sinceISO);
+  return await viewsFromComments(rows);
 }
 
 export function safeJsonEmbed(v: unknown): string {

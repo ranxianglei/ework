@@ -12,7 +12,7 @@
 // bg audit) plus a few cheap stubs (/version, /user, /repos/:o/:r) that
 // Gitea clients commonly hit during connection bootstrap.
 
-import { rawDB } from "./db";
+import { getDB } from "./db";
 import {
   StoreError,
   getProject,
@@ -122,18 +122,17 @@ export async function handleGiteaApi(
     const limitRaw = Number(url.searchParams.get("limit") ?? 50);
     const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 200) : 50;
     try {
-      const rows = listAllIssues({ q, state, limit });
-      return {
-        status: 200,
-        body: rows.map((row) => {
-          const project = getProject(row.project_owner, row.project_name);
-          if (!project) return null;
-          return {
-            ...buildIssuePayload(row, project, row.comment_count ?? 0, origin),
-            repository: buildRepository(project, origin),
-          };
-        }).filter((x) => x !== null),
-      };
+      const rows = await listAllIssues({ q, state, limit });
+      const body = [];
+      for (const row of rows) {
+        const project = await getProject(row.project_owner, row.project_name);
+        if (!project) continue;
+        body.push({
+          ...buildIssuePayload(row, project, row.comment_count ?? 0, origin),
+          repository: buildRepository(project, origin),
+        });
+      }
+      return { status: 200, body };
     } catch (e) {
       return giteaError(e instanceof StoreError ? e.status : 500, e instanceof Error ? e.message : "error");
     }
@@ -143,7 +142,7 @@ export async function handleGiteaApi(
   if (m && req.method === "GET") {
     const [, owner, repo] = m;
     if (!(owner && repo)) return giteaError(404, "not found");
-    const project = getProject(owner, repo);
+    const project = await getProject(owner, repo);
     if (!project) return giteaError(404, "repository not found");
     return { status: 200, body: buildRepository(project, origin) };
   }
@@ -153,22 +152,22 @@ export async function handleGiteaApi(
     const [, owner, repo] = m;
     if (!(owner && repo)) return giteaError(404, "not found");
     try {
-      const project = getProject(owner, repo);
+      const project = await getProject(owner, repo);
       if (!project) return giteaError(404, "repository not found");
-      if (!canWriteProject(project.id, user)) return giteaError(403, "requires writer role");
+      if (!(await canWriteProject(project.id, user))) return giteaError(403, "requires writer role");
       const body = await readJson(req);
       const title = asString(body.title);
       if (!title) return giteaError(400, "title required");
       const text = asString(body.body) ?? "";
-      const created = createIssue(project.id, title, text, user.login, {
+      const created = await createIssue(project.id, title, text, user.login, {
         createdAt: asString(body.created_at),
         updatedAt: asString(body.updated_at),
         state: asIssueState(body.state) ?? "open",
         closedAt: asString(body.closed_at) || undefined,
       });
-      emitIssueEvent(project.id, created.id, "opened", origin);
+      void emitIssueEvent(project.id, created.id, "opened", origin);
       if (created.state === "closed") {
-        emitIssueEvent(project.id, created.id, "closed", origin);
+        void emitIssueEvent(project.id, created.id, "closed", origin);
       }
       return { status: 201, body: buildIssuePayload(created, project, 0, origin) };
     } catch (e) {
@@ -182,33 +181,33 @@ export async function handleGiteaApi(
     if (!(owner && repo && numStr)) return giteaError(404, "not found");
     const number = Number(numStr);
     try {
-      const project = getProject(owner, repo);
+      const project = await getProject(owner, repo);
       if (!project) return giteaError(404, "repository not found");
-      const issue = getIssue(project.id, number);
+      const issue = await getIssue(project.id, number);
       if (!issue) return giteaError(404, "issue not found");
 
       if (req.method === "GET") {
-        return { status: 200, body: buildIssuePayload(issue, project, countComments(issue.id), origin) };
+        return { status: 200, body: buildIssuePayload(issue, project, await countComments(issue.id), origin) };
       }
       if (req.method === "PATCH") {
-        if (!canWriteProject(project.id, user)) return giteaError(403, "requires writer role");
+        if (!(await canWriteProject(project.id, user))) return giteaError(403, "requires writer role");
         const body = await readJson(req);
         const before = issue.state;
-        editIssue(issue.id, {
+        await editIssue(issue.id, {
           title: asString(body.title),
           body: asString(body.body),
           state: asIssueState(body.state),
           closedAt: asString(body.closed_at) || undefined,
           updatedAt: asString(body.updated_at),
         });
-        const after = getIssueById(issue.id);
+        const after = await getIssueById(issue.id);
         if (!after) return giteaError(404, "issue vanished mid-edit");
         if (before === "open" && after.state === "closed") {
-          emitIssueEvent(project.id, after.id, "closed", origin);
+          void emitIssueEvent(project.id, after.id, "closed", origin);
         } else if (before === "closed" && after.state === "open") {
-          emitIssueEvent(project.id, after.id, "reopened", origin);
+          void emitIssueEvent(project.id, after.id, "reopened", origin);
         }
-        return { status: 200, body: buildIssuePayload(after, project, countComments(after.id), origin) };
+        return { status: 200, body: buildIssuePayload(after, project, await countComments(after.id), origin) };
       }
       return giteaError(405, `method ${req.method} not allowed`);
     } catch (e) {
@@ -222,28 +221,28 @@ export async function handleGiteaApi(
     if (!(owner && repo && numStr)) return giteaError(404, "not found");
     const number = Number(numStr);
     try {
-      const project = getProject(owner, repo);
+      const project = await getProject(owner, repo);
       if (!project) return giteaError(404, "repository not found");
-      const issue = getIssue(project.id, number);
+      const issue = await getIssue(project.id, number);
       if (!issue) return giteaError(404, "issue not found");
 
       if (req.method === "GET") {
-        const comments = listCommentsForIssue(issue.id);
+        const comments = await listCommentsForIssue(issue.id);
         return {
           status: 200,
           body: comments.map((c) => buildCommentPayload(issue, c, project, origin)),
         };
       }
       if (req.method === "POST") {
-        if (!canWriteProject(project.id, user)) return giteaError(403, "requires writer role");
+        if (!(await canWriteProject(project.id, user))) return giteaError(403, "requires writer role");
         const body = await readJson(req);
         const text = asString(body.body);
         if (text === undefined) return giteaError(400, "body required");
-        const created = postComment(issue.id, text, user.login, {
+        const created = await postComment(issue.id, text, user.login, {
           createdAt: asString(body.created_at),
           updatedAt: asString(body.updated_at),
         });
-        emitCommentEvent(project.id, issue.id, created.id, origin);
+        void emitCommentEvent(project.id, issue.id, created.id, origin);
         return { status: 201, body: buildCommentPayload(issue, created, project, origin) };
       }
       return giteaError(405, `method ${req.method} not allowed`);
@@ -268,29 +267,29 @@ export async function handleGiteaApi(
     if (!(owner && repo && cidStr)) return giteaError(404, "not found");
     const cid = Number(cidStr);
     try {
-      const project = getProject(owner, repo);
+      const project = await getProject(owner, repo);
       if (!project) return giteaError(404, "repository not found");
 
       if (req.method === "GET") {
-        const comment = getComment(cid);
+        const comment = await getComment(cid);
         if (!comment) return giteaError(404, "comment not found");
-        const issue = getIssueById(comment.issue_id);
+        const issue = await getIssueById(comment.issue_id);
         if (!issue) return giteaError(404, "issue not found");
         return { status: 200, body: buildCommentPayload(issue, comment, project, origin) };
       }
       if (req.method === "PATCH") {
-        if (!canWriteProject(project.id, user)) return giteaError(403, "requires writer role");
+        if (!(await canWriteProject(project.id, user))) return giteaError(403, "requires writer role");
         const body = await readJson(req);
         const text = asString(body.body);
         if (text === undefined) return giteaError(400, "body required");
-        const updated = editComment(cid, text);
-        const issue = getIssueById(updated.issue_id);
+        const updated = await editComment(cid, text);
+        const issue = await getIssueById(updated.issue_id);
         if (!issue) return giteaError(404, "issue not found");
         return { status: 200, body: buildCommentPayload(issue, updated, project, origin) };
       }
       if (req.method === "DELETE") {
-        if (!canWriteProject(project.id, user)) return giteaError(403, "requires writer role");
-        deleteComment(cid);
+        if (!(await canWriteProject(project.id, user))) return giteaError(403, "requires writer role");
+        await deleteComment(cid);
         return { status: 204, body: null };
       }
       return giteaError(405, `method ${req.method} not allowed`);
@@ -305,20 +304,20 @@ export async function handleGiteaApi(
     if (!(owner && repo && cidStr)) return giteaError(404, "not found");
     const cid = Number(cidStr);
     try {
-      const project = getProject(owner, repo);
+      const project = await getProject(owner, repo);
       if (!project) return giteaError(404, "repository not found");
 
       if (req.method === "GET") {
-        return { status: 200, body: reactionsList(cid, origin) };
+        return { status: 200, body: await reactionsList(cid, origin) };
       }
       if (req.method === "POST" || req.method === "DELETE") {
-        if (!canWriteProject(project.id, user)) return giteaError(403, "requires writer role");
+        if (!(await canWriteProject(project.id, user))) return giteaError(403, "requires writer role");
         const body = await readJson(req);
         const content = asContent(body.content);
         if (content === undefined) return giteaError(400, "content required");
-        if (req.method === "POST") addReaction(cid, user.login, content);
-        else removeReaction(cid, user.login, content);
-        return { status: 200, body: reactionsList(cid, origin) };
+        if (req.method === "POST") await addReaction(cid, user.login, content);
+        else await removeReaction(cid, user.login, content);
+        return { status: 200, body: await reactionsList(cid, origin) };
       }
       return giteaError(405, `method ${req.method} not allowed`);
     } catch (e) {
@@ -332,12 +331,13 @@ export async function handleGiteaApi(
 // Gitea returns a per-user list, not the aggregated counts ework's store
 // keeps. The "reaction" key is Gitea's wire name; we also emit "content"
 // for self-consistency with ework's schema.
-function reactionsList(commentId: number, origin: string): { user: ReturnType<typeof buildUser>; reaction: string; content: string }[] {
-  const aggs = listReactionsFor([commentId]);
+async function reactionsList(commentId: number, origin: string): Promise<{ user: ReturnType<typeof buildUser>; reaction: string; content: string }[]> {
+  const aggs = await listReactionsFor([commentId]);
   if (aggs.length === 0) return [];
-  const rows = rawDB()
-    .query("SELECT user_login, content FROM reactions WHERE comment_id = ? ORDER BY rowid")
-    .all(commentId) as { user_login: string; content: string }[];
+  const rows = await getDB().all<{ user_login: string; content: string }>(
+    "SELECT user_login, content FROM reactions WHERE comment_id = ? ORDER BY rowid",
+    [commentId]
+  );
   return rows.map((r) => ({
     user: buildUser(r.user_login, origin),
     reaction: r.content,

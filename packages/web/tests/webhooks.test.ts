@@ -1,6 +1,6 @@
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
 
-import { rawDB } from "../src/db";
+import { getDB, initDB } from "../src/db";
 import {
   _internal,
   buildIssuePayload,
@@ -15,15 +15,15 @@ import { createIssue, createProject, ensureUser, postComment } from "../src/stor
 const ORIGIN = "http://test.local";
 const originalFetch = globalThis.fetch;
 
-beforeAll(() => {
-  rawDB();
+beforeAll(async () => {
+  await initDB();
 });
 
 afterEach(async () => {
   globalThis.fetch = originalFetch;
   await new Promise((r) => setTimeout(r, 60));
-  const raw = rawDB();
-  raw.exec("PRAGMA foreign_keys = OFF");
+  const db = getDB();
+  await db.exec("PRAGMA foreign_keys = OFF");
   for (const t of [
     "reactions",
     "comments",
@@ -38,10 +38,10 @@ afterEach(async () => {
     "projects",
     "users",
   ]) {
-    raw.exec(`DELETE FROM ${t}`);
+    await db.exec(`DELETE FROM ${t}`);
   }
-  raw.exec("PRAGMA foreign_keys = ON");
-  raw.exec("DELETE FROM sqlite_sequence WHERE name IN ('issues','comments','projects','webhooks')");
+  await db.exec("PRAGMA foreign_keys = ON");
+  await db.exec("DELETE FROM sqlite_sequence WHERE name IN ('issues','comments','projects','webhooks')");
 });
 
 describe("signBody: HMAC-SHA256 hex", () => {
@@ -97,13 +97,13 @@ describe("buildHeaders: Gitea + GitHub + Gogs compatibility", () => {
 });
 
 describe("buildIssuePayload (exported as buildIssue alias): Gitea-shaped issue object", () => {
-  test("contains required fields with correct types", () => {
-    ensureUser("alice");
-    const project = createProject("dog", "repo", "desc");
-    const issue = createIssue(project.id, "title", "body", "alice", {
+  test("contains required fields with correct types", async () => {
+    await ensureUser("alice");
+    const project = await createProject("dog", "repo", "desc");
+    const issue = await createIssue(project.id, "title", "body", "alice", {
       createdAt: "2020-01-01T00:00:00Z",
     });
-    postComment(issue.id, "first", "alice");
+    await postComment(issue.id, "first", "alice");
 
     const built = buildIssuePayload(issue, project, 1, ORIGIN);
     expect(built.number).toBe(1);
@@ -118,10 +118,10 @@ describe("buildIssuePayload (exported as buildIssue alias): Gitea-shaped issue o
     expect(built.html_url).toContain("/issues/1");
   });
 
-  test("closed issue carries closed_at timestamp", () => {
-    ensureUser("alice");
-    const project = createProject("dog", "repo", "desc");
-    const issue = createIssue(project.id, "t", "b", "alice", {
+  test("closed issue carries closed_at timestamp", async () => {
+    await ensureUser("alice");
+    const project = await createProject("dog", "repo", "desc");
+    const issue = await createIssue(project.id, "t", "b", "alice", {
       createdAt: "2020-01-01T00:00:00Z",
       state: "closed",
       closedAt: "2020-02-01T00:00:00Z",
@@ -132,33 +132,33 @@ describe("buildIssuePayload (exported as buildIssue alias): Gitea-shaped issue o
 });
 
 describe("webhook CRUD", () => {
-  test("create + list + delete", () => {
-    ensureUser("alice");
-    const project = createProject("dog", "repo", "");
-    const created = createWebhook({
+  test("create + list + delete", async () => {
+    await ensureUser("alice");
+    const project = await createProject("dog", "repo", "");
+    const created = await createWebhook({
       project_id: project.id,
       url: "http://example.com/hook",
       secret: "k",
       events: ["issues"],
     });
-    expect(listWebhooks(project.id).length).toBe(1);
+    expect((await listWebhooks(project.id)).length).toBe(1);
 
-    setWebhookActive(created.id, false);
-    const active = listWebhooks(project.id).filter((w) => w.active);
+    await setWebhookActive(created.id, false);
+    const active = (await listWebhooks(project.id)).filter((w) => w.active);
     expect(active.length).toBe(0);
 
-    deleteWebhook(created.id);
-    expect(listWebhooks(project.id).length).toBe(0);
+    await deleteWebhook(created.id);
+    expect((await listWebhooks(project.id)).length).toBe(0);
   });
 });
 
 describe("concurrency cap (WORK_WEBHOOK_MAX_CONCURRENT=3)", () => {
   test("never exceeds the configured in-flight ceiling", async () => {
-    ensureUser("alice");
-    const project = createProject("dog", "flood", "");
+    await ensureUser("alice");
+    const project = await createProject("dog", "flood", "");
     const N = 12;
     for (let i = 0; i < N; i++) {
-      createWebhook({
+      await createWebhook({
         project_id: project.id,
         url: `http://flood.local/${i}`,
         secret: "",
@@ -182,8 +182,8 @@ describe("concurrency cap (WORK_WEBHOOK_MAX_CONCURRENT=3)", () => {
       });
     }) as typeof fetch;
 
-    const issue = createIssue(project.id, "t", "b", "alice");
-    emitIssueEvent(project.id, issue.id, "opened", ORIGIN);
+    const issue = await createIssue(project.id, "t", "b", "alice");
+    void emitIssueEvent(project.id, issue.id, "opened", ORIGIN);
 
     const start = Date.now();
     while (completed < N && Date.now() - start < 5000) {
@@ -194,10 +194,10 @@ describe("concurrency cap (WORK_WEBHOOK_MAX_CONCURRENT=3)", () => {
   }, 10000);
 
   test("queued deliveries drain after early failures free slots", async () => {
-    ensureUser("alice");
-    const project = createProject("dog", "drain", "");
+    await ensureUser("alice");
+    const project = await createProject("dog", "drain", "");
     for (let i = 0; i < 6; i++) {
-      createWebhook({
+      await createWebhook({
         project_id: project.id,
         url: `http://drain.local/${i}`,
         secret: "",
@@ -222,8 +222,8 @@ describe("concurrency cap (WORK_WEBHOOK_MAX_CONCURRENT=3)", () => {
       });
     }) as typeof fetch;
 
-    const issue = createIssue(project.id, "t", "b", "alice");
-    emitIssueEvent(project.id, issue.id, "opened", ORIGIN);
+    const issue = await createIssue(project.id, "t", "b", "alice");
+    void emitIssueEvent(project.id, issue.id, "opened", ORIGIN);
 
     const start = Date.now();
     while (completed < 6 && Date.now() - start < 8000) {

@@ -22,25 +22,24 @@ function roleBadge(role: ProjectRole): string {
   return `<span class="badge role-${cls}">${escapeHtml(role)}</span>`;
 }
 
-export function buildProjectMembersPage(
+export async function buildProjectMembersPage(
   viewer: UserRow,
   project: ProjectRow,
   flash: Flash | null,
-): string {
-  const members = listProjectMembersWithUsers(project.id);
-  const users = listUsers();
+): Promise<string> {
+  const members = await listProjectMembersWithUsers(project.id);
+  const users = await listUsers();
   const memberLogins = new Set(members.map((m) => m.user_login));
   const candidates = users.filter((u) => u.is_active === 1 && !memberLogins.has(u.login));
 
   const flashHtml = flash ? `<div class="flash ${flash.kind}">${escapeHtml(flash.msg)}</div>` : "";
 
+  const memberRows = await Promise.all(members.map((m) => memberRowHtml(m, viewer, project)));
   const rowsHtml = members.length
     ? `<table>
 <thead><tr><th>用户</th><th>角色</th><th>加入时间</th><th>操作</th></tr></thead>
 <tbody>
-${members
-  .map((m) => memberRowHtml(m, viewer, project))
-  .join("")}
+${memberRows.join("")}
 </tbody>
 </table>`
     : `<div class="hint">该项目还没有成员记录（site-admin 已自动获得 admin 权限，可在下方添加）。</div>`;
@@ -117,9 +116,9 @@ ${addFormHtml}
 </main></body></html>`;
 }
 
-function memberRowHtml(m: ProjectMemberWithUser, viewer: UserRow, project: ProjectRow): string {
+async function memberRowHtml(m: ProjectMemberWithUser, viewer: UserRow, project: ProjectRow): Promise<string> {
   const isSelf = m.user_login === viewer.login;
-  const isAdminCountOne = m.role === "admin" && countProjectAdmins(project.id) <= 1;
+  const isAdminCountOne = m.role === "admin" && (await countProjectAdmins(project.id)) <= 1;
   const kindBadge = m.user_kind === "bot" ? `<span class="badge bot">bot</span>` : m.user_kind === "system" ? `<span class="badge">system</span>` : "";
   const inactiveBadge = m.user_is_active === 1 ? "" : `<span class="badge inactive">禁用</span>`;
   const selfNote = isSelf ? `<span class="meta">(你)</span>` : "";

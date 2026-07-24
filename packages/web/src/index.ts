@@ -3,7 +3,7 @@ import { fileURLToPath } from "url";
 import { readFileSync, appendFileSync } from "fs";
 import { loadConfig, DB_OVERRIDABLE, parseOverride, resolveTtsBackend } from "./config";
 import type { Config } from "./config";
-import { setConfig } from "./db";
+import { setConfig, initDB } from "./db";
 import { checkAuth, makeAuthCookieHeader, clearAuthCookieHeader, loginHTML, sanitizeNext, ensureBootstrapAdmin, ensureBootstrapSystem, isReservedSystemLogin } from "./auth";
 import { OpencodeClient, OpencodeError } from "./opencode";
 import { renderMarkdown } from "./render/markdown";
@@ -89,10 +89,11 @@ import { handleGiteaApi } from "./giteaApi";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const STATIC_DIR = join(__dirname, "static");
 
-const cfg: Config = loadConfig();
+await initDB();
+const cfg: Config = await loadConfig();
 const opencode = new OpencodeClient(cfg);
 
-function autoWireDaemon(projectId: number, origin: string): void {
+async function autoWireDaemon(projectId: number, origin: string): Promise<void> {
   if (!cfg.autowireActive) {
     log.info("autoWireDaemon: skipped (WORK_AUTOWIRE_ACTIVE=false)", { projectId });
     return;
@@ -101,7 +102,7 @@ function autoWireDaemon(projectId: number, origin: string): void {
   const hookUrl = cfg.daemonWebhookUrl.trim();
   if (botLogin) {
     try {
-      addProjectMember(projectId, botLogin, "writer");
+      await addProjectMember(projectId, botLogin, "writer");
     } catch (e) {
       log.warn("autoWireDaemon: addProjectMember failed", { botLogin, err: e as Error });
     }
@@ -109,15 +110,15 @@ function autoWireDaemon(projectId: number, origin: string): void {
   if (hookUrl) {
     try {
       const target = hookUrl.replace(/\/$/, "") + "/webhook/gitea";
-      const exists = listWebhooks(projectId).some((w) => w.url === target);
+      const exists = (await listWebhooks(projectId)).some((w) => w.url === target);
       if (!exists) {
-        createWebhook({
+        await createWebhook({
           project_id: projectId,
           url: target,
           secret: cfg.daemonWebhookSecret,
           events: ["issues", "issue_comment"],
         });
-        emitPingEvent(projectId, origin);
+        void emitPingEvent(projectId, origin);
       }
     } catch (e) {
       log.warn("autoWireDaemon: createWebhook failed", { hookUrl, err: e as Error });
@@ -367,7 +368,7 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
   if (att) {
     const [, uuid] = att;
     if (!uuid) return new Response(null, { status: 400, headers: SEC_HEADERS });
-    const row = getAttachment(uuid);
+    const row = await getAttachment(uuid);
     if (!row) return new Response(null, { status: 404, headers: SEC_HEADERS });
     const stream = readAttachmentStream(uuid);
     if (!stream) return new Response(null, { status: 404, headers: SEC_HEADERS });
@@ -398,10 +399,10 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
       const form = await req.formData().catch(() => new FormData());
       const f: Record<string, string | undefined> = {};
       for (const [k, v] of form.entries()) f[k] = typeof v === "string" ? v : undefined;
-      const r = handleCreateProject(f);
+      const r = await handleCreateProject(f);
       if (r.projectId) {
-        ensureProjectBootstrapAdmin(r.projectId, ctx.user!.login);
-        autoWireDaemon(r.projectId, url.origin);
+        await ensureProjectBootstrapAdmin(r.projectId, ctx.user!.login);
+        await autoWireDaemon(r.projectId, url.origin);
         const q = new URLSearchParams({ created: "1" });
         return Response.redirect(`${url.origin}${r.location}?${q}`, 303);
       }
@@ -410,14 +411,14 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     }
     const flashErr = url.searchParams.get("err");
     const flash = flashErr ? { kind: "err" as const, msg: flashErr } : null;
-    return html(buildHome(ctx.user, flash));
+    return html(await buildHome(ctx.user, flash));
   }
 
   if (url.pathname === "/issues") {
     const state = parseState(url.searchParams.get("state"));
     const q = url.searchParams.get("q")?.trim() ?? "";
     try {
-      return html(buildIssuesFeed(state, q));
+      return html(await buildIssuesFeed(state, q));
     } catch (e) {
       return html(errorPage("加载失败", errMsg(e)), e instanceof StoreError ? e.status : 500);
     }
@@ -606,7 +607,7 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
 
   if (url.pathname === "/settings") {
     if (req.method === "GET") {
-      return html(buildSettingsPage(cfg, url.searchParams.get("saved") === "1", ctx.user!, listCachedModels()).html);
+      return html(buildSettingsPage(cfg, url.searchParams.get("saved") === "1", ctx.user!, await listCachedModels()).html);
     }
     if (req.method === "POST") {
       if (!rateLimit(`settings:${ip}`, 10, 10 / 60)) return html(errorPage("太快了", "请稍后再试"), 429);
@@ -616,10 +617,10 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
         const v = form.get(String(key));
         if (typeof v !== "string") continue;
         if (parseOverride(key, v) === null) { bad = String(key); break; }
-        setConfig(String(key), v);
+        await setConfig(String(key), v);
       }
       if (bad) return html(errorPage(`无效的字段: ${bad}`, "请检查输入后重试"), 400);
-      Object.assign(cfg, loadConfig());
+      Object.assign(cfg, await loadConfig());
       const rh = new Headers(SEC_HEADERS);
       rh.set("location", "/settings?saved=1");
       return new Response(null, { status: 303, headers: rh });
@@ -629,7 +630,7 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
   if (url.pathname === "/settings/models/refresh" && req.method === "POST") {
     if (!ctx.user || ctx.user.is_admin !== 1) return html(errorPage("403", "需要管理员"), 403);
     const ids = await opencode.listModels();
-    replaceCachedModels(ids);
+    await replaceCachedModels(ids);
     // M-1: pin a default model so opencode never falls back to env vars. The
     // previous empty default meant the daemon omitted --model and opencode
     // picked the model from leaked env (e.g. OPENCODE_MODEL / a provider
@@ -638,8 +639,8 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     if (!cfg.defaultModel) {
       const picked = ids.find((id) => typeof id === "string" && id.length > 0);
       if (picked) {
-        setConfig("defaultModel", picked);
-        Object.assign(cfg, loadConfig());
+        await setConfig("defaultModel", picked);
+        Object.assign(cfg, await loadConfig());
       }
     }
     const rh = new Headers(SEC_HEADERS);
@@ -684,7 +685,7 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     const flashKind = url.searchParams.get("ok") === "1" ? "ok" : url.searchParams.get("err") ? "err" : null;
     const flashMsg = url.searchParams.get("ok") === "1" ? url.searchParams.get("ok_msg")! : url.searchParams.get("err");
     const flash = flashKind ? { kind: flashKind as "ok" | "err", msg: flashMsg ?? "" } : null;
-    return html(buildTokensPage(me, listPatsForUser(me.login), flash));
+    return html(buildTokensPage(me, await listPatsForUser(me.login), flash));
   }
 
   if (url.pathname === "/me/tokens/create" && req.method === "POST") {
@@ -725,7 +726,7 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
       const flashKind = url.searchParams.get("ok") === "1" ? "ok" : url.searchParams.get("err") ? "err" : null;
       const flashMsg = url.searchParams.get("ok") === "1" ? url.searchParams.get("ok_msg")! : url.searchParams.get("err");
       const flash = flashKind ? { kind: flashKind as "ok" | "err", msg: flashMsg ?? "" } : null;
-      return html(buildAdminUsersPage(ctx.user!, listUsers(), flash));
+      return html(buildAdminUsersPage(ctx.user!, await listUsers(), flash));
     }
   }
 
@@ -733,7 +734,7 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     const flashKind = url.searchParams.get("ok") === "1" ? "ok" : url.searchParams.get("err") ? "err" : null;
     const flashMsg = url.searchParams.get("ok") === "1" ? url.searchParams.get("ok_msg")! : url.searchParams.get("err");
     const flash = flashKind ? { kind: flashKind as "ok" | "err", msg: flashMsg ?? "" } : null;
-    return html(buildAdminTokensPage(ctx.user!, listAllPatsWithUsers(), flash));
+    return html(buildAdminTokensPage(ctx.user!, await listAllPatsWithUsers(), flash));
   }
 
   const adminPatRevoke = url.pathname.match(/^\/admin\/tokens\/(\d+)\/revoke$/);
@@ -769,8 +770,8 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     if (!label) return ttsRedir("err", "label 必填");
     if (cfg.ttsBackends.some((b) => b.id === id)) return ttsRedir("err", `ID '${id}' 已存在`);
     const list = [...cfg.ttsBackends, { id, label, url: beUrl, voice }];
-    setConfig("ttsBackends", JSON.stringify(list));
-    Object.assign(cfg, loadConfig());
+    await setConfig("ttsBackends", JSON.stringify(list));
+    Object.assign(cfg, await loadConfig());
     return ttsRedir("ok", `已添加 ${id}`);
   }
 
@@ -790,9 +791,9 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     if (idx < 0) return ttsRedir("err", `后端 '${oldId}' 不存在`);
     if (newId !== oldId && list.some((b) => b.id === newId)) return ttsRedir("err", `ID '${newId}' 已被占用`);
     list[idx] = { id: newId, label, url: beUrl, voice };
-    setConfig("ttsBackends", JSON.stringify(list));
-    if (cfg.ttsDefaultBackend === oldId && newId !== oldId) setConfig("ttsDefaultBackend", newId);
-    Object.assign(cfg, loadConfig());
+    await setConfig("ttsBackends", JSON.stringify(list));
+    if (cfg.ttsDefaultBackend === oldId && newId !== oldId) await setConfig("ttsDefaultBackend", newId);
+    Object.assign(cfg, await loadConfig());
     return ttsRedir("ok", `已更新 ${newId}`);
   }
 
@@ -805,8 +806,8 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     const idx = list.findIndex((b) => b.id === id);
     if (idx < 0) return ttsRedir("err", `后端 '${id}' 不存在`);
     list.splice(idx, 1);
-    setConfig("ttsBackends", JSON.stringify(list));
-    Object.assign(cfg, loadConfig());
+    await setConfig("ttsBackends", JSON.stringify(list));
+    Object.assign(cfg, await loadConfig());
     return ttsRedir("ok", `已删除 ${id}`);
   }
 
@@ -846,24 +847,24 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
         if (targetLogin === ctx.user!.login) {
           return Response.redirect(`${url.origin}/admin/users?err=${encodeURIComponent("不能改自己的 admin 状态")}`, 303);
         }
-        const u = getUserByLogin(targetLogin);
+        const u = await getUserByLogin(targetLogin);
         if (!u) throw new StoreError(404, "用户不存在");
-        if (u.is_admin === 1 && countAdmins() <= 1) {
+        if (u.is_admin === 1 && (await countAdmins()) <= 1) {
           return Response.redirect(`${url.origin}/admin/users?err=${encodeURIComponent("系统至少要保留一个 admin")}`, 303);
         }
-        const updated = updateUser(targetLogin, { is_admin: u.is_admin !== 1 });
+        const updated = await updateUser(targetLogin, { is_admin: u.is_admin !== 1 });
         return Response.redirect(`${url.origin}/admin/users?ok=1&ok_msg=${encodeURIComponent(`${updated.login} ${updated.is_admin ? "已设为 admin" : "已取消 admin"}`)}`, 303);
       }
       if (action === "toggle-active") {
         if (targetLogin === ctx.user!.login) {
           return Response.redirect(`${url.origin}/admin/users?err=${encodeURIComponent("不能禁用自己的账户")}`, 303);
         }
-        const u = getUserByLogin(targetLogin);
+        const u = await getUserByLogin(targetLogin);
         if (!u) throw new StoreError(404, "用户不存在");
-        if (u.is_active === 1 && u.is_admin === 1 && countAdmins() <= 1) {
+        if (u.is_active === 1 && u.is_admin === 1 && (await countAdmins()) <= 1) {
           return Response.redirect(`${url.origin}/admin/users?err=${encodeURIComponent("不能禁用最后一个 admin")}`, 303);
         }
-        const updated = updateUser(targetLogin, { is_active: u.is_active !== 1 });
+        const updated = await updateUser(targetLogin, { is_active: u.is_active !== 1 });
         return Response.redirect(`${url.origin}/admin/users?ok=1&ok_msg=${encodeURIComponent(`${updated.login} ${updated.is_active ? "已启用" : "已禁用"}`)}`, 303);
       }
       return html(errorPage("bad action", ""), 400);
@@ -913,10 +914,10 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
       if (cl > MAX_ATTACHMENT_BYTES) return json({ error: "file too large (max 20MB)" }, 413);
       const number = Number(numStr);
       try {
-        const project = getProject(owner, repo);
+        const project = await getProject(owner, repo);
         if (!project) return json({ error: "project not found" }, 404);
-        if (!canWriteProject(project.id, ctx.user)) return json({ error: "forbidden: needs writer role on project" }, 403);
-        const issue = getIssueWithMeta(project.id, number);
+        if (!(await canWriteProject(project.id, ctx.user))) return json({ error: "forbidden: needs writer role on project" }, 403);
+        const issue = await getIssueWithMeta(project.id, number);
         if (!issue) return json({ error: "issue not found" }, 404);
         const form = await req.formData().catch(() => null);
         const file = form?.get("attachment");
@@ -927,7 +928,7 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
         const contentType = file.type || sniffImageContentType(filename);
         const uuid = newAttachmentUUID();
         const blobPath = saveAttachmentBlob(uuid, bytes);
-        createAttachment({
+        await createAttachment({
           uuid,
           issue_id: issue.id,
           filename,
@@ -958,14 +959,14 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
         const wantsStateChange = payload.close === true || payload.reopen === true;
         if (!hasBody && !wantsStateChange) return json({ error: "body required" }, 400);
         if (body.length > 65536) return json({ error: "body too long" }, 413);
-        const project = getProject(owner, repo);
+        const project = await getProject(owner, repo);
         if (!project) return json({ error: "project not found" }, 404);
-        if (!canWriteProject(project.id, ctx.user)) return json({ error: "forbidden: needs writer role on project" }, 403);
-        const issue = getIssueWithMeta(project.id, number);
+        if (!(await canWriteProject(project.id, ctx.user))) return json({ error: "forbidden: needs writer role on project" }, 403);
+        const issue = await getIssueWithMeta(project.id, number);
         if (!issue) return json({ error: "issue not found" }, 404);
         let view: CommentView | null = null;
         if (hasBody) {
-          const c = postComment(issue.id, body, ctx.user!.login);
+          const c = await postComment(issue.id, body, ctx.user!.login);
           view = {
             id: c.id,
             tag: classifyActor(c.body, c.author_kind),
@@ -978,11 +979,11 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
         let closed = false;
         let reopened = false;
         if (payload.close === true) {
-          setIssueState(issue.id, "closed");
+          await setIssueState(issue.id, "closed");
           closed = true;
           void emitIssueEvent(project.id, issue.id, "closed", url.origin);
         } else if (payload.reopen === true) {
-          setIssueState(issue.id, "open");
+          await setIssueState(issue.id, "open");
           reopened = true;
           void emitIssueEvent(project.id, issue.id, "reopened", url.origin);
         }
@@ -1004,20 +1005,20 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
         const title = String(form.get("title") ?? "").trim();
         const body = String(form.get("body") ?? "");
         if (!title) return html(errorPage("标题不能为空", "回到上一页填写标题后重试"), 400);
-        let project = getProject(owner, repo);
+        let project = await getProject(owner, repo);
         let createdProject = false;
         if (!project) {
-          project = createProjectSafe(owner, repo);
+          project = await createProjectSafe(owner, repo);
           createdProject = true;
         }
-        if (!canWriteProject(project.id, ctx.user)) {
+        if (!(await canWriteProject(project.id, ctx.user))) {
           return html(errorPage("无权限", "需要该项目 writer 及以上角色才能创建 issue"), 403);
         }
         if (createdProject) {
-          ensureProjectBootstrapAdmin(project.id, ctx.user!.login);
-          autoWireDaemon(project.id, url.origin);
+          await ensureProjectBootstrapAdmin(project.id, ctx.user!.login);
+          await autoWireDaemon(project.id, url.origin);
         }
-        const issue = createIssue(project.id, title, body, ctx.user!.login);
+        const issue = await createIssue(project.id, title, body, ctx.user!.login);
         void emitIssueEvent(project.id, issue.id, "opened", url.origin);
         return Response.redirect(
           `${url.origin}/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${issue.number}`,
@@ -1033,9 +1034,9 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
       const [, owner, repo] = whCreate;
       if (!(owner && repo)) return html(errorPage("bad path", ""), 400);
       try {
-        const project = getProject(owner, repo);
+        const project = await getProject(owner, repo);
         if (!project) return html(errorPage("项目不存在", ""), 404);
-        if (!canAdminProject(project.id, ctx.user)) {
+        if (!(await canAdminProject(project.id, ctx.user))) {
           return html(errorPage("无权限", "需要该项目 admin 角色才能管理 webhook"), 403);
         }
         const form = await req.formData().catch(() => new FormData());
@@ -1044,7 +1045,7 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
         const events = form.getAll("events") as string[];
         const validEvents = (events.length > 0 ? events : ["issues", "issue_comment"])
           .filter((e): e is WebhookEventName => e === "issues" || e === "issue_comment");
-        const wh = createWebhook({
+        const wh = await createWebhook({
           project_id: project.id,
           url: url_,
           secret,
@@ -1063,10 +1064,10 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     if (memberAdd) {
       const [, owner, repo] = memberAdd;
       if (!(owner && repo)) return html(errorPage("bad path", ""), 400);
-      const project = getProject(owner, repo);
+      const project = await getProject(owner, repo);
       if (!project) return html(errorPage("项目不存在", ""), 404);
       const back = `${url.origin}/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/settings/members`;
-      if (!canAdminProject(project.id, ctx.user)) {
+      if (!(await canAdminProject(project.id, ctx.user))) {
         return Response.redirect(`${back}?err=${encodeURIComponent("无权限")}`, 303);
       }
       const form = await req.formData().catch(() => new FormData());
@@ -1076,7 +1077,7 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
         return Response.redirect(`${back}?err=${encodeURIComponent("非法角色")}`, 303);
       }
       try {
-        addProjectMember(project.id, login, role);
+        await addProjectMember(project.id, login, role);
         return Response.redirect(`${back}?ok=1&ok_msg=${encodeURIComponent(`已添加 ${login} 为 ${role}`)}`, 303);
       } catch (e) {
         return Response.redirect(`${back}?err=${encodeURIComponent(errMsg(e))}`, 303);
@@ -1087,10 +1088,10 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     if (memberAction) {
       const [, owner, repo, targetLogin, action] = memberAction;
       if (!(owner && repo && targetLogin && action)) return html(errorPage("bad path", ""), 400);
-      const project = getProject(owner, repo);
+      const project = await getProject(owner, repo);
       if (!project) return html(errorPage("项目不存在", ""), 404);
       const back = `${url.origin}/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/settings/members`;
-      if (!canAdminProject(project.id, ctx.user)) {
+      if (!(await canAdminProject(project.id, ctx.user))) {
         return Response.redirect(`${back}?err=${encodeURIComponent("无权限")}`, 303);
       }
       try {
@@ -1101,23 +1102,23 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
             return Response.redirect(`${back}?err=${encodeURIComponent("非法角色")}`, 303);
           }
           // Guard last admin: don't let the only project admin demote themselves.
-          const current = getProjectMembership(project.id, targetLogin);
+          const current = await getProjectMembership(project.id, targetLogin);
           if (
             current?.role === "admin" &&
             role !== "admin" &&
-            countProjectAdmins(project.id) <= 1
+            (await countProjectAdmins(project.id)) <= 1
           ) {
             return Response.redirect(`${back}?err=${encodeURIComponent("最后一个 admin 不能降级")}`, 303);
           }
-          setProjectMemberRole(project.id, targetLogin, role);
+          await setProjectMemberRole(project.id, targetLogin, role);
           return Response.redirect(`${back}?ok=1&ok_msg=${encodeURIComponent(`${targetLogin} → ${role}`)}`, 303);
         }
         if (action === "remove") {
-          const current = getProjectMembership(project.id, targetLogin);
-          if (current?.role === "admin" && countProjectAdmins(project.id) <= 1) {
+          const current = await getProjectMembership(project.id, targetLogin);
+          if (current?.role === "admin" && (await countProjectAdmins(project.id)) <= 1) {
             return Response.redirect(`${back}?err=${encodeURIComponent("最后一个 admin 不能移除")}`, 303);
           }
-          removeProjectMember(project.id, targetLogin);
+          await removeProjectMember(project.id, targetLogin);
           return Response.redirect(`${back}?ok=1&ok_msg=${encodeURIComponent(`已移除 ${targetLogin}`)}`, 303);
         }
         return html(errorPage("bad action", ""), 400);
@@ -1131,20 +1132,20 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
       const [, idStr, action] = whAction;
       const id = Number(idStr || "0");
       if (!id) return html(errorPage("bad webhook id", ""), 400);
-      const wh = getWebhook(id);
+      const wh = await getWebhook(id);
       if (!wh) return html(errorPage("webhook 不存在", ""), 404);
-      const project = getProjectById(wh.project_id);
+      const project = await getProjectById(wh.project_id);
       if (!project) return html(errorPage("项目不存在", ""), 404);
-      if (!canAdminProject(project.id, ctx.user)) {
+      if (!(await canAdminProject(project.id, ctx.user))) {
         return html(errorPage("无权限", "需要该项目 admin 角色才能管理 webhook"), 403);
       }
       const back = `${url.origin}/${encodeURIComponent(project.owner)}/${encodeURIComponent(project.name)}/settings/webhooks`;
       if (action === "delete") {
-        deleteWebhook(id);
+        await deleteWebhook(id);
       } else if (action === "toggle") {
         const form = await req.formData().catch(() => new FormData());
         const wantActive = form.get("active") === "1";
-        setWebhookActive(id, wantActive);
+        await setWebhookActive(id, wantActive);
       } else if (action === "test") {
         void emitPingEvent(wh.project_id, url.origin);
       }
@@ -1155,15 +1156,15 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     if (upstreamSave) {
       const [, owner, repo] = upstreamSave;
       if (!(owner && repo)) return html(errorPage("bad path", ""), 400);
-      const project = getProject(owner, repo);
+      const project = await getProject(owner, repo);
       if (!project) return html(errorPage("项目不存在", ""), 404);
       const back = `${url.origin}/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/settings/upstreams`;
-      if (!canAdminProject(project.id, ctx.user)) {
+      if (!(await canAdminProject(project.id, ctx.user))) {
         return Response.redirect(`${back}?err=${encodeURIComponent("无权限")}`, 303);
       }
       const form = await req.formData().catch(() => new FormData());
       const raw = String(form.get("urls") ?? "");
-      const result = trySetUpstreamUrls(project.id, raw);
+      const result = await trySetUpstreamUrls(project.id, raw);
       if (result.ok) {
         return Response.redirect(
           `${back}?ok=1&ok_msg=${encodeURIComponent(`已保存 ${result.urls.length} 个上游 URL`)}`,
@@ -1177,16 +1178,16 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     if (modelSave) {
       const [, owner, repo] = modelSave;
       if (!(owner && repo)) return html(errorPage("bad path", ""), 400);
-      const project = getProject(owner, repo);
+      const project = await getProject(owner, repo);
       if (!project) return html(errorPage("项目不存在", ""), 404);
       const back = `${url.origin}/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/settings/model`;
-      if (!canAdminProject(project.id, ctx.user)) {
+      if (!(await canAdminProject(project.id, ctx.user))) {
         return Response.redirect(`${back}?err=${encodeURIComponent("无权限")}`, 303);
       }
       const form = await req.formData().catch(() => new FormData());
       const raw = String(form.get("model") ?? "").trim();
       try {
-        setProjectModel(project.id, raw);
+        await setProjectModel(project.id, raw);
         return Response.redirect(`${back}?ok=1&ok_msg=${encodeURIComponent("模型已保存")}`, 303);
       } catch (e) {
         const msg = e instanceof StoreError ? e.message : (e instanceof Error ? e.message : "保存失败");
@@ -1205,7 +1206,7 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     try {
       if (kind === "page") {
         const page = Math.max(1, Number(url.searchParams.get("page") ?? "1") || 1);
-        const { issue, views, currentPage, hasOlder } = fetchIssuePage(owner, repo, number, page);
+        const { issue, views, currentPage, hasOlder } = await fetchIssuePage(owner, repo, number, page);
         const payload = {
           owner,
           repo,
@@ -1220,7 +1221,7 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
         return json(payload);
       }
       const since = url.searchParams.get("since") ?? new Date(0).toISOString();
-      const views = fetchIssueSince(owner, repo, number, since);
+      const views = await fetchIssueSince(owner, repo, number, since);
       return json({ comments: views });
     } catch (e) {
       return json({ error: errMsg(e) }, e instanceof StoreError ? e.status : 500);
@@ -1240,7 +1241,7 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     if (!(owner && repo && numStr)) return html(errorPage("404", "bad path"), 404);
     const number = Number(numStr);
     try {
-      const { html: body } = buildIssueThread(cfg, owner, repo, number, ctx.user?.login);
+      const { html: body } = await buildIssueThread(cfg, owner, repo, number, ctx.user?.login);
       return html(body);
     } catch (e) {
       const status = e instanceof StoreError ? e.status : 500;
@@ -1255,7 +1256,7 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     const state = parseState(url.searchParams.get("state"));
     const q = url.searchParams.get("q")?.trim() ?? "";
     try {
-      return html(buildIssueList(owner, repo, state, cfg.writesEnabled, q));
+      return html(await buildIssueList(owner, repo, state, cfg.writesEnabled, q));
     } catch (e) {
       return html(errorPage("加载失败", errMsg(e)), e instanceof StoreError ? e.status : 500);
     }
@@ -1265,13 +1266,13 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
   if (whPage) {
     const [, owner, repo] = whPage;
     if (!(owner && repo)) return html(errorPage("404", "bad path"), 404);
-    const project = getProject(owner, repo);
+    const project = await getProject(owner, repo);
     if (!project) return html(errorPage("项目不存在", "项目未创建"), 404);
-    const isAdmin = canAdminProject(project.id, ctx.user);
+    const isAdmin = await canAdminProject(project.id, ctx.user);
     if (!isAdmin) return html(errorPage("无权限", "需要该项目 admin 角色才能管理 webhook"), 403);
-    const hooks = listWebhooks(project.id);
+    const hooks = await listWebhooks(project.id);
     const deliveriesByWebhook = new Map(
-      hooks.map((h) => [h.id, listDeliveries(h.id, 10)] as const)
+      await Promise.all(hooks.map(async (h) => [h.id, await listDeliveries(h.id, 10)] as const))
     );
     return html(
       buildWebhooksPage({ project, webhooks: hooks, deliveriesByWebhook })
@@ -1282,26 +1283,26 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
   if (membersPage) {
     const [, owner, repo] = membersPage;
     if (!(owner && repo)) return html(errorPage("404", "bad path"), 404);
-    const project = getProject(owner, repo);
+    const project = await getProject(owner, repo);
     if (!project) return html(errorPage("项目不存在", "项目未创建"), 404);
     // Lazy bootstrap: site-admin opening a pre-RBAC project auto-inserts as admin.
-    if (ctx.user!.is_admin === 1) ensureProjectBootstrapAdmin(project.id, ctx.user!.login);
-    if (!canAdminProject(project.id, ctx.user)) {
+    if (ctx.user!.is_admin === 1) await ensureProjectBootstrapAdmin(project.id, ctx.user!.login);
+    if (!(await canAdminProject(project.id, ctx.user))) {
       return html(errorPage("无权限", "需要该项目 admin 角色才能管理成员"), 403);
     }
     const flashKind = url.searchParams.get("ok") === "1" ? "ok" : url.searchParams.get("err") ? "err" : null;
     const flashMsg = flashKind === "ok" ? (url.searchParams.get("ok_msg") ?? "") : (url.searchParams.get("err") ?? "");
     const flash = flashKind ? { kind: flashKind as "ok" | "err", msg: flashMsg } : null;
-    return html(buildProjectMembersPage(ctx.user!, project, flash));
+    return html(await buildProjectMembersPage(ctx.user!, project, flash));
   }
 
   const upstreamsPage = url.pathname.match(REPO_UPSTREAMS_RE);
   if (upstreamsPage) {
     const [, owner, repo] = upstreamsPage;
     if (!(owner && repo)) return html(errorPage("404", "bad path"), 404);
-    const project = getProject(owner, repo);
+    const project = await getProject(owner, repo);
     if (!project) return html(errorPage("项目不存在", "项目未创建"), 404);
-    if (!canAdminProject(project.id, ctx.user)) {
+    if (!(await canAdminProject(project.id, ctx.user))) {
       return html(errorPage("无权限", "需要该项目 admin 角色才能管理上游"), 403);
     }
     const flashKind = url.searchParams.get("ok") === "1" ? "ok" : url.searchParams.get("err") ? "err" : null;
@@ -1314,15 +1315,15 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
   if (modelPage) {
     const [, owner, repo] = modelPage;
     if (!(owner && repo)) return html(errorPage("404", "bad path"), 404);
-    const project = getProject(owner, repo);
+    const project = await getProject(owner, repo);
     if (!project) return html(errorPage("项目不存在", "项目未创建"), 404);
-    if (!canAdminProject(project.id, ctx.user)) {
+    if (!(await canAdminProject(project.id, ctx.user))) {
       return html(errorPage("无权限", "需要该项目 admin 角色才能管理模型"), 403);
     }
     const flashKind = url.searchParams.get("ok") === "1" ? "ok" : url.searchParams.get("err") ? "err" : null;
     const flashMsg = flashKind === "ok" ? (url.searchParams.get("ok_msg") ?? "") : (url.searchParams.get("err") ?? "");
     const flash = flashKind ? { kind: flashKind as "ok" | "err", msg: flashMsg } : null;
-    return html(buildProjectModelPage(project, cfg.defaultModel, listCachedModels(), flash).html);
+    return html(buildProjectModelPage(project, cfg.defaultModel, await listCachedModels(), flash).html);
   }
 
   const repoMatch = url.pathname.match(REPO_RE);
@@ -1342,13 +1343,13 @@ function parseState(s: string | null): "open" | "closed" | "all" {
   return s === "closed" ? "closed" : s === "all" ? "all" : "open";
 }
 
-function createProjectSafe(owner: string, name: string) {
-  let project = getProject(owner, name);
+async function createProjectSafe(owner: string, name: string) {
+  let project = await getProject(owner, name);
   if (project) return project;
   // Auto-create project on first issue POST. Owner/name were already validated by the
   // URL regex shape; allow creation here so `/<owner>/<new-repo>/issues` (POST) bootstraps
   // a project in one step. Use createIssue's tx for atomicity.
-  project = createProject(owner, name, "");
+  project = await createProject(owner, name, "");
   return project;
 }
 
@@ -1361,13 +1362,13 @@ function errMsg(e: unknown): string {
 // migration path (legacy cookies resolve to this user).
 // Also ensure the reserved system user exists (kind=system, used to attribute
 // automated actions like future cron / import jobs; not login-able).
-(() => {
-  const op = ensureBootstrapAdmin(cfg.operatorLogin);
-  if (op.is_admin === 0 && countAdmins() === 0) {
-    updateUser(op.login, { is_admin: true });
+await (async () => {
+  const op = await ensureBootstrapAdmin(cfg.operatorLogin);
+  if (op.is_admin === 0 && (await countAdmins()) === 0) {
+    await updateUser(op.login, { is_admin: true });
     log.info("bootstrap: operator promoted to admin", { login: op.login });
   }
-  const sys = ensureBootstrapSystem(cfg.systemLogin);
+  const sys = await ensureBootstrapSystem(cfg.systemLogin);
   void sys;
 })();
 

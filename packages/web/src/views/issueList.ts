@@ -13,18 +13,18 @@ function issueRow(it: IssueWithMeta, owner: string, repo: string, q: string): st
   </a>`;
 }
 
-export function buildIssueList(
+export async function buildIssueList(
   owner: string,
   repo: string,
   state: "open" | "closed" | "all",
   writesEnabled: boolean,
   q: string
-): string {
-  const project = getProject(owner, repo);
+): Promise<string> {
+  const project = await getProject(owner, repo);
   if (!project) {
     return notFoundProject(owner, repo);
   }
-  const issues = listIssues(project.id, { state, q, limit: LIST_PAGE_SIZE });
+  const issues = await listIssues(project.id, { state, q, limit: LIST_PAGE_SIZE });
   const matchesFirst = q
     ? [...issues].sort((a, b) => Number(containsCI(b.title, q)) - Number(containsCI(a.title, q)))
     : issues;

@@ -1,16 +1,38 @@
-// SQLite store. One DB file holds the runtime config table AND the ework schema
-// (projects/issues/comments/labels/reactions/attachments/users) so transactions
-// span them. Schema is applied on boot via schema.sql.
+// Storage bootstrap. Owns the AsyncDatabase singleton. SQLite today (bun:sqlite
+// wrapped async); a MySQL driver will implement the same AsyncDatabase surface
+// later. Schema + migrations run in connect(). Callers MUST `await initDB()`
+// once at boot before issuing queries.
 
-import { Database } from "bun:sqlite";
+import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { mkdirSync, readFileSync } from "fs";
 import { dirname, join } from "path";
+
+// ---- public async interface (driver-agnostic) ----
+export interface DbRunResult {
+  /** Rowid of the last inserted row (SQLite lastInsertRowid / MySQL insertId). */
+  insertId: number;
+  /** Number of rows affected by the statement. */
+  changes: number;
+}
+
+export interface AsyncDatabase {
+  /** SELECT → all matching rows. Empty array when none. */
+  all<T = unknown>(sql: string, params?: unknown[]): Promise<T[]>;
+  /** SELECT → first matching row or null. */
+  get<T = unknown>(sql: string, params?: unknown[]): Promise<T | null>;
+  /** INSERT/UPDATE/DELETE → insertId + affected-row count. */
+  run(sql: string, params?: unknown[]): Promise<DbRunResult>;
+  /** Execute DDL / raw statement (no params, no rows back). */
+  exec(sql: string): Promise<void>;
+  /** Run fn inside a transaction: commit on resolve, rollback on throw. */
+  transaction<T>(fn: () => Promise<T>): Promise<T>;
+  /** Release the connection/pool. Idempotent. */
+  close(): Promise<void>;
+}
 
 const DB_PATH =
   process.env.WORK_DB_PATH ||
   join(process.env.XDG_DATA_HOME || `${process.env.HOME}/.local/share`, "ework", "ework.db");
-
-let _db: Database | null = null;
 
 function userTableColumns(db: Database): Set<string> {
   const rows = db.query("PRAGMA table_info(users)").all() as { name: string }[];
@@ -68,33 +90,88 @@ function migrateIssuesTable(db: Database): void {
   }
 }
 
-function db(): Database {
-  if (_db) return _db;
-  mkdirSync(dirname(DB_PATH), { recursive: true });
-  _db = new Database(DB_PATH, { create: true, readwrite: true });
-  _db.exec("PRAGMA journal_mode = WAL");
-  _db.exec("PRAGMA foreign_keys = ON");
-  _db.exec(
-    "CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL)"
-  );
-  // Migration must run BEFORE schema.sql: schema.sql's CREATE TABLE for fresh
-  // DBs doesn't help legacy DBs, and any index that references a new column
-  // would fail if schema.sql ran first.
-  migrateUsersTable(_db);
-  migratePatTable(_db);
-  migrateProjectsTable(_db);
-  migrateIssuesTable(_db);
-  _db.exec(readFileSync(join(import.meta.dir, "schema.sql"), "utf8"));
-  return _db;
+// ---- SqliteDriver: wraps bun:sqlite behind AsyncDatabase ----
+class SqliteDriver implements AsyncDatabase {
+  private readonly db: Database;
+  private inTx = false;
+  private constructor(db: Database) { this.db = db; }
+
+  static async create(): Promise<SqliteDriver> {
+    mkdirSync(dirname(DB_PATH), { recursive: true });
+    const db = new Database(DB_PATH, { create: true, readwrite: true });
+    db.exec("PRAGMA journal_mode = WAL");
+    db.exec("PRAGMA foreign_keys = ON");
+    db.exec(
+      "CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL)"
+    );
+    // Migration must run BEFORE schema.sql (same ordering as the original file).
+    migrateUsersTable(db);
+    migratePatTable(db);
+    migrateProjectsTable(db);
+    migrateIssuesTable(db);
+    db.exec(readFileSync(join(import.meta.dir, "schema.sql"), "utf8"));
+    return new SqliteDriver(db);
+  }
+
+  async all<T = unknown>(sql: string, params: unknown[] = []): Promise<T[]> {
+    return this.db.query(sql).all(...(params as SQLQueryBindings[])) as T[];
+  }
+  async get<T = unknown>(sql: string, params: unknown[] = []): Promise<T | null> {
+    return (this.db.query(sql).get(...(params as SQLQueryBindings[])) as T | null) ?? null;
+  }
+  async run(sql: string, params: unknown[] = []): Promise<DbRunResult> {
+    const info = this.db.query(sql).run(...(params as SQLQueryBindings[])) as unknown as {
+      lastInsertRowid: number | bigint;
+      changes: number;
+    };
+    return { insertId: Number(info.lastInsertRowid), changes: info.changes };
+  }
+  async exec(sql: string): Promise<void> {
+    this.db.exec(sql);
+  }
+  async transaction<T>(fn: () => Promise<T>): Promise<T> {
+    if (this.inTx) {
+      // SQLite can't nest BEGIN without SAVEPOINT; current codebase has no
+      // nesting, so this safety net just runs the body inline.
+      return fn();
+    }
+    this.db.exec("BEGIN");
+    this.inTx = true;
+    try {
+      const r = await fn();
+      this.db.exec("COMMIT");
+      return r;
+    } catch (e) {
+      try { this.db.exec("ROLLBACK"); } catch { /* already rolled back */ }
+      throw e;
+    } finally {
+      this.inTx = false;
+    }
+  }
+  async close(): Promise<void> {
+    try { this.db.close(); } catch { /* already closed */ }
+  }
 }
 
-export function rawDB(): Database {
-  return db();
+let _driver: AsyncDatabase | null = null;
+
+/** Initialize + connect the database. MUST be awaited once at boot. */
+export async function initDB(): Promise<AsyncDatabase> {
+  if (_driver) return _driver;
+  _driver = await SqliteDriver.create();
+  return _driver;
 }
 
-export function getConfigAll(): Record<string, string> {
+/** Returns the initialized AsyncDatabase. Throws if initDB() wasn't awaited. */
+export function getDB(): AsyncDatabase {
+  if (!_driver) throw new Error("getDB() called before initDB(); await initDB() at boot first");
+  return _driver;
+}
+
+export async function getConfigAll(): Promise<Record<string, string>> {
   try {
-    const rows = db().query("SELECT key, value FROM config").all() as { key: string; value: string }[];
+    const driver = getDB();
+    const rows = await driver.all<{ key: string; value: string }>("SELECT key, value FROM config");
     const out: Record<string, string> = {};
     for (const r of rows) out[r.key] = r.value;
     return out;
@@ -103,16 +180,15 @@ export function getConfigAll(): Record<string, string> {
   }
 }
 
-export function setConfig(key: string, value: string): void {
+export async function setConfig(key: string, value: string): Promise<void> {
   const now = new Date().toISOString();
-  db()
-    .query(
-      "INSERT INTO config (key, value, updated_at) VALUES (?, ?, ?) " +
-        "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at"
-    )
-    .run(key, value, now);
+  await getDB().run(
+    "INSERT INTO config (key, value, updated_at) VALUES (?, ?, ?) " +
+      "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+    [key, value, now]
+  );
 }
 
-export function deleteConfig(key: string): void {
-  db().query("DELETE FROM config WHERE key = ?").run(key);
+export async function deleteConfig(key: string): Promise<void> {
+  await getDB().run("DELETE FROM config WHERE key = ?", [key]);
 }

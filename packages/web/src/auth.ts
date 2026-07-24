@@ -94,7 +94,7 @@ export async function checkAuth(req: Request, cfg: Config, ip?: string | null): 
       const payload = `${COOKIE_VERSION}.${parsed.login}.${parsed.issued}`;
       const expected = await hmac(cfg.cookieSecret, payload);
       if (!ctEqual(parsed.sig, expected)) return { ok: false, user: null };
-      const user = getUserByLogin(parsed.login);
+      const user = await getUserByLogin(parsed.login);
       if (!user || !user.is_active) return { ok: false, user: null };
       return { ok: true, user };
     }
@@ -110,7 +110,7 @@ export async function checkAuth(req: Request, cfg: Config, ip?: string | null): 
     if (!ctEqual(sig, expected) || !ctEqual(token, cfg.authToken)) {
       return { ok: false, user: null };
     }
-    const user = getUserByLogin(cfg.operatorLogin);
+    const user = await getUserByLogin(cfg.operatorLogin);
     if (!user || !user.is_active) return { ok: false, user: null };
     return { ok: true, user };
   }
@@ -138,19 +138,19 @@ export async function checkAuth(req: Request, cfg: Config, ip?: string | null): 
   return { ok: false, user: null };
 }
 
-export function ensureBootstrapAdmin(login: string): UserRow {
-  const existing = getUserByLogin(login);
+export async function ensureBootstrapAdmin(login: string): Promise<UserRow> {
+  const existing = await getUserByLogin(login);
   if (existing) return existing;
-  return ensureUser(login, "human");
+  return await ensureUser(login, "human");
 }
 
 // Reserved system user for automated actions (cron, import jobs, future CI
 // integration). kind=system, no password (cannot login via UI). Created on
 // boot if missing. UI guards prevent disabling/deleting it.
-export function ensureBootstrapSystem(login: string): UserRow {
-  const existing = getUserByLogin(login);
+export async function ensureBootstrapSystem(login: string): Promise<UserRow> {
+  const existing = await getUserByLogin(login);
   if (existing) return existing;
-  return ensureUser(login, "system");
+  return await ensureUser(login, "system");
 }
 
 export function isReservedSystemLogin(login: string, cfg: Config): boolean {

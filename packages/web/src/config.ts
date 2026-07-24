@@ -148,8 +148,8 @@ export const SETTINGS_GROUPS: SettingGroup[] = [
 ];
 export const DB_OVERRIDABLE: (keyof Config)[] = SETTINGS_GROUPS.flatMap((g) => g.fields.map((f) => f.key));
 
-export function loadConfig(): Config {
-  const db = getConfigAll();
+export async function loadConfig(): Promise<Config> {
+  const db = await getConfigAll();
   return configSchema.parse({
     port: process.env.WORK_PORT,
     host: process.env.WORK_HOST,

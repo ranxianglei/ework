@@ -16,7 +16,7 @@
 //   the full retry trail rather than an opaque final status.
 
 import { createHmac, randomUUID } from "node:crypto";
-import { rawDB } from "./db";
+import { getDB } from "./db";
 import { log } from "./logger";
 import { loadConfig } from "./config";
 import {
@@ -121,16 +121,12 @@ function parseEvents(events: unknown): WebhookEventName[] {
 
 // ─── CRUD ────────────────────────────────────────────────────
 
-export function listWebhooks(projectId: number): WebhookRow[] {
-  return rawDB()
-    .query("SELECT * FROM webhooks WHERE project_id = ? ORDER BY id")
-    .all(projectId) as WebhookRow[];
+export async function listWebhooks(projectId: number): Promise<WebhookRow[]> {
+  return await getDB().all<WebhookRow>("SELECT * FROM webhooks WHERE project_id = ? ORDER BY id", [projectId]);
 }
 
-export function getWebhook(id: number): WebhookRow | null {
-  const row = rawDB().query("SELECT * FROM webhooks WHERE id = ?").get(id) as
-    | WebhookRow
-    | undefined;
+export async function getWebhook(id: number): Promise<WebhookRow | null> {
+  const row = await getDB().get<WebhookRow>("SELECT * FROM webhooks WHERE id = ?", [id]);
   return row ?? null;
 }
 
@@ -142,7 +138,7 @@ export interface CreateWebhookInput {
   active?: boolean;
 }
 
-export function createWebhook(input: CreateWebhookInput): WebhookRow {
+export async function createWebhook(input: CreateWebhookInput): Promise<WebhookRow> {
   const url = input.url.trim();
   if (!url) throw new StoreError(400, "URL 不能为空");
   if (!/^https?:\/\//i.test(url)) throw new StoreError(400, "URL 必须是 http(s)://");
@@ -150,13 +146,10 @@ export function createWebhook(input: CreateWebhookInput): WebhookRow {
   const secret = (input.secret ?? "").slice(0, 256);
   const events = input.events && input.events.length > 0 ? input.events : DEFAULT_EVENTS;
   const ts = now();
-  const db = rawDB();
-  const info = db
-    .query(
-      `INSERT INTO webhooks (project_id, url, secret, content_type, events, active, created_at, updated_at)
-       VALUES (?, ?, ?, 'application/json', ?, ?, ?, ?)`
-    )
-    .run(
+  const info = await getDB().run(
+    `INSERT INTO webhooks (project_id, url, secret, content_type, events, active, created_at, updated_at)
+     VALUES (?, ?, ?, 'application/json', ?, ?, ?, ?)`,
+    [
       input.project_id,
       url,
       secret,
@@ -164,26 +157,24 @@ export function createWebhook(input: CreateWebhookInput): WebhookRow {
       input.active === false ? 0 : 1,
       ts,
       ts
-    );
-  return getWebhook(Number(info.lastInsertRowid))!;
+    ]
+  );
+  return (await getWebhook(info.insertId))!;
 }
 
-export function deleteWebhook(id: number): void {
-  rawDB().query("DELETE FROM webhooks WHERE id = ?").run(id);
+export async function deleteWebhook(id: number): Promise<void> {
+  await getDB().run("DELETE FROM webhooks WHERE id = ?", [id]);
 }
 
-export function setWebhookActive(id: number, active: boolean): void {
-  rawDB()
-    .query("UPDATE webhooks SET active = ?, updated_at = ? WHERE id = ?")
-    .run(active ? 1 : 0, now(), id);
+export async function setWebhookActive(id: number, active: boolean): Promise<void> {
+  await getDB().run("UPDATE webhooks SET active = ?, updated_at = ? WHERE id = ?", [active ? 1 : 0, now(), id]);
 }
 
-export function listDeliveries(webhookId: number, limit = 50): WebhookDeliveryRow[] {
-  return rawDB()
-    .query(
-      "SELECT * FROM webhook_deliveries WHERE webhook_id = ? ORDER BY id DESC LIMIT ?"
-    )
-    .all(webhookId, limit) as WebhookDeliveryRow[];
+export async function listDeliveries(webhookId: number, limit = 50): Promise<WebhookDeliveryRow[]> {
+  return await getDB().all<WebhookDeliveryRow>(
+    "SELECT * FROM webhook_deliveries WHERE webhook_id = ? ORDER BY id DESC LIMIT ?",
+    [webhookId, limit]
+  );
 }
 
 // ─── Payload builders (Gitea-compatible shape) ───────────────
@@ -504,21 +495,19 @@ async function postWithTimeout(
   }
 }
 
-function recordDelivery(
+async function recordDelivery(
   webhookId: number,
   event: WebhookEventName,
   deliveryUuid: string,
   rawBody: string,
   result: DeliveryAttemptResult
-): void {
+): Promise<void> {
   try {
-    rawDB()
-      .query(
-        `INSERT INTO webhook_deliveries
-          (webhook_id, event, delivery_uuid, payload, response_status, response_body, duration_ms, error, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(
+    await getDB().run(
+      `INSERT INTO webhook_deliveries
+        (webhook_id, event, delivery_uuid, payload, response_status, response_body, duration_ms, error, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
         webhookId,
         event,
         deliveryUuid,
@@ -528,7 +517,8 @@ function recordDelivery(
         result.durationMs,
         result.error,
         now()
-      );
+      ]
+    );
   } catch (e) {
     log.error("webhook: failed to record delivery", { err: e as Error });
   }
@@ -547,7 +537,7 @@ async function deliver(
       const headers = buildHeaders(event, deliveryUuid, rawBody, webhook.secret);
       const result = await postWithTimeout(webhook.url, rawBody, headers);
       const success = result.status !== null && result.status >= 200 && result.status < 300;
-      recordDelivery(webhook.id, event, deliveryUuid, rawBody, result);
+      await recordDelivery(webhook.id, event, deliveryUuid, rawBody, result);
       if (success) return;
       // 410 Gone: receiver explicitly says "stop sending" — honor it, no retry.
       if (result.status === 410) return;
@@ -563,14 +553,15 @@ async function deliver(
   }
 }
 
-function fanOut(
+async function fanOut(
   projectId: number,
   event: WebhookEventName,
   rawBody: string
-): void {
-  const webhooks = rawDB()
-    .query("SELECT * FROM webhooks WHERE project_id = ? AND active = 1")
-    .all(projectId) as WebhookRow[];
+): Promise<void> {
+  const webhooks = await getDB().all<WebhookRow>(
+    "SELECT * FROM webhooks WHERE project_id = ? AND active = 1",
+    [projectId]
+  );
   for (const wh of webhooks) {
     if (!parseEvents(wh.events).includes(event)) continue;
     void deliver(wh, event, rawBody);
@@ -579,26 +570,26 @@ function fanOut(
 
 // ─── Public emit API ─────────────────────────────────────────
 
-export function emitIssueEvent(
+export async function emitIssueEvent(
   projectId: number,
   issueId: number,
   action: IssueAction,
   origin: string
-): void {
+): Promise<void> {
   try {
-    const project = getProjectById(projectId);
+    const project = await getProjectById(projectId);
     if (!project) return;
-    const issue = getIssueById(issueId);
+    const issue = await getIssueById(issueId);
     if (!issue) return;
-    const commentCount = countCommentsSafe(issueId);
+    const commentCount = await countCommentsSafe(issueId);
     // Resolve model: project override > global default. Empty string = no
     // override (daemon omits --model, lets opencode pick). globalDefault
     // comes from the config table via loadConfig() — cheap DB read.
-    const globalDefault = loadConfig().defaultModel;
+    const globalDefault = (await loadConfig()).defaultModel;
     const model = resolveModel(project.model, globalDefault);
     const payload = buildIssuePayload(issue, project, commentCount, action, origin, model);
     const rawBody = JSON.stringify(payload);
-    fanOut(projectId, "issues", rawBody);
+    await fanOut(projectId, "issues", rawBody);
   } catch (e) {
     log.error("webhook: emitIssueEvent failed", {
       err: e as Error,
@@ -609,25 +600,25 @@ export function emitIssueEvent(
   }
 }
 
-export function emitCommentEvent(
+export async function emitCommentEvent(
   projectId: number,
   issueId: number,
   commentId: number,
   origin: string
-): void {
+): Promise<void> {
   try {
-    const project = getProjectById(projectId);
+    const project = await getProjectById(projectId);
     if (!project) return;
-    const issue = getIssueById(issueId);
+    const issue = await getIssueById(issueId);
     if (!issue) return;
-    const comment = getCommentByIdSafe(commentId);
+    const comment = await getCommentByIdSafe(commentId);
     if (!comment) return;
-    const commentCount = countCommentsSafe(issueId);
-    const globalDefault = loadConfig().defaultModel;
+    const commentCount = await countCommentsSafe(issueId);
+    const globalDefault = (await loadConfig()).defaultModel;
     const model = resolveModel(project.model, globalDefault);
     const payload = buildCommentPayload(issue, comment, project, commentCount, origin, model);
     const rawBody = JSON.stringify(payload);
-    fanOut(projectId, "issue_comment", rawBody);
+    await fanOut(projectId, "issue_comment", rawBody);
   } catch (e) {
     log.error("webhook: emitCommentEvent failed", {
       err: e as Error,
@@ -638,11 +629,11 @@ export function emitCommentEvent(
   }
 }
 
-export function emitPingEvent(projectId: number, origin: string): void {
+export async function emitPingEvent(projectId: number, origin: string): Promise<void> {
   // Synthetic ping: send a small `ping` event (no issue context). Useful for
   // verifying webhook configuration without triggering a real write.
   try {
-    const project = getProjectById(projectId);
+    const project = await getProjectById(projectId);
     if (!project) return;
     const payload = {
       zen: "smoke",
@@ -652,7 +643,7 @@ export function emitPingEvent(projectId: number, origin: string): void {
       sender: buildUser(project.owner, origin),
     };
     const rawBody = JSON.stringify(payload);
-    fanOut(projectId, "issues", rawBody);
+    await fanOut(projectId, "issues", rawBody);
   } catch (e) {
     log.error("webhook: emitPingEvent failed", { err: e as Error, projectId });
   }
@@ -660,22 +651,21 @@ export function emitPingEvent(projectId: number, origin: string): void {
 
 // ─── Helpers (kept here to avoid widening store.ts surface) ──
 
-function countCommentsSafe(issueId: number): number {
+async function countCommentsSafe(issueId: number): Promise<number> {
   try {
-    const row = rawDB()
-      .query("SELECT COUNT(*) AS n FROM comments WHERE issue_id = ?")
-      .get(issueId) as { n: number } | undefined;
+    const row = await getDB().get<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM comments WHERE issue_id = ?",
+      [issueId]
+    );
     return row?.n ?? 0;
   } catch {
     return 0;
   }
 }
 
-function getCommentByIdSafe(id: number): CommentRow | null {
+async function getCommentByIdSafe(id: number): Promise<CommentRow | null> {
   try {
-    const row = rawDB().query("SELECT * FROM comments WHERE id = ?").get(id) as
-      | CommentRow
-      | undefined;
+    const row = await getDB().get<CommentRow>("SELECT * FROM comments WHERE id = ?", [id]);
     return row ?? null;
   } catch {
     return null;

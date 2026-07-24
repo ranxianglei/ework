@@ -3,7 +3,7 @@ import { listProjectsWithCounts, createProject, canAdminProject, StoreError, typ
 import { relTime } from "../render/components";
 import { getDefaultUpstreamUrl, webUrlFromClone } from "./projectUpstreams";
 
-function projectCard(p: ProjectWithCounts, viewer: UserRow | null): string {
+async function projectCard(p: ProjectWithCounts, viewer: UserRow | null): Promise<string> {
   const issuesHref = `/${encodeURIComponent(p.owner)}/${encodeURIComponent(p.name)}/issues`;
   const settingsHref = `/${encodeURIComponent(p.owner)}/${encodeURIComponent(p.name)}/settings/upstreams`;
   const desc = p.description ? `<div class="pcard-desc">${escapeHtml(p.description)}</div>` : "";
@@ -12,7 +12,7 @@ function projectCard(p: ProjectWithCounts, viewer: UserRow | null): string {
   const upstreamIcon = upstreamWebUrl
     ? `<a class="pcard-icon" href="${escapeAttr(upstreamWebUrl)}" target="_blank" rel="noopener noreferrer" title="查看上游：${escapeAttr(upstreamWebUrl)}" aria-label="查看上游">🔗</a>`
     : "";
-  const adminIcon = canAdminProject(p.id, viewer)
+  const adminIcon = await canAdminProject(p.id, viewer)
     ? `<a class="pcard-icon" href="${escapeAttr(settingsHref)}" title="项目设置（上游 / Webhooks / 成员）" aria-label="项目设置">⚙️</a>`
     : "";
   const iconsHtml = (upstreamIcon || adminIcon)
@@ -29,13 +29,14 @@ function projectCard(p: ProjectWithCounts, viewer: UserRow | null): string {
   </div>`;
 }
 
-export function buildHome(
+export async function buildHome(
   viewer: UserRow | null,
   flash: { kind: "ok" | "err"; msg: string } | null = null
-): string {
-  const projects = listProjectsWithCounts();
+): Promise<string> {
+  const projects = await listProjectsWithCounts();
+  const cards = await Promise.all(projects.map((p) => projectCard(p, viewer)));
   const list = projects.length
-    ? projects.map((p) => projectCard(p, viewer)).join("")
+    ? cards.join("")
     : `<div class="empty">还没有项目。在下面创建一个：</div>`;
   const flashHtml = flash
     ? `<div class="flash ${flash.kind === "ok" ? "ok" : "err"}">${escapeHtml(flash.msg)}</div>`
@@ -90,15 +91,15 @@ ${tabNavHTML("projects")}
 </body></html>`;
 }
 
-export function handleCreateProject(
+export async function handleCreateProject(
   form: Record<string, string | undefined>
-): { location: string; error?: string; projectId?: number } {
+): Promise<{ location: string; error?: string; projectId?: number }> {
   const owner = (form.owner ?? "").trim();
   const name = (form.name ?? "").trim();
   const description = (form.description ?? "").trim();
   if (!owner || !name) return { location: "/projects", error: "owner 和 name 必填" };
   try {
-    const p = createProject(owner, name, description);
+    const p = await createProject(owner, name, description);
     return { location: `/${encodeURIComponent(p.owner)}/${encodeURIComponent(p.name)}/issues`, projectId: p.id };
   } catch (e) {
     return {

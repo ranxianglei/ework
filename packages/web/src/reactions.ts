@@ -13,10 +13,10 @@ export const REACTION_EMOJI: Record<string, string> = {
   tada: "🎉",
 };
 
-export function hydrateReactions(views: CommentView[]): void {
+export async function hydrateReactions(views: CommentView[]): Promise<void> {
   const ids = views.map((v) => v.id);
   if (ids.length === 0) return;
-  const aggs = listReactionsFor(ids);
+  const aggs = await listReactionsFor(ids);
   const byComment = new Map<number, { e: string; n: number }[]>();
   for (const a of aggs) {
     const emoji = REACTION_EMOJI[a.content] ?? a.content;

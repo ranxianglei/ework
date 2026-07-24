@@ -14,11 +14,11 @@ function issueRow(it: IssueWithMeta, q: string): string {
   </a>`;
 }
 
-export function buildIssuesFeed(
+export async function buildIssuesFeed(
   state: "open" | "closed" | "all",
   q: string
-): string {
-  const issues = listAllIssues({ state, q, limit: FEED_PAGE_SIZE });
+): Promise<string> {
+  const issues = await listAllIssues({ state, q, limit: FEED_PAGE_SIZE });
   const matchesFirst = q
     ? [...issues].sort((a, b) => Number(containsCI(b.title, q)) - Number(containsCI(a.title, q)))
     : issues;

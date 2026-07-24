@@ -2,7 +2,7 @@
 // issues + comments + labels + reactions + attachments + users. All write ops
 // run in transactions; per-project issue numbers are allocated atomically.
 
-import { rawDB } from "./db";
+import { getDB } from "./db";
 import { createHash } from "node:crypto";
 
 export type UserKind = "human" | "bot" | "system";
@@ -101,36 +101,19 @@ export class StoreError extends Error {
   }
 }
 
-type DB = ReturnType<typeof rawDB>;
-
 function now(): string {
   return new Date().toISOString();
 }
 
-function tx<T>(db: DB, fn: () => T): T {
-  db.exec("BEGIN");
-  try {
-    const r = fn();
-    db.exec("COMMIT");
-    return r;
-  } catch (e) {
-    try {
-      db.exec("ROLLBACK");
-    } catch {
-      // already rolled back
-    }
-    throw e;
-  }
-}
-
-export function ensureUser(login: string, kind: UserKind = "human"): UserRow {
-  const db = rawDB();
-  const existing = db.query("SELECT * FROM users WHERE login = ?").get(login) as UserRow | null;
+export async function ensureUser(login: string, kind: UserKind = "human"): Promise<UserRow> {
+  const db = getDB();
+  const existing = await db.get<UserRow>("SELECT * FROM users WHERE login = ?", [login]);
   if (existing) return existing;
   const ts = now();
-  db.query(
-    "INSERT INTO users (login, kind, created_at, updated_at) VALUES (?, ?, ?, ?)"
-  ).run(login, kind, ts, ts);
+  await db.run(
+    "INSERT INTO users (login, kind, created_at, updated_at) VALUES (?, ?, ?, ?)",
+    [login, kind, ts, ts]
+  );
   return {
     login,
     kind,
@@ -144,18 +127,19 @@ export function ensureUser(login: string, kind: UserKind = "human"): UserRow {
   };
 }
 
-export function getProject(owner: string, name: string): ProjectRow | null {
-  return (rawDB().query("SELECT * FROM projects WHERE owner = ? AND name = ?").get(owner, name) as ProjectRow | null) ?? null;
+export async function getProject(owner: string, name: string): Promise<ProjectRow | null> {
+  return (await getDB().get<ProjectRow>("SELECT * FROM projects WHERE owner = ? AND name = ?", [owner, name])) ?? null;
 }
 
-export function getProjectById(id: number): ProjectRow | null {
-  return (rawDB().query("SELECT * FROM projects WHERE id = ?").get(id) as ProjectRow | null) ?? null;
+export async function getProjectById(id: number): Promise<ProjectRow | null> {
+  return (await getDB().get<ProjectRow>("SELECT * FROM projects WHERE id = ?", [id])) ?? null;
 }
 
-export function getProjectByIssueId(issueId: number): ProjectRow | null {
-  const row = rawDB()
-    .query("SELECT p.* FROM projects p JOIN issues i ON i.project_id = p.id WHERE i.id = ?")
-    .get(issueId) as ProjectRow | null;
+export async function getProjectByIssueId(issueId: number): Promise<ProjectRow | null> {
+  const row = await getDB().get<ProjectRow>(
+    "SELECT p.* FROM projects p JOIN issues i ON i.project_id = p.id WHERE i.id = ?",
+    [issueId]
+  );
   return row ?? null;
 }
 
@@ -164,36 +148,35 @@ export interface ProjectWithCounts extends ProjectRow {
   total_count: number;
 }
 
-export function listProjectsWithCounts(): ProjectWithCounts[] {
-  return rawDB()
-    .query(
-      `SELECT p.*,
-         COALESCE(SUM(CASE WHEN i.state = 'open' THEN 1 ELSE 0 END), 0) AS open_count,
-         COUNT(i.id) AS total_count
-       FROM projects p
-       LEFT JOIN issues i ON i.project_id = p.id
-       GROUP BY p.id
-       ORDER BY p.updated_at DESC`
-    )
-    .all() as ProjectWithCounts[];
+export async function listProjectsWithCounts(): Promise<ProjectWithCounts[]> {
+  return await getDB().all<ProjectWithCounts>(
+    `SELECT p.*,
+       COALESCE(SUM(CASE WHEN i.state = 'open' THEN 1 ELSE 0 END), 0) AS open_count,
+       COUNT(i.id) AS total_count
+     FROM projects p
+     LEFT JOIN issues i ON i.project_id = p.id
+     GROUP BY p.id
+     ORDER BY p.updated_at DESC`
+  );
 }
 
-export function createProject(owner: string, name: string, description: string): ProjectRow {
+export async function createProject(owner: string, name: string, description: string): Promise<ProjectRow> {
   owner = owner.trim();
   name = name.trim();
   if (!/^[A-Za-z0-9_.-]+$/.test(owner)) throw new StoreError(400, "owner 含非法字符");
   if (!/^[A-Za-z0-9_.-]+$/.test(name)) throw new StoreError(400, "name 含非法字符");
-  if (getProject(owner, name)) throw new StoreError(409, `项目 ${owner}/${name} 已存在`);
+  if (await getProject(owner, name)) throw new StoreError(409, `项目 ${owner}/${name} 已存在`);
   const ts = now();
-  const db = rawDB();
-  const info = db
-    .query("INSERT INTO projects (owner, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
-    .run(owner, name, description ?? "", ts, ts);
-  return getProjectById(Number(info.lastInsertRowid))!;
+  const db = getDB();
+  const info = await db.run(
+    "INSERT INTO projects (owner, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+    [owner, name, description ?? "", ts, ts]
+  );
+  return (await getProjectById(info.insertId))!;
 }
 
-export function touchProject(projectId: number): void {
-  rawDB().query("UPDATE projects SET updated_at = ? WHERE id = ?").run(now(), projectId);
+export async function touchProject(projectId: number): Promise<void> {
+  await getDB().run("UPDATE projects SET updated_at = ? WHERE id = ?", [now(), projectId]);
 }
 
 const MAX_UPSTREAM_URLS = 10;
@@ -214,7 +197,7 @@ export function getDefaultUpstreamUrl(project: Pick<ProjectRow, "upstream_urls">
   return urls.length > 0 ? urls[0]! : null;
 }
 
-export function setProjectUpstreamUrls(projectId: number, urls: string[]): string[] {
+export async function setProjectUpstreamUrls(projectId: number, urls: string[]): Promise<string[]> {
   const seen = new Set<string>();
   const cleaned: string[] = [];
   for (const raw of urls) {
@@ -232,9 +215,10 @@ export function setProjectUpstreamUrls(projectId: number, urls: string[]): strin
     throw new StoreError(400, `上游 URL 数量超过上限（${MAX_UPSTREAM_URLS}）`);
   }
   const ts = now();
-  rawDB()
-    .query("UPDATE projects SET upstream_urls = ?, updated_at = ? WHERE id = ?")
-    .run(JSON.stringify(cleaned), ts, projectId);
+  await getDB().run(
+    "UPDATE projects SET upstream_urls = ?, updated_at = ? WHERE id = ?",
+    [JSON.stringify(cleaned), ts, projectId]
+  );
   return cleaned;
 }
 
@@ -242,14 +226,15 @@ export function setProjectUpstreamUrls(projectId: number, urls: string[]): strin
 // Same regex as OpencodeClient.listModels — keep in sync.
 const MODEL_RE = /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/;
 
-export function setProjectModel(projectId: number, model: string): string {
+export async function setProjectModel(projectId: number, model: string): Promise<string> {
   const trimmed = String(model ?? "").trim();
   if (trimmed && !MODEL_RE.test(trimmed)) {
     throw new StoreError(400, `模型格式非法（须 provider/model）: ${trimmed}`);
   }
-  rawDB()
-    .query("UPDATE projects SET model = ?, updated_at = ? WHERE id = ?")
-    .run(trimmed, now(), projectId);
+  await getDB().run(
+    "UPDATE projects SET model = ?, updated_at = ? WHERE id = ?",
+    [trimmed, now(), projectId]
+  );
   return trimmed;
 }
 
@@ -262,13 +247,13 @@ export function resolveModel(projectModel: string, globalDefault: string): strin
   return String(globalDefault ?? "").trim();
 }
 
-export function listCachedModels(): CachedModel[] {
-  const rows = rawDB().query("SELECT provider_model AS id, label FROM model_cache ORDER BY id").all() as CachedModel[];
+export async function listCachedModels(): Promise<CachedModel[]> {
+  const rows = await getDB().all<CachedModel>("SELECT provider_model AS id, label FROM model_cache ORDER BY id");
   return rows;
 }
 
-export function replaceCachedModels(ids: string[]): void {
-  const db = rawDB();
+export async function replaceCachedModels(ids: string[]): Promise<void> {
+  const db = getDB();
   const ts = now();
   // Dedupe to avoid UNIQUE constraint violations — caller may pass raw
   // output from `opencode models` which could (theoretically) repeat.
@@ -280,38 +265,33 @@ export function replaceCachedModels(ids: string[]): void {
       unique.push(id);
     }
   }
-  const tx = db.transaction(() => {
-    db.exec("DELETE FROM model_cache");
-    const stmt = db.query("INSERT INTO model_cache (provider_model, label, refreshed_at) VALUES (?, ?, ?)");
+  await db.transaction(async () => {
+    await db.exec("DELETE FROM model_cache");
     for (const id of unique) {
-      stmt.run(id, id, ts);
+      await db.run("INSERT INTO model_cache (provider_model, label, refreshed_at) VALUES (?, ?, ?)", [id, id, ts]);
     }
   });
-  tx();
 }
 
-export function getIssue(projectId: number, number: number): IssueRow | null {
+export async function getIssue(projectId: number, number: number): Promise<IssueRow | null> {
   return (
-    (rawDB()
-      .query("SELECT * FROM issues WHERE project_id = ? AND number = ?")
-      .get(projectId, number) as IssueRow | null) ?? null
+    (await getDB().get<IssueRow>("SELECT * FROM issues WHERE project_id = ? AND number = ?", [projectId, number])) ?? null
   );
 }
 
-export function getIssueById(id: number): IssueRow | null {
-  return (rawDB().query("SELECT * FROM issues WHERE id = ?").get(id) as IssueRow | null) ?? null;
+export async function getIssueById(id: number): Promise<IssueRow | null> {
+  return (await getDB().get<IssueRow>("SELECT * FROM issues WHERE id = ?", [id])) ?? null;
 }
 
-export function getIssueWithMeta(projectId: number, number: number): IssueWithMeta | null {
+export async function getIssueWithMeta(projectId: number, number: number): Promise<IssueWithMeta | null> {
   return (
-    (rawDB()
-      .query(
-        `SELECT i.*, p.owner AS project_owner, p.name AS project_name,
-                (SELECT COUNT(*) FROM comments c WHERE c.issue_id = i.id) AS comment_count
-         FROM issues i JOIN projects p ON p.id = i.project_id
-         WHERE i.project_id = ? AND i.number = ?`
-      )
-      .get(projectId, number) as IssueWithMeta | null) ?? null
+    (await getDB().get<IssueWithMeta>(
+      `SELECT i.*, p.owner AS project_owner, p.name AS project_name,
+              (SELECT COUNT(*) FROM comments c WHERE c.issue_id = i.id) AS comment_count
+       FROM issues i JOIN projects p ON p.id = i.project_id
+       WHERE i.project_id = ? AND i.number = ?`,
+      [projectId, number]
+    )) ?? null
   );
 }
 
@@ -321,7 +301,7 @@ export interface ListIssuesOpts {
   limit?: number;
 }
 
-export function listIssues(projectId: number, opts: ListIssuesOpts = {}): IssueWithMeta[] {
+export async function listIssues(projectId: number, opts: ListIssuesOpts = {}): Promise<IssueWithMeta[]> {
   const state = opts.state ?? "open";
   const q = (opts.q ?? "").trim();
   const limit = Math.min(opts.limit ?? 50, 200);
@@ -341,10 +321,10 @@ export function listIssues(projectId: number, opts: ListIssuesOpts = {}): IssueW
   }
   sql += " ORDER BY i.updated_at DESC LIMIT ?";
   args.push(limit);
-  return rawDB().query(sql).all(...args) as IssueWithMeta[];
+  return await getDB().all<IssueWithMeta>(sql, args);
 }
 
-export function listAllIssues(opts: ListIssuesOpts = {}): IssueWithMeta[] {
+export async function listAllIssues(opts: ListIssuesOpts = {}): Promise<IssueWithMeta[]> {
   const state = opts.state ?? "open";
   const q = (opts.q ?? "").trim();
   const limit = Math.min(opts.limit ?? 50, 200);
@@ -364,7 +344,7 @@ export function listAllIssues(opts: ListIssuesOpts = {}): IssueWithMeta[] {
   }
   sql += " ORDER BY i.updated_at DESC LIMIT ?";
   args.push(limit);
-  return rawDB().query(sql).all(...args) as IssueWithMeta[];
+  return await getDB().all<IssueWithMeta>(sql, args);
 }
 
 export interface CreateIssueOpts {
@@ -381,56 +361,51 @@ function isoOr(value: string | undefined, fallback: string): string {
   return new Date(parsed).toISOString();
 }
 
-export function createIssue(
+export async function createIssue(
   projectId: number,
   title: string,
   body: string,
   author: string,
   opts: CreateIssueOpts = {}
-): IssueRow {
+): Promise<IssueRow> {
   title = title.trim();
   if (!title) throw new StoreError(400, "标题不能为空");
   if (title.length > 255) throw new StoreError(400, "标题过长（≤255）");
   if (body.length > 65536) throw new StoreError(413, "正文过长（≤65536）");
-  ensureUser(author);
+  await ensureUser(author);
   const createdAt = isoOr(opts.createdAt, now());
   const updatedAt = opts.updatedAt ? isoOr(opts.updatedAt, createdAt) : createdAt;
   const state: "open" | "closed" = opts.state ?? "open";
   const closedAt = state === "closed" ? isoOr(opts.closedAt ?? undefined, updatedAt) : null;
-  const db = rawDB();
-  return tx(db, () => {
-    const next = (
-      db.query("SELECT COALESCE(MAX(number), 0) + 1 AS n FROM issues WHERE project_id = ?").get(projectId) as {
-        n: number;
-      }
-    ).n;
-    const info = db
-      .query(
-        "INSERT INTO issues (project_id, number, title, body, state, author, created_at, updated_at, closed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
-      )
-      .run(projectId, next, title, body, state, author, createdAt, updatedAt, closedAt);
-    db.query("UPDATE projects SET updated_at = ? WHERE id = ?").run(updatedAt, projectId);
-    return getIssueById(Number(info.lastInsertRowid))!;
+  return await getDB().transaction(async () => {
+    const next = (await getDB().get<{ n: number }>(
+      "SELECT COALESCE(MAX(number), 0) + 1 AS n FROM issues WHERE project_id = ?", [projectId]
+    ))!;
+    const info = await getDB().run(
+      "INSERT INTO issues (project_id, number, title, body, state, author, created_at, updated_at, closed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [projectId, next.n, title, body, state, author, createdAt, updatedAt, closedAt]
+    );
+    await getDB().run("UPDATE projects SET updated_at = ? WHERE id = ?", [updatedAt, projectId]);
+    return (await getIssueById(info.insertId))!;
   });
 }
 
-export function setIssueState(
+export async function setIssueState(
   issueId: number,
   state: "open" | "closed",
   opts: { closedAt?: string; updatedAt?: string } = {}
-): void {
+): Promise<void> {
   const ts = opts.updatedAt ? isoOr(opts.updatedAt, now()) : now();
   const closedAt = state === "closed" ? isoOr(opts.closedAt ?? undefined, ts) : null;
-  const db = rawDB();
-  tx(db, () => {
-    db.query("UPDATE issues SET state = ?, updated_at = ?, closed_at = ? WHERE id = ?").run(
+  await getDB().transaction(async () => {
+    await getDB().run("UPDATE issues SET state = ?, updated_at = ?, closed_at = ? WHERE id = ?", [
       state,
       ts,
       closedAt,
-      issueId
-    );
-    const row = db.query("SELECT project_id FROM issues WHERE id = ?").get(issueId) as { project_id: number };
-    db.query("UPDATE projects SET updated_at = ? WHERE id = ?").run(ts, row.project_id);
+      issueId,
+    ]);
+    const row = await getDB().get<{ project_id: number }>("SELECT project_id FROM issues WHERE id = ?", [issueId]);
+    await getDB().run("UPDATE projects SET updated_at = ? WHERE id = ?", [ts, row!.project_id]);
   });
 }
 
@@ -442,7 +417,7 @@ export interface IssuePatch {
   updatedAt?: string;
 }
 
-export function editIssue(issueId: number, patch: IssuePatch): void {
+export async function editIssue(issueId: number, patch: IssuePatch): Promise<void> {
   const sets: string[] = [];
   const args: (string | number | null)[] = [];
   if (patch.title !== undefined) {
@@ -478,59 +453,55 @@ export function editIssue(issueId: number, patch: IssuePatch): void {
     args.push(now());
   }
   args.push(issueId);
-  const db = rawDB();
-  tx(db, () => {
-    db.query(`UPDATE issues SET ${sets.join(", ")} WHERE id = ?`).run(...args);
-    const row = db.query("SELECT project_id FROM issues WHERE id = ?").get(issueId) as { project_id: number } | null;
-    if (row) db.query("UPDATE projects SET updated_at = ? WHERE id = ?").run(now(), row.project_id);
+  await getDB().transaction(async () => {
+    await getDB().run(`UPDATE issues SET ${sets.join(", ")} WHERE id = ?`, args);
+    const row = await getDB().get<{ project_id: number }>("SELECT project_id FROM issues WHERE id = ?", [issueId]);
+    if (row) await getDB().run("UPDATE projects SET updated_at = ? WHERE id = ?", [now(), row.project_id]);
   });
 }
 
-export function countComments(issueId: number): number {
-  const row = rawDB().query("SELECT COUNT(*) AS n FROM comments WHERE issue_id = ?").get(issueId) as { n: number };
-  return row.n;
+export async function countComments(issueId: number): Promise<number> {
+  const row = await getDB().get<{ n: number }>("SELECT COUNT(*) AS n FROM comments WHERE issue_id = ?", [issueId]);
+  return row!.n;
 }
 
-export function listCommentsPage(issueId: number, page: number, pageSize: number): { rows: CommentRow[]; page: number } {
-  const total = countComments(issueId);
+export async function listCommentsPage(issueId: number, page: number, pageSize: number): Promise<{ rows: CommentRow[]; page: number }> {
+  const total = await countComments(issueId);
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const clamped = Math.min(Math.max(1, page), totalPages);
   const offset = (clamped - 1) * pageSize;
-  const rows = rawDB()
-    .query(
-      `SELECT c.*, u.kind AS author_kind
-       FROM comments c
-       LEFT JOIN users u ON u.login = c.author
-       WHERE c.issue_id = ?
-       ORDER BY c.created_at ASC, c.id ASC
-       LIMIT ? OFFSET ?`
-    )
-    .all(issueId, pageSize, offset) as CommentRow[];
+  const rows = await getDB().all<CommentRow>(
+    `SELECT c.*, u.kind AS author_kind
+     FROM comments c
+     LEFT JOIN users u ON u.login = c.author
+     WHERE c.issue_id = ?
+     ORDER BY c.created_at ASC, c.id ASC
+     LIMIT ? OFFSET ?`,
+    [issueId, pageSize, offset]
+  );
   return { rows, page: clamped };
 }
 
-export function listCommentsSince(issueId: number, sinceISO: string): CommentRow[] {
-  return rawDB()
-    .query(
-      `SELECT c.*, u.kind AS author_kind
-       FROM comments c
-       LEFT JOIN users u ON u.login = c.author
-       WHERE c.issue_id = ? AND c.created_at > ?
-       ORDER BY c.created_at ASC, c.id ASC`
-    )
-    .all(issueId, sinceISO) as CommentRow[];
+export async function listCommentsSince(issueId: number, sinceISO: string): Promise<CommentRow[]> {
+  return await getDB().all<CommentRow>(
+    `SELECT c.*, u.kind AS author_kind
+     FROM comments c
+     LEFT JOIN users u ON u.login = c.author
+     WHERE c.issue_id = ? AND c.created_at > ?
+     ORDER BY c.created_at ASC, c.id ASC`,
+    [issueId, sinceISO]
+  );
 }
 
-export function listCommentsForIssue(issueId: number): CommentRow[] {
-  return rawDB()
-    .query(
-      `SELECT c.*, u.kind AS author_kind
-       FROM comments c
-       LEFT JOIN users u ON u.login = c.author
-       WHERE c.issue_id = ?
-       ORDER BY c.created_at ASC, c.id ASC`
-    )
-    .all(issueId) as CommentRow[];
+export async function listCommentsForIssue(issueId: number): Promise<CommentRow[]> {
+  return await getDB().all<CommentRow>(
+    `SELECT c.*, u.kind AS author_kind
+     FROM comments c
+     LEFT JOIN users u ON u.login = c.author
+     WHERE c.issue_id = ?
+     ORDER BY c.created_at ASC, c.id ASC`,
+    [issueId]
+  );
 }
 
 export interface CreateCommentOpts {
@@ -538,57 +509,56 @@ export interface CreateCommentOpts {
   updatedAt?: string;
 }
 
-export function postComment(
+export async function postComment(
   issueId: number,
   body: string,
   author: string,
   opts: CreateCommentOpts = {}
-): CommentRow {
+): Promise<CommentRow> {
   if (!body || !body.trim()) throw new StoreError(400, "评论不能为空");
   if (body.length > 65536) throw new StoreError(413, "评论过长（≤65536）");
-  ensureUser(author);
+  await ensureUser(author);
   const createdAt = isoOr(opts.createdAt, now());
   const updatedAt = opts.updatedAt ? isoOr(opts.updatedAt, createdAt) : createdAt;
-  const db = rawDB();
-  return tx(db, () => {
-    const info = db
-      .query("INSERT INTO comments (issue_id, author, body, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
-      .run(issueId, author, body, createdAt, updatedAt);
-    db.query("UPDATE issues SET updated_at = ? WHERE id = ?").run(updatedAt, issueId);
-    const row = db.query("SELECT project_id FROM issues WHERE id = ?").get(issueId) as { project_id: number };
-    db.query("UPDATE projects SET updated_at = ? WHERE id = ?").run(updatedAt, row.project_id);
-    return db.query(
+  return await getDB().transaction(async () => {
+    const info = await getDB().run(
+      "INSERT INTO comments (issue_id, author, body, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+      [issueId, author, body, createdAt, updatedAt]
+    );
+    await getDB().run("UPDATE issues SET updated_at = ? WHERE id = ?", [updatedAt, issueId]);
+    const row = await getDB().get<{ project_id: number }>("SELECT project_id FROM issues WHERE id = ?", [issueId]);
+    await getDB().run("UPDATE projects SET updated_at = ? WHERE id = ?", [updatedAt, row!.project_id]);
+    return (await getDB().get<CommentRow>(
       `SELECT c.*, u.kind AS author_kind
        FROM comments c LEFT JOIN users u ON u.login = c.author
-       WHERE c.id = ?`
-    ).get(Number(info.lastInsertRowid)) as CommentRow;
+       WHERE c.id = ?`,
+      [info.insertId]
+    ))!;
   });
 }
 
-export function getComment(commentId: number): CommentRow | null {
-  const row = rawDB().query(
+export async function getComment(commentId: number): Promise<CommentRow | null> {
+  const row = await getDB().get<CommentRow>(
     `SELECT c.*, u.kind AS author_kind
      FROM comments c LEFT JOIN users u ON u.login = c.author
-     WHERE c.id = ?`
-  ).get(commentId) as CommentRow | undefined;
+     WHERE c.id = ?`,
+    [commentId]
+  );
   return row ?? null;
 }
 
-export function editComment(commentId: number, body: string): CommentRow {
+export async function editComment(commentId: number, body: string): Promise<CommentRow> {
   const trimmed = String(body ?? "");
   if (!trimmed.trim()) throw new StoreError(400, "评论不能为空");
   if (trimmed.length > 65536) throw new StoreError(413, "评论过长（≤65536）");
   const ts = now();
-  const db = rawDB();
-  const info = db
-    .query("UPDATE comments SET body = ?, updated_at = ? WHERE id = ?")
-    .run(trimmed, ts, commentId);
+  const info = await getDB().run("UPDATE comments SET body = ?, updated_at = ? WHERE id = ?", [trimmed, ts, commentId]);
   if (info.changes === 0) throw new StoreError(404, `评论 ${commentId} 不存在`);
-  return getComment(commentId)!;
+  return (await getComment(commentId))!;
 }
 
-export function deleteComment(commentId: number): void {
-  const info = rawDB().query("DELETE FROM comments WHERE id = ?").run(commentId);
+export async function deleteComment(commentId: number): Promise<void> {
+  const info = await getDB().run("DELETE FROM comments WHERE id = ?", [commentId]);
   if (info.changes === 0) throw new StoreError(404, `评论 ${commentId} 不存在`);
 }
 
@@ -598,80 +568,74 @@ export interface ReactionAgg {
   n: number;
 }
 
-export function listReactionsFor(commentIds: number[]): ReactionAgg[] {
+export async function listReactionsFor(commentIds: number[]): Promise<ReactionAgg[]> {
   if (commentIds.length === 0) return [];
   const placeholders = commentIds.map(() => "?").join(",");
-  return rawDB()
-    .query(
-      `SELECT comment_id, content, COUNT(*) AS n
-       FROM reactions WHERE comment_id IN (${placeholders})
-       GROUP BY comment_id, content`
-    )
-    .all(...commentIds) as ReactionAgg[];
+  return await getDB().all<ReactionAgg>(
+    `SELECT comment_id, content, COUNT(*) AS n
+     FROM reactions WHERE comment_id IN (${placeholders})
+     GROUP BY comment_id, content`,
+    commentIds
+  );
 }
 
-export function addReaction(commentId: number, userLogin: string, content: string): void {
+export async function addReaction(commentId: number, userLogin: string, content: string): Promise<void> {
   if (!content || content.length > 32) throw new StoreError(400, "非法的 reaction content");
-  ensureUser(userLogin);
-  rawDB()
-    .query("INSERT OR IGNORE INTO reactions (comment_id, user_login, content) VALUES (?, ?, ?)")
-    .run(commentId, userLogin, content);
+  await ensureUser(userLogin);
+  await getDB().run(
+    "INSERT OR IGNORE INTO reactions (comment_id, user_login, content) VALUES (?, ?, ?)",
+    [commentId, userLogin, content]
+  );
 }
 
-export function removeReaction(commentId: number, userLogin: string, content: string): void {
-  rawDB()
-    .query("DELETE FROM reactions WHERE comment_id = ? AND user_login = ? AND content = ?")
-    .run(commentId, userLogin, content);
+export async function removeReaction(commentId: number, userLogin: string, content: string): Promise<void> {
+  await getDB().run(
+    "DELETE FROM reactions WHERE comment_id = ? AND user_login = ? AND content = ?",
+    [commentId, userLogin, content]
+  );
 }
 
-export function listLabels(projectId: number): LabelRow[] {
-  return rawDB().query("SELECT * FROM labels WHERE project_id = ? ORDER BY name").all(projectId) as LabelRow[];
+export async function listLabels(projectId: number): Promise<LabelRow[]> {
+  return await getDB().all<LabelRow>("SELECT * FROM labels WHERE project_id = ? ORDER BY name", [projectId]);
 }
 
-export function listLabelsForIssue(issueId: number): LabelRow[] {
-  return rawDB()
-    .query(
-      `SELECT l.* FROM labels l
-       JOIN issue_labels il ON il.label_id = l.id
-       WHERE il.issue_id = ? ORDER BY l.name`
-    )
-    .all(issueId) as LabelRow[];
+export async function listLabelsForIssue(issueId: number): Promise<LabelRow[]> {
+  return await getDB().all<LabelRow>(
+    `SELECT l.* FROM labels l
+     JOIN issue_labels il ON il.label_id = l.id
+     WHERE il.issue_id = ? ORDER BY l.name`,
+    [issueId]
+  );
 }
 
-export function createLabel(projectId: number, name: string, color: string): LabelRow {
+export async function createLabel(projectId: number, name: string, color: string): Promise<LabelRow> {
   name = name.trim();
   if (!name) throw new StoreError(400, "标签名不能为空");
   if (!/^#[0-9a-fA-F]{6}$/.test(color)) throw new StoreError(400, "颜色须为 #RRGGBB");
-  const db = rawDB();
-  const info = db
-    .query("INSERT INTO labels (project_id, name, color) VALUES (?, ?, ?)")
-    .run(projectId, name, color);
-  return db.query("SELECT * FROM labels WHERE id = ?").get(Number(info.lastInsertRowid)) as LabelRow;
+  const info = await getDB().run("INSERT INTO labels (project_id, name, color) VALUES (?, ?, ?)", [projectId, name, color]);
+  return (await getDB().get<LabelRow>("SELECT * FROM labels WHERE id = ?", [info.insertId]))!;
 }
 
-export function setIssueLabel(issueId: number, labelId: number, on: boolean): void {
-  const db = rawDB();
+export async function setIssueLabel(issueId: number, labelId: number, on: boolean): Promise<void> {
   if (on) {
-    db.query("INSERT OR IGNORE INTO issue_labels (issue_id, label_id) VALUES (?, ?)").run(issueId, labelId);
+    await getDB().run("INSERT OR IGNORE INTO issue_labels (issue_id, label_id) VALUES (?, ?)", [issueId, labelId]);
   } else {
-    db.query("DELETE FROM issue_labels WHERE issue_id = ? AND label_id = ?").run(issueId, labelId);
+    await getDB().run("DELETE FROM issue_labels WHERE issue_id = ? AND label_id = ?", [issueId, labelId]);
   }
 }
 
-export function createAttachment(a: Omit<AttachmentRow, "created_at">): AttachmentRow {
+export async function createAttachment(a: Omit<AttachmentRow, "created_at">): Promise<AttachmentRow> {
   const ts = now();
-  const db = rawDB();
-  db
-    .query(
-      `INSERT INTO attachments (uuid, issue_id, filename, content_type, size, blob_path, uploaded_by, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-    )
-    .run(a.uuid, a.issue_id, a.filename, a.content_type, a.size, a.blob_path, a.uploaded_by, ts);
-  return db.query("SELECT * FROM attachments WHERE uuid = ?").get(a.uuid) as AttachmentRow;
+  await getDB().run(
+    `INSERT INTO attachments (uuid, issue_id, filename, content_type, size, blob_path, uploaded_by, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [a.uuid, a.issue_id, a.filename, a.content_type, a.size, a.blob_path, a.uploaded_by, ts]
+  );
+  return (await getDB().get<AttachmentRow>("SELECT * FROM attachments WHERE uuid = ?", [a.uuid]))!;
 }
 
-export function getAttachment(uuid: string): AttachmentRow | null {
-  return (rawDB().query("SELECT * FROM attachments WHERE uuid = ?").get(uuid) as AttachmentRow | null) ?? null;
+export async function getAttachment(uuid: string): Promise<AttachmentRow | null> {
+  return (await getDB().get<AttachmentRow>("SELECT * FROM attachments WHERE uuid = ?", [uuid])) ?? null;
 }
 
 const LOGIN_RE = /^[A-Za-z0-9_-]{1,64}$/;
@@ -693,45 +657,44 @@ export async function createUser(input: CreateUserInput): Promise<UserRow> {
   if (input.password.length > 200) {
     throw new StoreError(400, "密码过长（≤200）");
   }
-  const db = rawDB();
-  if (db.query("SELECT 1 FROM users WHERE login = ?").get(login)) {
+  const db = getDB();
+  if (await db.get("SELECT 1 FROM users WHERE login = ?", [login])) {
     throw new StoreError(409, `用户 ${login} 已存在`);
   }
   const ts = now();
   const hash = await hashPassword(input.password);
-  db.query(
+  await db.run(
     `INSERT INTO users (login, kind, display_name, password_hash, email, is_admin, is_active, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(
-    login,
-    input.kind ?? "human",
-    input.display_name ?? null,
-    hash,
-    input.email ?? null,
-    input.is_admin ? 1 : 0,
-    input.is_active === false ? 0 : 1,
-    ts,
-    ts
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      login,
+      input.kind ?? "human",
+      input.display_name ?? null,
+      hash,
+      input.email ?? null,
+      input.is_admin ? 1 : 0,
+      input.is_active === false ? 0 : 1,
+      ts,
+      ts
+    ]
   );
-  return getUserByLogin(login)!;
+  return (await getUserByLogin(login))!;
 }
 
-export function getUserByLogin(login: string): UserRow | null {
-  return (rawDB().query("SELECT * FROM users WHERE login = ?").get(login) as UserRow | null) ?? null;
+export async function getUserByLogin(login: string): Promise<UserRow | null> {
+  return (await getDB().get<UserRow>("SELECT * FROM users WHERE login = ?", [login])) ?? null;
 }
 
-export function listUsers(): UserRow[] {
-  return rawDB()
-    .query("SELECT * FROM users ORDER BY is_admin DESC, created_at ASC")
-    .all() as UserRow[];
+export async function listUsers(): Promise<UserRow[]> {
+  return await getDB().all<UserRow>("SELECT * FROM users ORDER BY is_admin DESC, created_at ASC");
 }
 
-export function listAdmins(): UserRow[] {
-  return rawDB().query("SELECT * FROM users WHERE is_admin = 1").all() as UserRow[];
+export async function listAdmins(): Promise<UserRow[]> {
+  return await getDB().all<UserRow>("SELECT * FROM users WHERE is_admin = 1");
 }
 
 export async function verifyUserPassword(login: string, password: string): Promise<UserRow | null> {
-  const user = getUserByLogin(login);
+  const user = await getUserByLogin(login);
   if (!user || !user.password_hash || !user.is_active) return null;
   const ok = await Bun.password.verify(password, user.password_hash);
   return ok ? user : null;
@@ -745,12 +708,12 @@ export interface UpdateUserPatch {
   kind?: UserKind;
 }
 
-export function updateUser(login: string, patch: UpdateUserPatch): UserRow {
-  const existing = getUserByLogin(login);
+export async function updateUser(login: string, patch: UpdateUserPatch): Promise<UserRow> {
+  const existing = await getUserByLogin(login);
   if (!existing) throw new StoreError(404, `用户 ${login} 不存在`);
   const ts = now();
-  const db = rawDB();
-  db.query(
+  const db = getDB();
+  await db.run(
     `UPDATE users SET
        email = COALESCE(?, email),
        display_name = COALESCE(?, display_name),
@@ -758,34 +721,33 @@ export function updateUser(login: string, patch: UpdateUserPatch): UserRow {
        is_active = COALESCE(?, is_active),
        kind = COALESCE(?, kind),
        updated_at = ?
-     WHERE login = ?`
-  ).run(
-    patch.email !== undefined ? patch.email : null,
-    patch.display_name !== undefined ? patch.display_name : null,
-    patch.is_admin !== undefined ? (patch.is_admin ? 1 : 0) : null,
-    patch.is_active !== undefined ? (patch.is_active ? 1 : 0) : null,
-    patch.kind ?? null,
-    ts,
-    login
+     WHERE login = ?`,
+    [
+      patch.email !== undefined ? patch.email : null,
+      patch.display_name !== undefined ? patch.display_name : null,
+      patch.is_admin !== undefined ? (patch.is_admin ? 1 : 0) : null,
+      patch.is_active !== undefined ? (patch.is_active ? 1 : 0) : null,
+      patch.kind ?? null,
+      ts,
+      login
+    ]
   );
-  return getUserByLogin(login)!;
+  return (await getUserByLogin(login))!;
 }
 
 export async function setUserPassword(login: string, newPassword: string): Promise<void> {
   if (newPassword.length < 8) throw new StoreError(400, "密码至少 8 位");
   if (newPassword.length > 200) throw new StoreError(400, "密码过长（≤200）");
-  const existing = getUserByLogin(login);
+  const existing = await getUserByLogin(login);
   if (!existing) throw new StoreError(404, `用户 ${login} 不存在`);
   const ts = now();
   const hash = await hashPassword(newPassword);
-  rawDB()
-    .query("UPDATE users SET password_hash = ?, updated_at = ? WHERE login = ?")
-    .run(hash, ts, login);
+  await getDB().run("UPDATE users SET password_hash = ?, updated_at = ? WHERE login = ?", [hash, ts, login]);
 }
 
-export function countAdmins(): number {
-  const row = rawDB().query("SELECT COUNT(*) AS n FROM users WHERE is_admin = 1").get() as { n: number };
-  return row.n;
+export async function countAdmins(): Promise<number> {
+  const row = await getDB().get<{ n: number }>("SELECT COUNT(*) AS n FROM users WHERE is_admin = 1");
+  return row!.n;
 }
 
 export interface PatRow {
@@ -914,7 +876,7 @@ function ctEqualBuf(a: Uint8Array, b: Uint8Array): boolean {
 export async function createPat(input: CreatePatInput): Promise<CreatePatResult> {
   const login = input.user_login.trim();
   const name = input.name.trim();
-  const user = getUserByLogin(login);
+  const user = await getUserByLogin(login);
   if (!user) throw new StoreError(404, `用户 ${login} 不存在`);
   if (!PAT_NAME_RE.test(name)) throw new StoreError(400, "token 名称含非法字符或长度不在 1-64 内");
   const scopes = input.scopes ?? ["read", "write"];
@@ -934,27 +896,26 @@ export async function createPat(input: CreatePatInput): Promise<CreatePatResult>
   const tokenHash = sha256Hex(salt + plaintext);
   const lastEight = plaintext.slice(-8);
   const ts = now();
-  const db = rawDB();
-  const info = db
-    .query(
-      `INSERT INTO personal_access_tokens
-         (user_login, name, salt, token_hash, token_last_eight, scopes, ip_allowlist, expires_at, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    )
-    .run(login, name, salt, tokenHash, lastEight, JSON.stringify(scopes), JSON.stringify(ipAllowlist), expiresAt, ts);
-  const row = getPat(Number(info.lastInsertRowid));
+  const info = await getDB().run(
+    `INSERT INTO personal_access_tokens
+       (user_login, name, salt, token_hash, token_last_eight, scopes, ip_allowlist, expires_at, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [login, name, salt, tokenHash, lastEight, JSON.stringify(scopes), JSON.stringify(ipAllowlist), expiresAt, ts]
+  );
+  const row = await getPat(info.insertId);
   if (!row) throw new StoreError(500, "PAT 创建后无法读取");
   return { row, plaintext };
 }
 
-export function getPat(id: number): PatRow | null {
-  return (rawDB().query("SELECT * FROM personal_access_tokens WHERE id = ?").get(id) as PatRow | null) ?? null;
+export async function getPat(id: number): Promise<PatRow | null> {
+  return (await getDB().get<PatRow>("SELECT * FROM personal_access_tokens WHERE id = ?", [id])) ?? null;
 }
 
-export function listPatsForUser(login: string): PatRow[] {
-  return rawDB()
-    .query("SELECT * FROM personal_access_tokens WHERE user_login = ? ORDER BY created_at DESC")
-    .all(login) as PatRow[];
+export async function listPatsForUser(login: string): Promise<PatRow[]> {
+  return await getDB().all<PatRow>(
+    "SELECT * FROM personal_access_tokens WHERE user_login = ? ORDER BY created_at DESC",
+    [login]
+  );
 }
 
 export interface PatWithUser extends PatRow {
@@ -963,44 +924,39 @@ export interface PatWithUser extends PatRow {
   user_is_active: number | null;
 }
 
-export function listAllPatsWithUsers(): PatWithUser[] {
-  return rawDB()
-    .query(
-      `SELECT p.*, u.kind AS user_kind, u.is_admin AS user_is_admin, u.is_active AS user_is_active
-       FROM personal_access_tokens p
-       LEFT JOIN users u ON u.login = p.user_login
-       ORDER BY p.created_at DESC`
-    )
-    .all() as PatWithUser[];
+export async function listAllPatsWithUsers(): Promise<PatWithUser[]> {
+  return await getDB().all<PatWithUser>(
+    `SELECT p.*, u.kind AS user_kind, u.is_admin AS user_is_admin, u.is_active AS user_is_active
+     FROM personal_access_tokens p
+     LEFT JOIN users u ON u.login = p.user_login
+     ORDER BY p.created_at DESC`
+  );
 }
 
-export function revokePat(id: number, login: string): void {
-  const row = getPat(id);
+export async function revokePat(id: number, login: string): Promise<void> {
+  const row = await getPat(id);
   if (!row) throw new StoreError(404, "token 不存在");
   if (row.user_login !== login) throw new StoreError(403, "无权操作他人 token");
   if (row.revoked_at) return;
-  rawDB()
-    .query("UPDATE personal_access_tokens SET revoked_at = ? WHERE id = ?")
-    .run(now(), id);
+  await getDB().run("UPDATE personal_access_tokens SET revoked_at = ? WHERE id = ?", [now(), id]);
 }
 
 // Admin override: revoke any token regardless of owner. Caller MUST check
 // ctx.user.is_admin === 1 before invoking.
-export function revokePatAsAdmin(id: number): void {
-  const row = getPat(id);
+export async function revokePatAsAdmin(id: number): Promise<void> {
+  const row = await getPat(id);
   if (!row) throw new StoreError(404, "token 不存在");
   if (row.revoked_at) return;
-  rawDB()
-    .query("UPDATE personal_access_tokens SET revoked_at = ? WHERE id = ?")
-    .run(now(), id);
+  await getDB().run("UPDATE personal_access_tokens SET revoked_at = ? WHERE id = ?", [now(), id]);
 }
 
 export async function verifyPat(rawToken: string, ip?: string | null): Promise<UserRow | null> {
   if (!/^[0-9a-f]{40}$/.test(rawToken)) return null;
   const lastEight = rawToken.slice(-8);
-  const candidates = rawDB()
-    .query("SELECT * FROM personal_access_tokens WHERE token_last_eight = ?")
-    .all(lastEight) as PatRow[];
+  const candidates = await getDB().all<PatRow>(
+    "SELECT * FROM personal_access_tokens WHERE token_last_eight = ?",
+    [lastEight]
+  );
   const nowMs = Date.now();
   for (const row of candidates) {
     if (row.revoked_at) continue;
@@ -1009,11 +965,9 @@ export async function verifyPat(rawToken: string, ip?: string | null): Promise<U
     if (!ctEqualBuf(Buffer.from(expected, "hex"), Buffer.from(row.token_hash, "hex"))) continue;
     const allowlist = parsePatIpAllowlist(row.ip_allowlist ?? "[]");
     if (!ipAllowedBy(ip, allowlist)) continue;
-    const user = getUserByLogin(row.user_login);
+    const user = await getUserByLogin(row.user_login);
     if (!user || !user.is_active) return null;
-    rawDB()
-      .query("UPDATE personal_access_tokens SET last_used_at = ? WHERE id = ?")
-      .run(now(), row.id);
+    await getDB().run("UPDATE personal_access_tokens SET last_used_at = ? WHERE id = ?", [now(), row.id]);
     return user;
   }
   return null;
@@ -1036,28 +990,29 @@ export interface ProjectMemberWithUser extends ProjectMembership {
   user_is_active: number;
 }
 
-export function listProjectMembersWithUsers(projectId: number): ProjectMemberWithUser[] {
-  return rawDB()
-    .query(
-      `SELECT m.*, u.kind AS user_kind, u.display_name AS user_display_name, u.is_active AS user_is_active
-       FROM project_members m JOIN users u ON u.login = m.user_login
-       WHERE m.project_id = ?
-       ORDER BY CASE m.role WHEN 'admin' THEN 0 WHEN 'writer' THEN 1 ELSE 2 END, m.created_at ASC`
-    )
-    .all(projectId) as ProjectMemberWithUser[];
+export async function listProjectMembersWithUsers(projectId: number): Promise<ProjectMemberWithUser[]> {
+  return await getDB().all<ProjectMemberWithUser>(
+    `SELECT m.*, u.kind AS user_kind, u.display_name AS user_display_name, u.is_active AS user_is_active
+     FROM project_members m JOIN users u ON u.login = m.user_login
+     WHERE m.project_id = ?
+     ORDER BY CASE m.role WHEN 'admin' THEN 0 WHEN 'writer' THEN 1 ELSE 2 END, m.created_at ASC`,
+    [projectId]
+  );
 }
 
-export function listMembershipsForUser(userLogin: string): ProjectMembership[] {
-  return rawDB()
-    .query("SELECT * FROM project_members WHERE user_login = ? ORDER BY created_at ASC")
-    .all(userLogin) as ProjectMembership[];
+export async function listMembershipsForUser(userLogin: string): Promise<ProjectMembership[]> {
+  return await getDB().all<ProjectMembership>(
+    "SELECT * FROM project_members WHERE user_login = ? ORDER BY created_at ASC",
+    [userLogin]
+  );
 }
 
-export function getProjectMembership(projectId: number, userLogin: string): ProjectMembership | null {
+export async function getProjectMembership(projectId: number, userLogin: string): Promise<ProjectMembership | null> {
   return (
-    (rawDB()
-      .query("SELECT * FROM project_members WHERE project_id = ? AND user_login = ?")
-      .get(projectId, userLogin) as ProjectMembership | null) ?? null
+    (await getDB().get<ProjectMembership>(
+      "SELECT * FROM project_members WHERE project_id = ? AND user_login = ?",
+      [projectId, userLogin]
+    )) ?? null
   );
 }
 
@@ -1065,66 +1020,71 @@ export function getProjectMembership(projectId: number, userLogin: string): Proj
 // "admin" (the highest project role) so caller's canWrite/canAdmin work without
 // a separate code path. Caller still needs to check user.is_admin separately
 // for site-wide admin powers (user management, etc.).
-export function getRoleOnProject(projectId: number, user: { login: string; is_admin: number } | null): ProjectRole | null {
+export async function getRoleOnProject(projectId: number, user: { login: string; is_admin: number } | null): Promise<ProjectRole | null> {
   if (!user) return null;
   if (user.is_admin === 1) return "admin";
-  const m = getProjectMembership(projectId, user.login);
+  const m = await getProjectMembership(projectId, user.login);
   return m?.role ?? null;
 }
 
-export function canWriteProject(projectId: number, user: { login: string; is_admin: number } | null): boolean {
-  const r = getRoleOnProject(projectId, user);
+export async function canWriteProject(projectId: number, user: { login: string; is_admin: number } | null): Promise<boolean> {
+  const r = await getRoleOnProject(projectId, user);
   return r !== null && ROLE_RANK[r] >= ROLE_RANK.writer;
 }
 
-export function canAdminProject(projectId: number, user: { login: string; is_admin: number } | null): boolean {
-  const r = getRoleOnProject(projectId, user);
+export async function canAdminProject(projectId: number, user: { login: string; is_admin: number } | null): Promise<boolean> {
+  const r = await getRoleOnProject(projectId, user);
   return r === "admin";
 }
 
-export function addProjectMember(projectId: number, userLogin: string, role: ProjectRole): ProjectMembership {
+export async function addProjectMember(projectId: number, userLogin: string, role: ProjectRole): Promise<ProjectMembership> {
   const login = userLogin.trim();
-  if (!getUserByLogin(login)) throw new StoreError(404, `用户 ${login} 不存在`);
+  if (!(await getUserByLogin(login))) throw new StoreError(404, `用户 ${login} 不存在`);
   const ts = now();
-  const db = rawDB();
-  db.query(
-    "INSERT OR IGNORE INTO project_members (project_id, user_login, role, created_at) VALUES (?, ?, ?, ?)"
-  ).run(projectId, login, role, ts);
-  return getProjectMembership(projectId, login)!;
+  await getDB().run(
+    "INSERT OR IGNORE INTO project_members (project_id, user_login, role, created_at) VALUES (?, ?, ?, ?)",
+    [projectId, login, role, ts]
+  );
+  return (await getProjectMembership(projectId, login))!;
 }
 
-export function setProjectMemberRole(projectId: number, userLogin: string, role: ProjectRole): void {
-  const m = getProjectMembership(projectId, userLogin);
+export async function setProjectMemberRole(projectId: number, userLogin: string, role: ProjectRole): Promise<void> {
+  const m = await getProjectMembership(projectId, userLogin);
   if (!m) throw new StoreError(404, `用户 ${userLogin} 不是该项目成员`);
-  rawDB()
-    .query("UPDATE project_members SET role = ? WHERE project_id = ? AND user_login = ?")
-    .run(role, projectId, userLogin);
+  await getDB().run(
+    "UPDATE project_members SET role = ? WHERE project_id = ? AND user_login = ?",
+    [role, projectId, userLogin]
+  );
 }
 
-export function removeProjectMember(projectId: number, userLogin: string): void {
-  rawDB()
-    .query("DELETE FROM project_members WHERE project_id = ? AND user_login = ?")
-    .run(projectId, userLogin);
+export async function removeProjectMember(projectId: number, userLogin: string): Promise<void> {
+  await getDB().run(
+    "DELETE FROM project_members WHERE project_id = ? AND user_login = ?",
+    [projectId, userLogin]
+  );
 }
 
-export function countProjectAdmins(projectId: number): number {
-  const row = rawDB()
-    .query("SELECT COUNT(*) AS n FROM project_members WHERE project_id = ? AND role = 'admin'")
-    .get(projectId) as { n: number };
-  return row.n;
+export async function countProjectAdmins(projectId: number): Promise<number> {
+  const row = await getDB().get<{ n: number }>(
+    "SELECT COUNT(*) AS n FROM project_members WHERE project_id = ? AND role = 'admin'",
+    [projectId]
+  );
+  return row!.n;
 }
 
 // Idempotent bootstrap: if the project has zero members, add `login` as admin.
 // Called from project-create flow + lazily from project settings page when a
 // site-admin first opens it on an old (pre-RBAC) project.
-export function ensureProjectBootstrapAdmin(projectId: number, login: string): void {
-  const existing = rawDB()
-    .query("SELECT COUNT(*) AS n FROM project_members WHERE project_id = ?")
-    .get(projectId) as { n: number };
-  if (existing.n > 0) return;
-  if (!getUserByLogin(login)) return;
+export async function ensureProjectBootstrapAdmin(projectId: number, login: string): Promise<void> {
+  const existing = await getDB().get<{ n: number }>(
+    "SELECT COUNT(*) AS n FROM project_members WHERE project_id = ?",
+    [projectId]
+  );
+  if (existing!.n > 0) return;
+  if (!(await getUserByLogin(login))) return;
   const ts = now();
-  rawDB()
-    .query("INSERT OR IGNORE INTO project_members (project_id, user_login, role, created_at) VALUES (?, ?, 'admin', ?)")
-    .run(projectId, login, ts);
+  await getDB().run(
+    "INSERT OR IGNORE INTO project_members (project_id, user_login, role, created_at) VALUES (?, ?, 'admin', ?)",
+    [projectId, login, ts]
+  );
 }
