@@ -18,7 +18,7 @@ export function buildProjectModelPage(
   const effective = cur || globalDefault;
   const effectiveLine = effective
     ? `<p class="hint">实际生效：<code>${escapeHtml(effective)}</code>${cur ? "" : " （继承全局默认）"}</p>`
-    : `<p class="hint">实际生效：<em>未配置</em> — daemon 不会加 <code>--model</code>，opencode 按自己的 opencode.json + 环境变量选。</p>`;
+    : `<p class="hint">实际生效：<em>未配置</em> — daemon 不会加 <code>--model</code>，opencode 按 opencode.json 选；注意环境变量（如 <code>OPENCODE_MODEL</code>）可能污染。建议去 <a href="/settings">全局设置</a> 点「刷新 opencode 模型列表」自动选一个默认。</p>`;
   // Empty cache → free-text input (same degradation as global settings).
   const field = models.length === 0
     ? `<input type="text" name="model" value="${escapeAttr(cur)}" placeholder="provider/model（去 /settings 刷新模型列表）">`
