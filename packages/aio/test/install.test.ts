@@ -225,6 +225,11 @@ describe("runInstall: end-to-end (mocked fetch, real FS)", () => {
     process.env.HOME = tmpDir;
     process.env.XDG_CONFIG_HOME = path.join(tmpDir, ".config");
     process.env.XDG_DATA_HOME = path.join(tmpDir, ".local", "share");
+    // B-1: bundled-bin resolution (resolveBundledBin) reads the package's own
+    // node_modules under AIO_PACKAGE_ROOT. Point it at tmpDir (no node_modules
+    // there) so bundled resolution fails and these tests exercise the PATH
+    // stubs as before. Captured after `savedPath` so afterEach restore drops it.
+    process.env.AIO_PACKAGE_ROOT = tmpDir;
   });
 
   afterEach(() => {
@@ -296,7 +301,7 @@ describe("runInstall: end-to-end (mocked fetch, real FS)", () => {
     fs.unlinkSync(path.join(tmpDir, "stubs", "ework-daemon-server"));
 
     await expect(runInstall(opts, silentLogger(), { fetchImpl: makeMockFetch(state) }))
-      .rejects.toThrow(/ework-daemon-server binary not found on PATH/);
+      .rejects.toThrow(/ework-daemon-server binary not found/);
   });
 
   test("second run (idempotent): reuses saved bot token, doesn't re-mint", async () => {
@@ -373,12 +378,13 @@ WORK_DAEMON_WEBHOOK_SECRET=somesecret
       .rejects.toThrow(/Missing required commands/);
   });
 
-  test("missing ework-web binary → InstallError with install hint", async () => {
+  test("missing ework-web binary → InstallError with reinstall hint", async () => {
     // Keep bun/npm/opencode on PATH (so preflight passes) but drop the
-    // stub dir so resolveCommand("ework-web") returns null.
+    // stub dir so resolveCommand("ework-web") returns null. AIO_PACKAGE_ROOT
+    // is pointed at tmpDir in beforeEach, so bundled resolution also fails.
     process.env.PATH = `/home/dog/.local/bin:/usr/local/bin:/usr/bin:/bin`;
     await expect(runInstall(opts, silentLogger(), { fetchImpl: makeMockFetch(state) }))
-      .rejects.toThrow(/ework-web binary not found/);
+      .rejects.toThrow(/ework-web not found/);
   });
 
   test("bootstrap failure: create-user returns 5xx → InstallError (B-5)", async () => {

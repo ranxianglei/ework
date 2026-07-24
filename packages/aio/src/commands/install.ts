@@ -24,7 +24,7 @@ import { resolvePaths, type PathConfig } from "../paths.ts";
 import { type InstallContext } from "../config.ts";
 import { ensureEnvFile, parseEnvFile, patchEnvKey } from "../env.ts";
 import { startProcess, isProcessRunning, readPidFile } from "../pidfile.ts";
-import { checkPreflight, resolveCommand, REQUIRED_COMMANDS } from "../preflight.ts";
+import { checkPreflight, resolveCommand, resolveBundledBin, REQUIRED_COMMANDS } from "../preflight.ts";
 import {
   generateUnitFile,
   writeUnitFile,
@@ -96,31 +96,45 @@ export async function runInstall(
   const opencodeBin = preflight.found.get("opencode")!;
   logger.ok(`preflight: bun, npm, opencode all on PATH`);
 
-  // 2. Resolve ework-web / ework-daemon binaries (npm-installed global bins).
+  // 2. Resolve ework-web / ework-daemon binaries.
   //
   // ework-daemon ships TWO bins: `ework-daemon` (client CLI: status/issues/...)
   // and `ework-daemon-server` (actual HTTP server). We start the SERVER, not
   // the client — pre-v0.2.5 we spawned the client, which prints help and
   // exits, leaving the daemon "looking dead" with a help-text log.
-  const webBin = resolveCommand("ework-web");
-  const daemonClientBin = resolveCommand("ework-daemon");
-  const daemonServerBin = resolveCommand("ework-daemon-server");
+  //
+  // B-1: ework-web / ework-daemon are declared dependencies of ework-aio, so
+  // they are always bundled in our own node_modules. Resolve from there first
+  // (self-contained), falling back to PATH for dev/standalone installs.
+  // Relying on PATH alone broke after uninstall+reinstall: npm does not
+  // reliably recreate global bin symlinks for reinstalled deps even though
+  // the package is present in node_modules — so install wrongly demanded
+  // "install ework-web first" for a package that is ework-aio's own job to
+  // provide.
+  const webBin = resolveBundledBin("ework-web", "bin/ework-web.js")
+    ?? resolveCommand("ework-web");
+  const daemonClientBin = resolveBundledBin("ework-daemon", "src/cli.ts")
+    ?? resolveCommand("ework-daemon");
+  const daemonServerBin = resolveBundledBin("ework-daemon", "bin/ework-daemon-server.js")
+    ?? resolveCommand("ework-daemon-server");
   if (!webBin) {
     throw new InstallError(
-      `ework-web binary not found on PATH. Install with: npm install -g ework-web`,
+      `ework-web not found. It ships as part of ework-aio; your ework-aio install is incomplete. ` +
+      `Reinstall with: npm install -g ework-aio@latest`,
     );
   }
   if (!daemonClientBin && !daemonServerBin) {
     throw new InstallError(
-      `ework-daemon not installed. Install with: npm install -g ework-daemon`,
+      `ework-daemon not found. It ships as part of ework-aio; your ework-aio install is incomplete. ` +
+      `Reinstall with: npm install -g ework-aio@latest`,
     );
   }
   if (!daemonServerBin) {
     // Client CLI present but server bin missing — old / partial install.
     throw new InstallError(
-      `ework-daemon-server binary not found on PATH, but ework-daemon (client) is present. ` +
-        `Your ework-daemon npm install is incomplete or outdated. Reinstall with: ` +
-        `npm install -g ework-daemon@latest`,
+      `ework-daemon-server binary not found, but ework-daemon (client) is present. ` +
+        `Your ework-aio install is incomplete or outdated. Reinstall with: ` +
+        `npm install -g ework-aio@latest`,
     );
   }
   logger.ok(`web bin         : ${webBin}`);
