@@ -54,6 +54,39 @@ DAEMON_PORT="14101"
 # readonly so the container preflight sees it on PATH. Override via env.
 OPENCODE_HOST_BIN="${OPENCODE_HOST_BIN:-/home/dog/.local/bin/opencode}"
 
+# Optional MySQL backend: E2E_DB=mysql starts a throwaway MySQL 8.0 sidecar
+# reachable via the host network and passes WORK_DB_* through to ework-web.
+# Default sqlite (no sidecar). Needs a published ework-web with MySQL support.
+E2E_DB="${E2E_DB:-sqlite}"
+MYSQL_FLAGS=()
+MYSQL_CONTAINER=""
+cleanup_mysql() { [[ -n "$MYSQL_CONTAINER" ]] && docker rm -f "$MYSQL_CONTAINER" >/dev/null 2>&1 || true; }
+trap cleanup_mysql EXIT
+if [[ "$E2E_DB" == "mysql" ]]; then
+  MYSQL_PORT="${E2E_MYSQL_PORT:-3312}"
+  MYSQL_CONTAINER="ework-e2e-mysql-$$"
+  info "E2E_DB=mysql: starting MySQL 8.0 sidecar (container $MYSQL_CONTAINER, host port $MYSQL_PORT)"
+  docker run -d --rm --name "$MYSQL_CONTAINER" -p "$MYSQL_PORT:3306" \
+    -e MYSQL_ROOT_PASSWORD=testpw -e MYSQL_DATABASE=ework_e2e mysql:8.0 >/dev/null
+  info "waiting for MySQL readiness (TCP+query gate, up to 60s)"
+  ready=0
+  for _ in $(seq 1 60); do
+    if docker exec "$MYSQL_CONTAINER" mysql -h 127.0.0.1 -ptestpw -e "SELECT 1" --silent 2>/dev/null; then
+      ready=1; break
+    fi
+    sleep 1
+  done
+  [[ "$ready" -eq 1 ]] || fail "MySQL sidecar did not become ready in 60s"
+  MYSQL_FLAGS=(
+    -e WORK_DB_DRIVER=mysql
+    -e WORK_DB_HOST=127.0.0.1
+    -e WORK_DB_PORT="$MYSQL_PORT"
+    -e WORK_DB_USER=root
+    -e WORK_DB_PASSWORD=testpw
+    -e WORK_DB_NAME=ework_e2e
+  )
+fi
+
 "$RUNTIME" run --rm -i --network host \
   -v "$OPENCODE_HOST_BIN:/usr/local/bin/opencode:ro" \
   -e WORK_PORT="$WORK_PORT" \
@@ -64,6 +97,7 @@ OPENCODE_HOST_BIN="${OPENCODE_HOST_BIN:-/home/dog/.local/bin/opencode}"
   -e http_proxy="${HTTP_PROXY:-}" \
   -e https_proxy="${HTTPS_PROXY:-}" \
   -e NO_PROXY="127.0.0.1,localhost" \
+  "${MYSQL_FLAGS[@]}" \
   "$IMAGE" bash -euo pipefail <<'EOSCRIPT'
 set -euo pipefail
 
