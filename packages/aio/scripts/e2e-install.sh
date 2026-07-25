@@ -649,7 +649,7 @@ SESSIONS_CODE=$(curl -sS -o /tmp/e2e-sessions.json -w "%{http_code}" \
   "http://127.0.0.1:$DAEMON_PORT/api/opencode/sessions?limit=10" 2>/dev/null || echo "000")
 case "$SESSIONS_CODE" in
   200)
-    SESSIONS_COUNT=$(jq -r '.sessions | length' /tmp/e2e-sessions.json 2>/dev/null || echo "0")
+    SESSIONS_COUNT=$(jq 'length' /tmp/e2e-sessions.json 2>/dev/null || echo "0")
     if [[ "$SESSIONS_COUNT" -gt 0 ]]; then
       pass "daemon session API: $SESSIONS_COUNT session(s) returned"
     else
