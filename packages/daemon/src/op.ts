@@ -14,6 +14,7 @@ interface IssueRow {
   title: string;
   created_at: string;
   updated_at: string;
+  owner_daemon_id: number | null;
 }
 
 interface SessionRow {
@@ -29,6 +30,10 @@ interface SessionRow {
   progress_comment_id: string | null;
   reaction_comment_id: string | null;
   current_prompt: string | null;
+  last_output_at: string | null;
+  nudge_rounds: number;
+  stuck_nudge_rounds: number;
+  generation: number;
 }
 
 interface MessageRow {
@@ -59,6 +64,7 @@ function rowToIssue(row: IssueRow): Issue {
     title: row.title,
     createdAt: new Date(row.created_at),
     updatedAt: new Date(row.updated_at),
+    ownerDaemonId: row.owner_daemon_id ?? null,
   };
 }
 
@@ -76,6 +82,10 @@ function rowToSession(row: SessionRow): OpSession {
     progressCommentId: row.progress_comment_id ?? undefined,
     reactionCommentId: row.reaction_comment_id ?? undefined,
     currentPrompt: row.current_prompt ?? undefined,
+    lastOutputAt: row.last_output_at ? new Date(row.last_output_at).getTime() : undefined,
+    nudgeRounds: row.nudge_rounds ?? 0,
+    stuckNudgeRounds: row.stuck_nudge_rounds ?? 0,
+    generation: row.generation ?? 0,
   };
 }
 
@@ -222,7 +232,8 @@ export class Store {
 
     await getDB().run(
       `UPDATE {{op_sessions}} SET state = ?, opencode_session_id = ?, opencode_pid = ?, workdir = ?,
-       started_at = ?, progress_comment_id = ?, reaction_comment_id = ?, current_prompt = ? WHERE id = ?`,
+       started_at = ?, progress_comment_id = ?, reaction_comment_id = ?, current_prompt = ?,
+       last_output_at = ?, nudge_rounds = ?, stuck_nudge_rounds = ?, generation = ? WHERE id = ?`,
       [
         updated.state,
         updated.opencodeSessionId ?? null,
@@ -232,6 +243,10 @@ export class Store {
         updated.progressCommentId ?? null,
         updated.reactionCommentId ?? null,
         updated.currentPrompt ?? null,
+        updated.lastOutputAt != null ? new Date(updated.lastOutputAt).toISOString() : null,
+        updated.nudgeRounds ?? 0,
+        updated.stuckNudgeRounds ?? 0,
+        updated.generation ?? 0,
         id,
       ]
     );
@@ -322,6 +337,134 @@ export class Store {
       [commentId]
     );
     return row ? rowToMessage(row) : undefined;
+  }
+
+  // ─── Multi-machine coordination (Phase 1) ───
+  //
+  // daemon_id is a DB-allocated logical slot. A restarted daemon ADOPTS the
+  // oldest orphan slot (last_heartbeat older than the lease TTL) instead of
+  // inserting a new row — so a daemon that crashes + restarts reclaims its
+  // previous id (and thus its owned issues) rather than leaving them stuck
+  // until releaseDeadOwners runs.
+
+  /** Register this daemon, adopting an orphan slot if available. */
+  async registerDaemon(
+    displayName: string,
+    endpoint: string,
+    capacity: number,
+    leaseTtlMs: number,
+  ): Promise<number> {
+    const db = getDB();
+    const cutoff = new Date(Date.now() - leaseTtlMs).toISOString();
+
+    const orphan = await db.get<{ id: number }>(
+      "SELECT id FROM {{daemons}} WHERE last_heartbeat < ? ORDER BY last_heartbeat LIMIT 1",
+      [cutoff]
+    );
+    if (orphan) {
+      const now = new Date().toISOString();
+      const res = await db.run(
+        "UPDATE {{daemons}} SET display_name = ?, internal_endpoint = ?, last_heartbeat = ?, status = 'active' WHERE id = ? AND last_heartbeat < ?",
+        [displayName, endpoint, now, orphan.id, cutoff]
+      );
+      if (res.changes === 1) return orphan.id;
+    }
+
+    const now = new Date().toISOString();
+    const ins = await db.run(
+      "INSERT INTO {{daemons}} (display_name, internal_endpoint, capacity, last_heartbeat, registered_at, status) VALUES (?, ?, ?, ?, ?, 'active')",
+      [displayName, endpoint, capacity, now, now]
+    );
+    return ins.insertId;
+  }
+
+  async heartbeat(daemonId: number): Promise<void> {
+    await getDB().run(
+      "UPDATE {{daemons}} SET last_heartbeat = ? WHERE id = ?",
+      [new Date().toISOString(), daemonId]
+    );
+  }
+
+  async markDaemonStatus(daemonId: number, status: "active" | "drained" | "dead"): Promise<void> {
+    await getDB().run(
+      "UPDATE {{daemons}} SET status = ? WHERE id = ?",
+      [status, daemonId]
+    );
+  }
+
+  /** Clear owner_daemon_id on issues whose daemon has missed the lease. */
+  async releaseDeadOwners(leaseTtlMs: number): Promise<number> {
+    const db = getDB();
+    const cutoff = new Date(Date.now() - leaseTtlMs).toISOString();
+    const res = await db.run(
+      "UPDATE {{issues}} SET owner_daemon_id = NULL WHERE owner_daemon_id IN (SELECT id FROM {{daemons}} WHERE last_heartbeat < ?)",
+      [cutoff]
+    );
+    return res.changes;
+  }
+
+  /**
+   * Atomic claim: affected_rows decides the winner. Returns true iff this
+   * daemon won the race. Re-claiming an issue you already own also returns
+   * false (the WHERE requires owner IS NULL) — call sites check ownership
+   * first when they need to handle the "already mine" case.
+   */
+  async claimIssue(issueId: string, daemonId: number): Promise<boolean> {
+    const res = await getDB().run(
+      "UPDATE {{issues}} SET owner_daemon_id = ? WHERE id = ? AND owner_daemon_id IS NULL",
+      [daemonId, issueId]
+    );
+    return res.changes === 1;
+  }
+
+  /** First-boot migration: claim all pre-existing ownerless issues. */
+  async claimAllOwnerless(daemonId: number): Promise<number> {
+    const res = await getDB().run(
+      "UPDATE {{issues}} SET owner_daemon_id = ? WHERE owner_daemon_id IS NULL",
+      [daemonId]
+    );
+    return res.changes;
+  }
+
+  /** Atomic message claim: pending → running. False = lost or already done. */
+  async claimMessage(messageId: string): Promise<boolean> {
+    const res = await getDB().run(
+      "UPDATE {{messages}} SET status = 'running', updated_at = ? WHERE id = ? AND status = 'pending'",
+      [new Date().toISOString(), messageId]
+    );
+    return res.changes === 1;
+  }
+
+  async listOwnedIssues(daemonId: number): Promise<Issue[]> {
+    const rows = await getDB().all<IssueRow>(
+      "SELECT * FROM {{issues}} WHERE owner_daemon_id = ?",
+      [daemonId]
+    );
+    return rows.map(rowToIssue);
+  }
+
+  async listOwnedSessions(daemonId: number): Promise<OpSession[]> {
+    const rows = await getDB().all<SessionRow>(
+      `SELECT s.* FROM {{op_sessions}} s
+       INNER JOIN {{issues}} i ON i.id = s.issue_id
+       WHERE i.owner_daemon_id = ?
+       ORDER BY s.created_at`,
+      [daemonId]
+    );
+    return rows.map(rowToSession);
+  }
+
+  /** Scoped variant of getPendingOrRunningMessages: only this daemon's issues. */
+  async getOwnedPendingOrRunningMessages(daemonId: number): Promise<Message[]> {
+    const rows = await getDB().all<MessageRow>(
+      `SELECT m.* FROM {{messages}} m
+       INNER JOIN {{op_sessions}} s ON s.id = m.session_id
+       INNER JOIN {{issues}} i ON i.id = s.issue_id
+       WHERE i.owner_daemon_id = ? AND m.status IN ('pending', 'running')
+       ORDER BY m.created_at ASC`,
+      [daemonId]
+    );
+    return rows.map(rowToMessage);
   }
 
   async close(): Promise<void> {
