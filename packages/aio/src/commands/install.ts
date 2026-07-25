@@ -83,6 +83,15 @@ export async function runInstall(
   logger.log(`  data dir   : ${opts.dataDir ?? "(default ~/.local/share/ework-aio)"}`);
   logger.hr();
 
+  const preflightPaths = resolvePaths({
+    dataDir: opts.dataDir,
+    scope: opts.scope,
+    useSystemd: opts.useSystemd,
+  });
+  if (fs.existsSync(preflightPaths.webEnvFile)) {
+    logger.warn("existing install detected — use 'ework-aio upgrade' to update versions");
+  }
+
   // 1. Preflight: bun/npm/opencode must exist on PATH.
   const preflight = checkPreflight([...REQUIRED_COMMANDS], {
     optionalCommands: ["systemctl"],
