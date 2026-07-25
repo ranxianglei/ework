@@ -177,6 +177,23 @@ export async function listDeliveries(webhookId: number, limit = 50): Promise<Web
   );
 }
 
+export interface DeliveryWithWebhookRow extends WebhookDeliveryRow {
+  webhook_url: string;
+  project_owner: string;
+  project_name: string;
+}
+
+export async function listAllRecentDeliveries(limit = 100): Promise<DeliveryWithWebhookRow[]> {
+  return await getDB().all<DeliveryWithWebhookRow>(
+    `SELECT d.*, w.url AS webhook_url, p.owner AS project_owner, p.name AS project_name
+     FROM {{webhook_deliveries}} d
+     LEFT JOIN {{webhooks}} w ON w.id = d.webhook_id
+     LEFT JOIN {{projects}} p ON p.id = w.project_id
+     ORDER BY d.id DESC LIMIT ?`,
+    [limit]
+  );
+}
+
 // ─── Payload builders (Gitea-compatible shape) ───────────────
 //
 // We populate the fields downstream consumers actually read (see Gitea's

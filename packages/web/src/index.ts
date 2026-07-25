@@ -82,10 +82,12 @@ import {
   setWebhookActive,
   getWebhook,
   listDeliveries,
+  listAllRecentDeliveries,
   type WebhookEventName,
 } from "./webhooks";
 import { classifyActor, type CommentView } from "./render/components";
 import { buildWebhooksPage } from "./views/webhooks";
+import { buildWebhookDeliveriesPage } from "./views/webhookDeliveries";
 import { buildProjectMembersPage } from "./views/projectMembers";
 import { buildProjectUpstreamsPage, trySetUpstreamUrls } from "./views/projectUpstreams";
 import { buildProjectModelPage } from "./views/projectModel";
@@ -937,6 +939,11 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     const flashMsg = url.searchParams.get("ok") === "1" ? url.searchParams.get("ok_msg")! : url.searchParams.get("err");
     const flash = flashKind ? { kind: flashKind as "ok" | "err", msg: flashMsg ?? "" } : null;
     return html(buildAdminTokensPage(ctx.user!, await listAllPatsWithUsers(), flash));
+  }
+
+  if (url.pathname === "/admin/deliveries") {
+    const deliveries = await listAllRecentDeliveries(100);
+    return html(buildWebhookDeliveriesPage(ctx.user!, deliveries));
   }
 
   const adminPatRevoke = url.pathname.match(/^\/admin\/tokens\/(\d+)\/revoke$/);
