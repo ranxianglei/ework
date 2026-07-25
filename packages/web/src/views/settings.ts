@@ -58,7 +58,8 @@ function buildDbSection(viewer: UserRow): string {
 <div class="db-controls">
 <button type="button" id="db-test">① 测试连接</button>
 <button type="button" id="db-migrate" class="secondary">② 迁移数据</button>
-<button type="button" id="db-enable" class="secondary">③ 启用并重启</button>
+<button type="button" id="db-daemon" class="secondary">③ 配置 daemon</button>
+<button type="button" id="db-enable" class="secondary">④ 启用并重启</button>
 </div>
 <div id="db-result" class="db-result"></div>
 <script>
@@ -76,6 +77,7 @@ try{
 var res=await fetch('/api/db/'+action,{method:'POST',headers:{'Content-Type':'application/json'},body:gather()});
 var data=await res.json();
 if(action==='enable'&&data.ok){R.className='db-result db-ok';R.textContent='✓ .env 已写入。进程重启中，等待恢复…';setTimeout(poll,3000);return;}
+if(action==='daemon-config'){R.className='db-result '+(data.configured?'db-ok':'db-err');R.textContent=data.configured?'✓ daemon 已写入 .env 并重启:\\n  '+data.envPath:'⚠ daemon 无法自动配置（.env 未找到）。请手动操作:\\n\\n'+(data.manual||data.error||'');return;}
 R.className='db-result '+(data.ok?'db-ok':'db-err');
 if(!data.ok){var m='✗ '+(data.error||'未知错误');if(data.hint)m+='\\n💡 '+data.hint;R.textContent=m;}
 else if(data.tables){R.textContent='✓ 迁移完成（'+data.tables.length+' 张表）:\\n'+data.tables.map(function(t){return'  '+t.table+': '+t.rows+' 行';}).join('\\n');}
@@ -86,6 +88,7 @@ finally{if(action!=='enable')setBtns(false);}
 async function poll(){try{await fetch('/');location.href='/settings?saved=1';}catch(e){setTimeout(poll,2000);}}
 document.getElementById('db-test').onclick=function(){act('test');};
 document.getElementById('db-migrate').onclick=function(){act('migrate');};
+document.getElementById('db-daemon').onclick=function(){act('daemon-config');};
 document.getElementById('db-enable').onclick=function(){act('enable');};
 })();
 </script>

@@ -1,7 +1,8 @@
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
-import { readFileSync, appendFileSync } from "fs";
+import { readFileSync, appendFileSync, existsSync } from "fs";
 import { spawn } from "child_process";
+import { homedir } from "os";
 import { loadConfig, DB_OVERRIDABLE, parseOverride, resolveTtsBackend } from "./config";
 import type { Config } from "./config";
 import { setConfig, initDB } from "./db";
@@ -223,6 +224,48 @@ function scheduleRestart(): void {
     setTimeout(() => process.exit(0), 750);
   });
   child.unref();
+}
+
+// The daemon's `issues` table (thin ref) collides with the web's `issues`
+// table (full content) if they share a database. The daemon MUST use a
+// different prefix. We append "d_" to whatever the web uses so both can
+// coexist in one database without the operator having to plan prefixes.
+function daemonPrefix(webPrefix: string): string {
+  return webPrefix + "d_";
+}
+
+function daemonEnvPath(): string | null {
+  const dataDir = process.env.WORK_DAEMON_DATA_DIR;
+  if (dataDir) {
+    const p = join(dataDir, ".env");
+    return existsSync(p) ? p : null;
+  }
+  const conventional = join(homedir(), ".local", "share", "ework-daemon", ".env");
+  return existsSync(conventional) ? conventional : null;
+}
+
+function spawnDaemonRestart(): void {
+  try {
+    const child = spawn("ework-aio", ["restart", "daemon"], { detached: true, stdio: "ignore" });
+    child.on("error", () => {});
+    child.unref();
+  } catch {
+    // best-effort — the manual fallback path covers this
+  }
+}
+
+function daemonManualInstructions(opts: MysqlTargetOpts): string {
+  return [
+    "将以下内容追加到 daemon 的 .env，然后运行 ework-aio restart daemon：",
+    "",
+    `WORK_DB_DRIVER=mysql`,
+    `WORK_DB_HOST=${opts.host}`,
+    `WORK_DB_PORT=${opts.port}`,
+    `WORK_DB_USER=${opts.user}`,
+    "WORK_DB_PASSWORD=<daemon密码>",
+    `WORK_DB_NAME=${opts.database}`,
+    `WORK_DB_PREFIX=${opts.prefix ?? ""}`,
+  ].join("\n");
 }
 
 const REPO_ISSUE_RE = /^\/([^/]+)\/([^/]+)\/issues\/(\d+)$/;
@@ -687,6 +730,26 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     const envResult = await writeMysqlEnv(join(process.cwd(), ".env"), parsed);
     scheduleRestart();
     return json({ ok: true, ...envResult, restarting: true });
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/db/daemon-config") {
+    if (!ctx.user || ctx.user.is_admin !== 1) return json({ error: "admin required" }, 403);
+    if (!rateLimit(`db-daemon:${ip}`, 3, 3 / 3600)) return json({ error: "rate limited" }, 429);
+    const rawPayload = await req.json().catch(() => ({}));
+    const parsed = parseDbTargetOpts(rawPayload);
+    if ("error" in parsed) return json(parsed, 400);
+    const daemonOpts: MysqlTargetOpts = { ...parsed, prefix: daemonPrefix(parsed.prefix ?? "") };
+    const envPath = daemonEnvPath();
+    if (!envPath) {
+      return json({ ok: false, configured: false, manual: daemonManualInstructions(daemonOpts) });
+    }
+    try {
+      const written = await writeMysqlEnv(envPath, daemonOpts);
+      spawnDaemonRestart();
+      return json({ ok: true, configured: true, envPath, written: written.written });
+    } catch (e) {
+      return json({ ok: false, configured: false, error: errMsg(e), manual: daemonManualInstructions(daemonOpts) });
+    }
   }
 
   if (url.pathname === "/settings") {
