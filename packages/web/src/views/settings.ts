@@ -38,6 +38,60 @@ function fieldInput(group: SettingGroup, cfg: Config, models: CachedModel[]): st
     .join("");
 }
 
+function buildDbSection(viewer: UserRow): string {
+  if (viewer.is_admin !== 1) return "";
+  const driver = process.env.WORK_DB_DRIVER || "sqlite";
+  const isMysql = driver === "mysql";
+  const currentTarget = isMysql
+    ? `${process.env.WORK_DB_HOST ?? "?"}:${process.env.WORK_DB_PORT ?? "3306"}/${process.env.WORK_DB_NAME ?? "?"}`
+    : `SQLite · ${process.env.WORK_DB_PATH ?? "默认路径"}`;
+  return `<section class="sg db-section">
+<h2>数据库后端</h2>
+<p class="db-badge">当前后端: <strong>${escapeHtml(driver.toUpperCase())}</strong> · ${escapeHtml(currentTarget)}</p>
+<div class="db-warn">⚠ 切换到 MySQL 后 Web 进程会重启并以 MySQL 为存储。若 MySQL 不可达，进程无法启动——需手动编辑 <code>.env</code> 将 <code>WORK_DB_DRIVER</code> 改回 <code>sqlite</code> 才能恢复。流程：先 ① 测试连接、再 ② 迁移数据、最后 ③ 启用。</div>
+<label class="sf"><span>MySQL 主机</span><input type="text" id="db-host" placeholder="127.0.0.1" autocomplete="off"></label>
+<label class="sf"><span>端口</span><input type="number" id="db-port" value="3306" min="1" max="65535" autocomplete="off"></label>
+<label class="sf"><span>用户名</span><input type="text" id="db-user" placeholder="ework" autocomplete="off"></label>
+<label class="sf"><span>密码</span><input type="password" id="db-password" placeholder="••••••" autocomplete="new-password"></label>
+<label class="sf"><span>数据库名</span><input type="text" id="db-database" placeholder="ework" autocomplete="off"></label>
+<label class="sf"><span>表前缀（可选）</span><input type="text" id="db-prefix" placeholder="留空 = 无前缀" autocomplete="off"></label>
+<div class="db-controls">
+<button type="button" id="db-test">① 测试连接</button>
+<button type="button" id="db-migrate" class="secondary">② 迁移数据</button>
+<button type="button" id="db-enable" class="secondary">③ 启用并重启</button>
+</div>
+<div id="db-result" class="db-result"></div>
+<script>
+(function(){
+var R=document.getElementById('db-result');
+function get(id){return document.getElementById(id).value;}
+function gather(){return JSON.stringify({host:get('db-host').trim(),port:Number(get('db-port')),user:get('db-user').trim(),password:get('db-password'),database:get('db-database').trim(),prefix:get('db-prefix').trim()});}
+function setBtns(d){document.querySelectorAll('.db-controls button').forEach(function(b){b.disabled=d;});}
+async function act(action){
+if(action==='enable'&&!confirm('确认启用 MySQL 并重启？确保已完成 ① 测试 + ② 迁移。'))return;
+setBtns(true);
+R.className='db-result db-loading';
+R.textContent=action==='enable'?'正在写入 .env，进程即将重启…':'处理中…';
+try{
+var res=await fetch('/api/db/'+action,{method:'POST',headers:{'Content-Type':'application/json'},body:gather()});
+var data=await res.json();
+if(action==='enable'&&data.ok){R.className='db-result db-ok';R.textContent='✓ .env 已写入。进程重启中，等待恢复…';setTimeout(poll,3000);return;}
+R.className='db-result '+(data.ok?'db-ok':'db-err');
+if(!data.ok){var m='✗ '+(data.error||'未知错误');if(data.hint)m+='\\n💡 '+data.hint;R.textContent=m;}
+else if(data.tables){R.textContent='✓ 迁移完成（'+data.tables.length+' 张表）:\\n'+data.tables.map(function(t){return'  '+t.table+': '+t.rows+' 行';}).join('\\n');}
+else if(data.serverVersion){R.textContent='✓ 连接成功 · MySQL '+data.serverVersion+(data.databaseExists?'':'（库不存在，迁移时自动创建）');}
+}catch(e){R.className='db-result db-err';R.textContent='✗ '+(e.message||String(e));}
+finally{if(action!=='enable')setBtns(false);}
+}
+async function poll(){try{await fetch('/');location.href='/settings?saved=1';}catch(e){setTimeout(poll,2000);}}
+document.getElementById('db-test').onclick=function(){act('test');};
+document.getElementById('db-migrate').onclick=function(){act('migrate');};
+document.getElementById('db-enable').onclick=function(){act('enable');};
+})();
+</script>
+</section>`;
+}
+
 export function buildSettingsPage(cfg: Config, saved: boolean, viewer: UserRow, models: CachedModel[]): { html: string } {
   const groups = SETTINGS_GROUPS.map(
     (g) =>
@@ -70,6 +124,16 @@ h1{font-size:18px;margin:0 0 .4rem}
 button{padding:.5rem 1.2rem;border:0;border-radius:6px;background:var(--accent);color:#fff;font-size:13px;cursor:pointer}
 button.secondary{background:transparent;color:var(--text-muted);border:1px solid var(--border)}
 .a-back{color:var(--text-muted);font-size:13px}
+.db-badge{font-size:13px;color:var(--text-muted);margin:0 0 .5rem}
+.db-badge strong{color:var(--text)}
+.db-warn{background:rgba(255,193,7,.12);color:#d4a942;padding:.5rem .7rem;border-radius:6px;font-size:12px;margin:0 0 .7rem;line-height:1.5}
+.db-warn code{background:var(--bg);padding:.1rem .3rem;border-radius:3px;font-size:11px}
+.db-controls{display:flex;gap:.6rem;flex-wrap:wrap;margin-top:.6rem}
+.db-result{margin-top:.6rem;padding:.5rem .7rem;border-radius:6px;font-size:13px;white-space:pre-wrap;min-height:1.2rem;line-height:1.5}
+.db-result:empty{display:none}
+.db-result.db-loading{background:var(--bg);color:var(--text-muted)}
+.db-result.db-ok{background:rgba(40,167,69,.15);color:#5eb88a}
+.db-result.db-err{background:rgba(220,53,69,.15);color:#e87c7c}
 </style></head><body>
 <header class="nav"><a href="/" style="color:var(--header-text)">🏠 ework-web</a><span style="opacity:.8"> · 设置</span></header>
 <main class="wrap">
@@ -81,6 +145,7 @@ ${banner}
 </form>
 ${modelRefreshForm}
 ${ttsLink}
+${buildDbSection(viewer)}
 </main></body></html>`;
   return { html };
 }
