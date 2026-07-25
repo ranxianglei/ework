@@ -250,6 +250,61 @@ export class OpencodeClient {
   }
 }
 
+export interface OpencodeClientInterface {
+  listSessions(limit: number): Promise<SessionListItem[]>;
+  exportSession(id: string): Promise<SessionExport>;
+  exportSessionRaw(id: string): Promise<string>;
+  listModels(): Promise<string[]>;
+}
+
+export class RemoteOpencodeClient implements OpencodeClientInterface {
+  private readonly base: string;
+
+  constructor(endpoint: string) {
+    this.base = endpoint.replace(/\/$/, "");
+  }
+
+  async listSessions(limit: number): Promise<SessionListItem[]> {
+    const res = await fetch(`${this.base}/api/opencode/sessions?limit=${limit}`);
+    if (!res.ok) throw new OpencodeError(`remote listSessions → ${res.status}`, res.status);
+    return (await res.json()) as SessionListItem[];
+  }
+
+  async exportSession(id: string): Promise<SessionExport> {
+    if (!/^[A-Za-z0-9_-]+$/.test(id)) throw new OpencodeError(`bad session id: ${id}`, 400);
+    const res = await fetch(`${this.base}/api/opencode/sessions/${id}/export`);
+    if (!res.ok) throw new OpencodeError(`remote exportSession → ${res.status}`, res.status);
+    const raw = await res.json();
+    const exp = parseSessionExport(raw);
+    if (!exp) throw new OpencodeError(`malformed remote export for ${id}`, 502);
+    return exp;
+  }
+
+  async exportSessionRaw(id: string): Promise<string> {
+    if (!/^[A-Za-z0-9_-]+$/.test(id)) throw new OpencodeError(`bad session id: ${id}`, 400);
+    const res = await fetch(`${this.base}/api/opencode/sessions/${id}/raw`);
+    if (!res.ok) throw new OpencodeError(`remote exportSessionRaw → ${res.status}`, res.status);
+    const data = (await res.json()) as { raw?: string };
+    return data.raw ?? "";
+  }
+
+  async listModels(): Promise<string[]> {
+    return [];
+  }
+}
+
+function isLocalhost(endpoint: string): boolean {
+  const host = endpoint.replace(/^https?:\/\//, "").split(":")[0] ?? "";
+  return /^(127\.|localhost$|0\.0\.0\.0$|::1$|\[::1\]$)/.test(host);
+}
+
+export function createOpencodeClient(cfg: Config, daemonEndpoint?: string): OpencodeClientInterface {
+  if (daemonEndpoint && !isLocalhost(daemonEndpoint)) {
+    return new RemoteOpencodeClient(daemonEndpoint);
+  }
+  return new OpencodeClient(cfg);
+}
+
 async function readCapped(stream: ReadableStream<Uint8Array> | null, maxBytes: number): Promise<string> {
   if (!stream) return "";
   const reader = stream.getReader();
