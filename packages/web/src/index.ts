@@ -252,8 +252,12 @@ function daemonEnvPath(): string | null {
 function readDaemonSqlitePath(envPath: string): string | null {
   try {
     const content = readFileSync(envPath, "utf8");
-    const m = content.match(/^DAEMON_DB_PATH\s*=\s*(.+)$/m);
-    return m?.[1]?.trim() ?? null;
+    const m = content.match(/^(?:WORK_DB_PATH|DAEMON_DB_PATH)\s*=\s*(.+)$/m);
+    if (m?.[1]) return m[1].trim();
+    // Neither key in .env — replicate the daemon's PRODUCTION_DB_DEFAULT
+    // (config.ts:61) so we can find its SQLite DB for migration.
+    const xdg = process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share");
+    return join(xdg, "ework-daemon", "ework-daemon.db");
   } catch {
     return null;
   }
