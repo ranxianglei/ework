@@ -235,9 +235,11 @@ function daemonEnvPath(): string | null {
     const p = join(dataDir, ".env");
     return existsSync(p) ? p : null;
   }
-  // Conventional paths: standalone install, then ework-aio managed layout
-  // (~/.local/share/ework-aio/ework-daemon/.env).
+  // Sibling layout (ework-aio managed): web's cwd is <dataDir>/ework-web/,
+  // daemon is at <dataDir>/ework-daemon/.env. Checked first because it works
+  // regardless of where --data-dir points (Docker, custom paths, etc.).
   const candidates = [
+    join(process.cwd(), "..", "ework-daemon", ".env"),
     join(homedir(), ".local", "share", "ework-daemon", ".env"),
     join(homedir(), ".local", "share", "ework-aio", "ework-daemon", ".env"),
   ];
