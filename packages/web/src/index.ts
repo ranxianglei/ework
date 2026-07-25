@@ -370,6 +370,7 @@ function chunkTextTTS(text: string, max = 120): string[] {
 
 async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean; user: UserRow | null }): Promise<Response> {
   if (url.pathname === "/static/app.js") return staticAsset("app.js", "text/javascript; charset=utf-8", req);
+  if (url.pathname === "/static/db-wizard.js") return staticAsset("db-wizard.js", "text/javascript; charset=utf-8", req);
   if (url.pathname === "/static/session.js") return staticAsset("session.js", "text/javascript; charset=utf-8", req);
   if (url.pathname === "/static/file.js") return staticAsset("file.js", "text/javascript; charset=utf-8", req);
   if (url.pathname === "/static/tts.js") return staticAsset("tts.js", "text/javascript; charset=utf-8", req);
