@@ -293,9 +293,66 @@ export class RemoteOpencodeClient implements OpencodeClientInterface {
   }
 }
 
-function isLocalhost(endpoint: string): boolean {
+export function isLocalhost(endpoint: string): boolean {
   const host = endpoint.replace(/^https?:\/\//, "").split(":")[0] ?? "";
   return /^(127\.|localhost$|0\.0\.0\.0$|::1$|\[::1\]$)/.test(host);
+}
+
+export class MultiDaemonOpencodeClient implements OpencodeClientInterface {
+  private readonly clients: RemoteOpencodeClient[];
+
+  constructor(endpoints: string[]) {
+    this.clients = endpoints.map((ep) => new RemoteOpencodeClient(ep));
+  }
+
+  async listSessions(limit: number): Promise<SessionListItem[]> {
+    const results = await Promise.allSettled(
+      this.clients.map((c) => c.listSessions(limit)),
+    );
+    const all: SessionListItem[] = [];
+    const seen = new Set<string>();
+    for (const r of results) {
+      if (r.status === "fulfilled") {
+        for (const s of r.value) {
+          if (s.id && !seen.has(s.id)) {
+            seen.add(s.id);
+            all.push(s);
+          }
+        }
+      }
+    }
+    all.sort((a, b) => b.updated - a.updated);
+    return all.slice(0, limit);
+  }
+
+  async exportSession(id: string): Promise<SessionExport> {
+    try {
+      return await Promise.any(this.clients.map((c) => c.exportSession(id)));
+    } catch {
+      throw new OpencodeError(`session ${id} not found on any daemon`, 404);
+    }
+  }
+
+  async exportSessionRaw(id: string): Promise<string> {
+    try {
+      return await Promise.any(this.clients.map((c) => c.exportSessionRaw(id)));
+    } catch {
+      throw new OpencodeError(`session ${id} not found on any daemon`, 404);
+    }
+  }
+
+  async listModels(): Promise<string[]> {
+    const results = await Promise.allSettled(
+      this.clients.map((c) => c.listModels()),
+    );
+    const models = new Set<string>();
+    for (const r of results) {
+      if (r.status === "fulfilled") {
+        for (const m of r.value) models.add(m);
+      }
+    }
+    return [...models];
+  }
 }
 
 export function createOpencodeClient(cfg: Config, daemonEndpoint?: string): OpencodeClientInterface {

@@ -6,10 +6,11 @@ import { homedir } from "os";
 import { loadConfig, DB_OVERRIDABLE, parseOverride, resolveTtsBackend } from "./config";
 import type { Config } from "./config";
 import { setConfig, initDB } from "./db";
+import { getActiveDaemons } from "./coordination";
 import { testMysqlConnection, migrateSqliteToMysql, writeMysqlEnv, migrateMysqlToSqlite, writeSqliteEnv, migrateDaemonSqliteToMysql } from "./db-admin";
 import type { MysqlTargetOpts } from "./db-admin";
 import { checkAuth, makeAuthCookieHeader, clearAuthCookieHeader, loginHTML, sanitizeNext, ensureBootstrapAdmin, ensureBootstrapSystem, isReservedSystemLogin } from "./auth";
-import { OpencodeError, createOpencodeClient } from "./opencode";
+import { OpencodeError, createOpencodeClient, MultiDaemonOpencodeClient, RemoteOpencodeClient, isLocalhost, type OpencodeClientInterface } from "./opencode";
 import { renderMarkdown } from "./render/markdown";
 import { log, uptimeSeconds, version } from "./logger";
 import { buildIssueThread, fetchIssuePage, fetchIssueSince, errorPage } from "./views/issueThread";
@@ -95,7 +96,24 @@ const STATIC_DIR = join(__dirname, "static");
 
 await initDB();
 const cfg: Config = await loadConfig();
-const opencode = createOpencodeClient(cfg, cfg.daemonWebhookUrl);
+let opencode: OpencodeClientInterface = createOpencodeClient(cfg, cfg.daemonWebhookUrl);
+
+async function refreshOpencodeClient(): Promise<void> {
+  const daemons = await getActiveDaemons();
+  const remote = daemons.filter((d) => !isLocalhost(d.endpoint));
+  if (remote.length > 1) {
+    opencode = new MultiDaemonOpencodeClient(remote.map((d) => d.endpoint));
+    log.info(`opencode client: multi-daemon (${remote.length} remotes)`);
+  } else if (remote.length === 1) {
+    opencode = new RemoteOpencodeClient(remote[0]!.endpoint);
+    log.info(`opencode client: single remote (${remote[0]!.endpoint})`);
+  } else {
+    opencode = createOpencodeClient(cfg, cfg.daemonWebhookUrl);
+  }
+}
+
+await refreshOpencodeClient();
+setInterval(refreshOpencodeClient, 10_000);
 
 async function autoWireDaemon(projectId: number, origin: string): Promise<void> {
   if (!cfg.autowireActive) {
