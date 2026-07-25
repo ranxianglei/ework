@@ -481,10 +481,15 @@ export class Engine {
       // routing to the last-active lets the user continue without re-@mentioning,
       // while @mention switches to a different AI.
       const sessions = await this.store.getSessionsForIssue(issue.id);
-      if (sessions.length === 0) return;
-
-      const session = pickLastActive(sessions);
-      if (!session) return;
+      let session: OpSession;
+      if (sessions.length === 0) {
+        log.info(`engine: no session for ${scopeKey}#${ref.issueId} — creating default "${this.cfg.bot.username}"`);
+        session = await this.store.createSession(issue.id, this.cfg.bot.username);
+      } else {
+        const picked = pickLastActive(sessions);
+        if (!picked) return;
+        session = picked;
+      }
       if (dirPath) {
         await this.store.updateSession(session.id, { workdir: dirPath });
         session.workdir = dirPath;
