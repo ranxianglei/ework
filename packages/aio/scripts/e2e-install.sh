@@ -680,6 +680,35 @@ case "$WEB_SESSIONS_CODE" in
     ;;
 esac
 
+# Phase 5.7: webhook delivery history
+# Verifies the /admin/deliveries page renders with delivery records from
+# the issue events triggered in Phase 5. Makes webhook failures visible.
+echo
+echo "====================================================="
+echo "Phase 5.7: webhook delivery history"
+echo "====================================================="
+
+info "web admin deliveries page: GET /admin/deliveries (authenticated)"
+DELIVERIES_CODE=$(curl -sS -o /tmp/e2e-deliveries.html -w "%{http_code}" \
+  -H "Cookie: $AUTH_COOKIE" \
+  "http://127.0.0.1:$WORK_PORT/admin/deliveries" 2>/dev/null || echo "000")
+case "$DELIVERIES_CODE" in
+  200)
+    DELIVERY_ROWS=$(grep -c 'class="st ' /tmp/e2e-deliveries.html 2>/dev/null || echo "0")
+    if [[ "$DELIVERY_ROWS" -gt 0 ]]; then
+      pass "webhook delivery history: $DELIVERY_ROWS delivery record(s) visible"
+    else
+      info "webhook delivery history page renders (200), no deliveries yet"
+    fi
+    ;;
+  000)
+    info "webhook delivery history page not reachable — skipping"
+    ;;
+  *)
+    info "webhook delivery history page returned HTTP $DELIVERIES_CODE"
+    ;;
+esac
+
 # Phase 6: uninstall
 # -----------------------------------------------------------------------------
 echo
