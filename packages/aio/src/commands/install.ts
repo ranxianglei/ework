@@ -24,7 +24,7 @@ import { resolvePaths, type PathConfig } from "../paths.ts";
 import { type InstallContext } from "../config.ts";
 import { ensureEnvFile, parseEnvFile, patchEnvKey } from "../env.ts";
 import { startProcess, isProcessRunning, readPidFile } from "../pidfile.ts";
-import { checkPreflight, resolveCommand, resolveBundledBin, REQUIRED_COMMANDS } from "../preflight.ts";
+import { checkPreflight, resolveCommand, resolveBundledBin, ensureSelfBinSymlink, REQUIRED_COMMANDS } from "../preflight.ts";
 import {
   generateUnitFile,
   writeUnitFile,
@@ -95,6 +95,8 @@ export async function runInstall(
   }
   const opencodeBin = preflight.found.get("opencode")!;
   logger.ok(`preflight: bun, npm, opencode all on PATH`);
+
+  ensureSelfBinSymlink(logger);
 
   // 2. Resolve ework-web / ework-daemon binaries.
   //

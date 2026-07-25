@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import type { Logger } from "./log.ts";
 
 // Root of the ework-aio package itself. Derived from this file's location
 // (<root>/src/preflight.ts). Used to resolve bins that ework-aio ships as
@@ -68,3 +69,47 @@ export function checkPreflight(
 
 export const REQUIRED_COMMANDS: readonly string[] = ["bun", "npm", "opencode"];
 export const OPTIONAL_COMMANDS: readonly string[] = ["systemctl", "sudo"];
+
+// Ensure `ework-aio` is reachable from PATH. npm puts the bin at its own
+// global prefix's bin dir, which may differ from every dir on PATH (e.g.
+// prefix changed after a node upgrade). Walk PATH in order and, at the
+// first writable dir, create/repair a symlink to our actual bin.
+export function ensureSelfBinSymlink(logger: Logger): void {
+  const ourBin = path.resolve(import.meta.dir, "..", "bin", "ework-aio");
+  if (!fs.existsSync(ourBin)) return;
+  const ourBinReal = fs.realpathSync(ourBin);
+
+  const pathDirs = (process.env.PATH ?? "").split(":").filter(Boolean);
+  for (const dir of pathDirs) {
+    try {
+      fs.accessSync(dir, fs.constants.W_OK);
+    } catch {
+      continue;
+    }
+
+    const target = path.join(dir, "ework-aio");
+    try {
+      const stat = fs.lstatSync(target);
+      if (stat.isSymbolicLink()) {
+        try {
+          if (fs.realpathSync(target) === ourBinReal) return;
+        } catch {
+          // broken symlink — fall through to replace
+        }
+        fs.unlinkSync(target);
+      } else {
+        continue; // regular file — don't clobber
+      }
+    } catch {
+      // doesn't exist — fall through to create
+    }
+
+    try {
+      fs.symlinkSync(ourBin, target);
+      logger.ok(`bin symlink: ${target} → ${ourBin}`);
+      return;
+    } catch {
+      continue;
+    }
+  }
+}
