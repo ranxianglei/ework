@@ -1,5 +1,5 @@
 import { spawn, type Subprocess } from "bun";
-import { mkdirSync, writeFileSync } from "fs";
+import { mkdirSync, writeFileSync, readdirSync } from "fs";
 import { join, resolve, isAbsolute } from "path";
 import { homedir } from "os";
 import { log } from "./logger";
@@ -12,6 +12,64 @@ import { formatKey, parseKey } from "./trackers/types";
 
 interface TrackerRegistry {
   get(type: string): IssueTracker | undefined;
+}
+
+/**
+ * Pluggable strategy for taking over a session's workdir + opencode session.
+ * Phase 1 ships only RecloneStrategy (fresh clone + fresh opencode session).
+ * Phase 2 swaps in NAS-backed / OpenCode-server strategies without touching
+ * the coordination layer.
+ */
+export interface TakeoverStrategy {
+  /** Resolve (and ensure exists) the workdir for this session+issue. */
+  acquireWorkdir(session: OpSession, issue: Issue): Promise<string>;
+  /** Return an opencode session id to resume, or null for a fresh session. */
+  resumeOpenCodeSession(session: OpSession): Promise<string | null>;
+}
+
+/**
+ * Default TakeoverStrategy: deterministic per-issue workdir under
+ * `<baseWorkdir>/<owner>--<repo>/<issueId>/<sessionName>`, with a best-effort
+ * `git clone` when the directory is empty. Resume always returns null
+ * (fresh opencode session — accepts memory loss on takeover).
+ */
+export class RecloneStrategy implements TakeoverStrategy {
+  constructor(private cfg: Config) {}
+
+  async acquireWorkdir(session: OpSession, issue: Issue): Promise<string> {
+    if (session.workdir) {
+      let dir = session.workdir;
+      if (dir.startsWith("~")) dir = join(homedir(), dir.slice(1));
+      dir = isAbsolute(dir) ? dir : resolve(this.cfg.opencode.baseWorkdir, dir);
+      mkdirSync(dir, { recursive: true });
+      return dir;
+    }
+    const parts = issue.trackerScopeKey.split("/");
+    const owner = issue.trackerScope["owner"] ?? parts[0] ?? "default";
+    const repo = issue.trackerScope["repo"] ?? parts[parts.length - 1] ?? "default";
+    const dir = join(
+      this.cfg.opencode.baseWorkdir,
+      `${owner}--${repo}`,
+      String(issue.trackerIssueId),
+      session.name,
+    );
+    mkdirSync(dir, { recursive: true });
+    try {
+      const entries = readdirSync(dir);
+      if (entries.length === 0) {
+        const base = this.cfg.gitea.url.replace(/\/$/, "");
+        const url = `${base}/${owner}/${repo}.git`;
+        Bun.spawnSync({ cmd: ["git", "clone", url, dir], stdout: "ignore", stderr: "ignore" });
+      }
+    } catch {
+      // directory access failed — leave it; the agent's own tools can clone
+    }
+    return dir;
+  }
+
+  async resumeOpenCodeSession(_session: OpSession): Promise<string | null> {
+    return null;
+  }
 }
 
 /**
@@ -61,10 +119,20 @@ export function pickLastActive(sessions: OpSession[]): OpSession | undefined {
 
 // ─── Engine ───
 
+export interface EngineOptions {
+  /** DB-allocated logical daemon id (from Store.registerDaemon). */
+  daemonId: number;
+  /** Workdir + session-resume strategy; defaults to RecloneStrategy. */
+  takeover?: TakeoverStrategy;
+}
+
 export class Engine {
   private cfg: Config;
   private store: Store;
   private trackers: TrackerRegistry;
+  private readonly daemonId: number;
+  private readonly takeover: TakeoverStrategy;
+  private heartbeatTimer?: ReturnType<typeof setInterval>;
 
   // Runtime state keyed by session key (trackerType:scopeKey#issueId@sessionName)
   private processes = new Map<string, Subprocess<"ignore", "pipe", "pipe">>();
@@ -97,12 +165,50 @@ export class Engine {
   private static STUCK_THRESHOLD_MS = 30 * 60 * 1000;
   private static MAX_PROCESS_EXIT_NUDGE_ROUNDS = 1;
 
-  constructor(cfg: Config, store: Store, trackers: TrackerRegistry) {
+  constructor(cfg: Config, store: Store, trackers: TrackerRegistry, opts: EngineOptions) {
     this.cfg = cfg;
     this.store = store;
     this.trackers = trackers;
+    this.daemonId = opts.daemonId;
+    this.takeover = opts.takeover ?? new RecloneStrategy(cfg);
     this.startGlobalObserver();
     void this.recover();
+  }
+
+  /** Start the lease heartbeat. Must be called once after registerDaemon. */
+  startHeartbeat(intervalMs: number): void {
+    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+    this.heartbeatTimer = setInterval(() => {
+      this.store.heartbeat(this.daemonId).catch((e) => {
+        log.error(`engine: heartbeat failed for daemon ${this.daemonId}:`, (e as Error).message);
+      });
+    }, intervalMs);
+  }
+
+  stopHeartbeat(): void {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = undefined;
+    }
+  }
+
+  getDaemonId(): number {
+    return this.daemonId;
+  }
+
+  /**
+   * Ensure this engine owns the issue before doing work on it. Returns true
+   * if we own it (either already, or just claimed). Returns false if another
+   * daemon won the claim — caller must skip.
+   */
+  private async ensureOwned(issue: Issue): Promise<boolean> {
+    if (issue.ownerDaemonId === this.daemonId) return true;
+    const won = await this.store.claimIssue(issue.id, this.daemonId);
+    if (!won) {
+      log.info(`engine: lost claim on issue ${issue.id} to another daemon (owner=${issue.ownerDaemonId})`);
+      return false;
+    }
+    return true;
   }
 
   private get stuckThresholdMs(): number {
@@ -127,15 +233,8 @@ export class Engine {
     return { trackerType: issue.trackerType, scope: issue.trackerScope, issueId: issue.trackerIssueId };
   }
 
-  private resolveWorkdir(session: OpSession, issue: Issue): string {
-    if (session.workdir) {
-      let dir = session.workdir;
-      if (dir.startsWith("~")) dir = join(homedir(), dir.slice(1));
-      return isAbsolute(dir) ? dir : resolve(this.cfg.opencode.baseWorkdir, dir);
-    }
-    // Fallback: use repo name from scope
-    const repoName = issue.trackerScope["repo"] ?? issue.trackerScopeKey.split("/").pop() ?? "default";
-    return join(this.cfg.opencode.baseWorkdir, repoName);
+  private async resolveWorkdir(session: OpSession, issue: Issue): Promise<string> {
+    return this.takeover.acquireWorkdir(session, issue);
   }
 
   private async persistRuntimeState(sessionId: string) {
@@ -148,6 +247,10 @@ export class Engine {
       startedAt: this.startedAt.get(k),
       progressCommentId: this.progressCommentId.get(k),
       currentPrompt: this.currentPrompt.get(k),
+      lastOutputAt: this.lastOutputAt.get(k),
+      nudgeRounds: this.nudgeRounds.get(k) ?? 0,
+      stuckNudgeRounds: this.stuckNudgeRounds.get(k) ?? 0,
+      generation: this.generation.get(k) ?? 0,
     });
   }
 
@@ -244,6 +347,11 @@ export class Engine {
       issue.state = "active";
     }
 
+    // Multi-machine: claim before doing work. If another daemon already owns
+    // this issue, skip — they will handle it.
+    if (!(await this.ensureOwned(issue))) return;
+    issue.ownerDaemonId = this.daemonId;
+
     // Start observer for this issue
     this.startObserver(issue);
 
@@ -260,7 +368,7 @@ export class Engine {
     }
 
     const k = this.sessionKey(session, issue);
-    const workdir = this.resolveWorkdir(session, issue);
+    const workdir = await this.resolveWorkdir(session, issue);
     log.info(`engine: session "${session.name}" created for ${k}, workdir=${workdir}`);
 
     await tracker.createComment(ref, `[system] 🔄 **${session.name}** picked up this issue.\n> session: \`${session.id}\` | workdir: \`${workdir}\``);
@@ -313,6 +421,10 @@ export class Engine {
       return;
     }
 
+    // Multi-machine: claim before doing work.
+    if (!(await this.ensureOwned(issue))) return;
+    issue.ownerDaemonId = this.daemonId;
+
     const dirPath = this.parseDirCommand(comment.body);
     const rawMention = this.extractMentionName(comment.body);
     // Gate extracted @mentions through the agent whitelist. An unknown name
@@ -333,7 +445,7 @@ export class Engine {
           await this.store.updateSession(session.id, { workdir: dirPath });
           session.workdir = dirPath;
         }
-        const workdir = this.resolveWorkdir(session, issue);
+        const workdir = await this.resolveWorkdir(session, issue);
         const instructions = tracker.getTrackerInstructions(ref);
         const prompt = this.buildForwardPrompt(
           session.name, this.handleLargeContent(workdir, comment.body, `comment-${comment.id}.txt`),
@@ -351,7 +463,7 @@ export class Engine {
           await this.store.updateSession(session.id, { workdir: dirPath });
           session.workdir = dirPath;
         }
-        const workdir = this.resolveWorkdir(session, issue);
+        const workdir = await this.resolveWorkdir(session, issue);
 
         await tracker.createComment(ref, `[system] 🔄 **${session.name}** joined the conversation.`);
 
@@ -377,7 +489,7 @@ export class Engine {
         await this.store.updateSession(session.id, { workdir: dirPath });
         session.workdir = dirPath;
       }
-      const workdir = this.resolveWorkdir(session, issue);
+      const workdir = await this.resolveWorkdir(session, issue);
       const instructions = tracker.getTrackerInstructions(ref);
       const prompt = this.buildForwardPrompt(
         session.name, this.handleLargeContent(workdir, comment.body, `comment-${comment.id}.txt`),
@@ -491,8 +603,17 @@ export class Engine {
 
   private async executeMessage(k: string, session: OpSession, issue: Issue, msg: Message) {
     log.info(`engine: executing msg ${msg.id.slice(0, 8)} for ${k}`);
+
+    // Multi-machine: atomic message claim. Pending → running, only if we win.
+    // Locally-created messages always succeed (no contention); this gates the
+    // cross-daemon race when peer daemons share the session.
+    const won = await this.store.claimMessage(msg.id);
+    if (!won) {
+      log.info(`engine: lost message claim for ${msg.id.slice(0, 8)}, another daemon took it`);
+      return;
+    }
+
     this.running.add(k);
-    await this.store.updateMessageStatus(msg.id, "running");
     this.currentMessage.set(k, msg.id);
 
     // Update session state
@@ -507,15 +628,22 @@ export class Engine {
     const gen = (this.generation.get(k) ?? 0) + 1;
     this.generation.set(k, gen);
 
-    const workdir = this.resolveWorkdir(session, issue);
-    mkdirSync(workdir, { recursive: true });
+    const workdir = await this.resolveWorkdir(session, issue);
 
     const ref = this.sessionToRef(session, issue);
     const tracker = this.getTracker(issue.trackerType);
 
     const args = [this.cfg.opencode.binary, "run", "--format", "json", "--dir", workdir];
-    if (session.opencodeSessionId) {
-      args.push("--session", session.opencodeSessionId);
+    // Prefer the captured session id (resume our own previous run). Otherwise
+    // ask the takeover strategy whether a resumable session exists elsewhere
+    // (e.g. NAS-backed). Default strategy returns null → fresh session.
+    let resumeSessionId = session.opencodeSessionId;
+    if (!resumeSessionId) {
+      const fromStrategy = await this.takeover.resumeOpenCodeSession(session);
+      if (fromStrategy) resumeSessionId = fromStrategy;
+    }
+    if (resumeSessionId) {
+      args.push("--session", resumeSessionId);
     }
     // Push --model BEFORE the message content. Defends against env-var-
     // registered providers stealing the slot (the original bug). Empty/
@@ -918,10 +1046,18 @@ export class Engine {
   }
 
   private async runObserverCycle() {
-    const activeIssues = await this.store.listActiveIssues();
+    // Multi-machine: periodically release stale owners so we can adopt their
+    // work, and only iterate issues/sessions this daemon owns.
+    try {
+      await this.store.releaseDeadOwners(this.cfg.work.leaseTtlMs);
+    } catch (err) {
+      log.error("engine: releaseDeadOwners failed:", (err as Error).message);
+    }
 
-    for (const issue of activeIssues) {
-      if (!this.observedIssues.has(issue.id)) continue;
+    const ownedIssues = (await this.store.listOwnedIssues(this.daemonId))
+      .filter((i) => this.observedIssues.has(i.id));
+
+    for (const issue of ownedIssues) {
       try {
         await this.observeIssue(issue);
       } catch (err) {
@@ -1071,8 +1207,20 @@ export class Engine {
   // ─── Recovery ───
 
   private async recover() {
-    const allSessions = await this.store.listAllSessions();
-    for (const session of allSessions) {
+    // Release stale owners first so we can adopt orphaned issues that just
+    // became available (this daemon is fresh; any dead daemon's slots are now
+    // reclaimable).
+    try {
+      await this.store.releaseDeadOwners(this.cfg.work.leaseTtlMs);
+    } catch (err) {
+      log.error("engine: releaseDeadOwners at boot failed:", (err as Error).message);
+    }
+
+    // Multi-machine: recover ONLY this daemon's sessions. Other daemons own
+    // the rest; touching their state would race them.
+    const ownedSessions = await this.store.listOwnedSessions(this.daemonId);
+
+    for (const session of ownedSessions) {
       if (session.opencodePid) {
         try {
           process.kill(session.opencodePid, 0);
@@ -1092,15 +1240,19 @@ export class Engine {
       }
     }
 
-    // Restore runtime state from DB
-    for (const session of allSessions) {
+    // Restore runtime state (now persisted in op_sessions) from DB.
+    for (const session of ownedSessions) {
       const issue = await this.store.getIssue(session.issueId);
       if (!issue || issue.state === "closed") continue;
       const k = this.sessionKey(session, issue);
       if (session.startedAt != null) this.startedAt.set(k, session.startedAt);
       if (session.progressCommentId) this.progressCommentId.set(k, session.progressCommentId);
       if (session.currentPrompt) this.currentPrompt.set(k, session.currentPrompt);
-      // Start observer for active issues
+      if (session.lastOutputAt != null) this.lastOutputAt.set(k, session.lastOutputAt);
+      if (session.nudgeRounds != null) this.nudgeRounds.set(k, session.nudgeRounds);
+      if (session.stuckNudgeRounds != null) this.stuckNudgeRounds.set(k, session.stuckNudgeRounds);
+      if (session.generation != null) this.generation.set(k, session.generation);
+      // Start observer for active issues we own
       this.startObserver(issue);
     }
 
@@ -1109,8 +1261,8 @@ export class Engine {
       log.info(`engine: restored runtime state for ${restored} sessions from DB`);
     }
 
-    // Recover stuck messages
-    const stuck = await this.store.getPendingOrRunningMessages();
+    // Recover stuck messages scoped to this daemon's issues.
+    const stuck = await this.store.getOwnedPendingOrRunningMessages(this.daemonId);
     if (stuck.length === 0) return;
 
     log.info(`engine: recovering ${stuck.length} stuck messages`);
@@ -1177,19 +1329,20 @@ export class Engine {
   }
 
   async getStatus() {
-    const pendingCount = (await this.store.getPendingOrRunningMessages()).filter(m => m.status === "pending").length;
+    const pendingCount = (await this.store.getOwnedPendingOrRunningMessages(this.daemonId)).filter(m => m.status === "pending").length;
     return {
       runningCount: this.running.size,
       runningKeys: [...this.running],
       pendingCount,
       processCount: this.processes.size,
       observedIssues: this.observedIssues.size,
+      daemonId: this.daemonId,
     };
   }
 
   async getQueue(): Promise<Record<string, number>> {
     const result: Record<string, number> = {};
-    const allPending = (await this.store.getPendingOrRunningMessages()).filter(m => m.status === "pending");
+    const allPending = (await this.store.getOwnedPendingOrRunningMessages(this.daemonId)).filter(m => m.status === "pending");
     for (const msg of allPending) {
       const session = await this.store.getSession(msg.sessionId);
       if (!session) continue;
@@ -1278,6 +1431,7 @@ export class Engine {
   }
 
   destroy() {
+    this.stopHeartbeat();
     if (this.observerTimer) clearInterval(this.observerTimer);
     this.observedIssues.clear();
     for (const [, proc] of this.processes) {

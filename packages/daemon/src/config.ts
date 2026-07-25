@@ -29,6 +29,11 @@ export const configSchema = z.object({
     binary: z.string().default("opencode"),
     baseWorkdir: z.string(),
   }),
+  work: z.object({
+    capacity: z.coerce.number().int().positive().default(4),
+    heartbeatMs: z.coerce.number().int().positive().default(10_000),
+    leaseTtlMs: z.coerce.number().int().positive().default(60_000),
+  }),
   db: z.object({
     driver: z.enum(["sqlite", "mysql"]).default("sqlite"),
     host: z.string().default("127.0.0.1"),
@@ -64,8 +69,17 @@ const TEST_DEFAULTS = {
   bot: { username: "ework-daemon-test", token: "test-bot-token" },
   daemon: { port: 3111, host: "0.0.0.0" },
   opencode: { binary: "opencode", baseWorkdir: join(tmpdir(), "ework-daemon-test") },
+  work: { capacity: 4, heartbeatMs: 10_000, leaseTtlMs: 60_000 },
   db: { path: join(process.cwd(), "test", "ework-daemon-test.db") },
 };
+
+function readWorkSection() {
+  return {
+    capacity: process.env.WORK_DAEMON_CAPACITY ? Number(process.env.WORK_DAEMON_CAPACITY) : 4,
+    heartbeatMs: process.env.WORK_DAEMON_HEARTBEAT_MS ? Number(process.env.WORK_DAEMON_HEARTBEAT_MS) : 10_000,
+    leaseTtlMs: process.env.WORK_DAEMON_LEASE_TTL_MS ? Number(process.env.WORK_DAEMON_LEASE_TTL_MS) : 60_000,
+  };
+}
 
 function readDbSection(fallbackPath: string) {
   const driver = (process.env.WORK_DB_DRIVER ?? "sqlite").trim().toLowerCase();
@@ -107,6 +121,7 @@ export function loadConfig(): Config {
         binary: process.env.OPENCODE_BINARY ?? TEST_DEFAULTS.opencode.binary,
         baseWorkdir: process.env.OPENCODE_BASE_WORKDIR ?? TEST_DEFAULTS.opencode.baseWorkdir,
       },
+      work: readWorkSection(),
       db: readDbSection(TEST_DEFAULTS.db.path),
       completionCheck: process.env.COMPLETION_CHECK_API_KEY ? {
         apiKey: process.env.COMPLETION_CHECK_API_KEY,
@@ -139,6 +154,7 @@ export function loadConfig(): Config {
       binary: process.env.OPENCODE_BINARY ?? "opencode",
       baseWorkdir: process.env.OPENCODE_BASE_WORKDIR,
     },
+    work: readWorkSection(),
     db: readDbSection(PRODUCTION_DB_DEFAULT),
     completionCheck: process.env.COMPLETION_CHECK_API_KEY ? {
       apiKey: process.env.COMPLETION_CHECK_API_KEY,
