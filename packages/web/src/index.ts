@@ -6,7 +6,7 @@ import { homedir } from "os";
 import { loadConfig, DB_OVERRIDABLE, parseOverride, resolveTtsBackend } from "./config";
 import type { Config } from "./config";
 import { setConfig, initDB } from "./db";
-import { testMysqlConnection, migrateSqliteToMysql, writeMysqlEnv, migrateMysqlToSqlite, writeSqliteEnv } from "./db-admin";
+import { testMysqlConnection, migrateSqliteToMysql, writeMysqlEnv, migrateMysqlToSqlite, writeSqliteEnv, migrateDaemonSqliteToMysql } from "./db-admin";
 import type { MysqlTargetOpts } from "./db-admin";
 import { checkAuth, makeAuthCookieHeader, clearAuthCookieHeader, loginHTML, sanitizeNext, ensureBootstrapAdmin, ensureBootstrapSystem, isReservedSystemLogin } from "./auth";
 import { OpencodeClient, OpencodeError } from "./opencode";
@@ -245,6 +245,16 @@ function daemonEnvPath(): string | null {
     if (existsSync(c)) return c;
   }
   return null;
+}
+
+function readDaemonSqlitePath(envPath: string): string | null {
+  try {
+    const content = readFileSync(envPath, "utf8");
+    const m = content.match(/^DAEMON_DB_PATH\s*=\s*(.+)$/m);
+    return m?.[1]?.trim() ?? null;
+  } catch {
+    return null;
+  }
 }
 
 function spawnDaemonRestart(): void {
@@ -748,9 +758,15 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
       return json({ ok: false, configured: false, manual: daemonManualInstructions(daemonOpts) });
     }
     try {
+      const daemonDbPath = readDaemonSqlitePath(envPath);
+      let daemonMigrated: { table: string; rows: number }[] | null = null;
+      if (daemonDbPath) {
+        const mig = await migrateDaemonSqliteToMysql(daemonDbPath, daemonOpts);
+        if (mig.ok) daemonMigrated = mig.tables;
+      }
       const written = await writeMysqlEnv(envPath, daemonOpts);
       spawnDaemonRestart();
-      return json({ ok: true, configured: true, envPath, written: written.written });
+      return json({ ok: true, configured: true, envPath, written: written.written, daemonMigrated });
     } catch (e) {
       return json({ ok: false, configured: false, error: errMsg(e), manual: daemonManualInstructions(daemonOpts) });
     }

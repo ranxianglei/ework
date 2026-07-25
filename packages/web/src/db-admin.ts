@@ -33,7 +33,7 @@ export type TestMysqlResult =
   | { ok: false; error: string; hint?: string };
 
 export type MigrateResult =
-  | { ok: true; tables: { table: string; rows: number }[] }
+  | { ok: true; tables: { table: string; rows: number }[]; skipped?: string }
   | { ok: false; error: string; partial?: string[] };
 
 export type WriteEnvResult = { written: string[]; envPath: string };
@@ -520,6 +520,143 @@ export async function migrateMysqlToSqlite(targetPath: string): Promise<MigrateR
     try { target.close(); } catch { /* already closed */ }
     try { unlinkSync(targetPath); } catch { /* file may not exist */ }
     return { ok: false, error: redactPassword(msg), partial: completed.map((c) => `${c.table}=${c.rows}`) };
+  }
+}
+
+// The daemon has its own SQLite DB separate from the web's. When switching
+// to MySQL, its old session data must be copied too. MySQL tables are
+// created with basic columns matching the daemon's SQLite schema;
+// coordination columns (owner_daemon_id, etc.) are added by the daemon's
+// own ALTER TABLE migration on boot.
+
+const DAEMON_TABLES = ["issues", "op_sessions", "messages"] as const;
+const DAEMON_DDL: Record<string, string> = {
+  issues:
+    "CREATE TABLE IF NOT EXISTS {{t}} (" +
+    "id VARCHAR(36) PRIMARY KEY," +
+    "tracker_type VARCHAR(32) NOT NULL," +
+    "tracker_scope_key VARCHAR(255) NOT NULL," +
+    "tracker_scope TEXT NOT NULL," +
+    "tracker_issue_id VARCHAR(64) NOT NULL," +
+    "state VARCHAR(16) NOT NULL DEFAULT 'created'," +
+    "title TEXT NOT NULL," +
+    "created_at VARCHAR(40) NOT NULL," +
+    "updated_at VARCHAR(40) NOT NULL," +
+    "UNIQUE(tracker_type, tracker_scope_key, tracker_issue_id)" +
+    ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+  op_sessions:
+    "CREATE TABLE IF NOT EXISTS {{t}} (" +
+    "id VARCHAR(36) PRIMARY KEY," +
+    "issue_id VARCHAR(36) NOT NULL," +
+    "name VARCHAR(255) NOT NULL," +
+    "state VARCHAR(16) NOT NULL DEFAULT 'idle'," +
+    "opencode_session_id VARCHAR(64)," +
+    "opencode_pid BIGINT," +
+    "workdir TEXT," +
+    "created_at VARCHAR(40) NOT NULL," +
+    "started_at BIGINT," +
+    "progress_comment_id VARCHAR(64)," +
+    "reaction_comment_id VARCHAR(64)," +
+    "current_prompt MEDIUMTEXT," +
+    "UNIQUE(issue_id, name)" +
+    ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+  messages:
+    "CREATE TABLE IF NOT EXISTS {{t}} (" +
+    "id VARCHAR(36) PRIMARY KEY," +
+    "session_id VARCHAR(36) NOT NULL," +
+    "content MEDIUMTEXT NOT NULL," +
+    "source_comment_id VARCHAR(64)," +
+    "reaction_comment_id VARCHAR(64)," +
+    "status VARCHAR(16) NOT NULL DEFAULT 'pending'," +
+    "attempts INT NOT NULL DEFAULT 0," +
+    "error TEXT," +
+    "created_at VARCHAR(40) NOT NULL," +
+    "updated_at VARCHAR(40) NOT NULL" +
+    ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+};
+
+export async function migrateDaemonSqliteToMysql(
+  sqlitePath: string,
+  opts: MysqlTargetOpts,
+): Promise<MigrateResult> {
+  if (!existsSync(sqlitePath)) {
+    return { ok: true, tables: [], skipped: "no daemon sqlite file found" };
+  }
+  const prefix = validatePrefix(opts.prefix ?? "");
+  let pool: Pool | null = null;
+  let conn: PoolConnection | null = null;
+  const completed: { table: string; rows: number }[] = [];
+
+  try {
+    const probe = new Database(sqlitePath, { readonly: true });
+    const tableNames = probe
+      .query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+      .all() as { name: string }[];
+    probe.close();
+
+    const hasDaemonTables = DAEMON_TABLES.every((t) => tableNames.some((r) => r.name === t));
+    if (!hasDaemonTables) {
+      return { ok: true, tables: [], skipped: "daemon sqlite has no daemon tables" };
+    }
+
+    pool = createPool({
+      host: opts.host,
+      port: opts.port,
+      user: opts.user,
+      password: opts.password,
+      database: opts.database,
+      waitForConnections: true,
+      connectionLimit: 2,
+      charset: "utf8mb4",
+    });
+    conn = await pool.getConnection();
+
+    await conn.query("SET FOREIGN_KEY_CHECKS = 0");
+
+    for (const table of DAEMON_TABLES) {
+      const ddl = applyTargetPrefix(DAEMON_DDL[table]!.replace(/{{t}}/g, `{{${table}}}`), prefix);
+      await conn.query(ddl);
+      await conn.query(`TRUNCATE TABLE ${ident(prefix + table)}`);
+    }
+
+    const sqliteRo = new Database(sqlitePath, { readonly: true });
+    for (const table of DAEMON_TABLES) {
+      const rows = sqliteRo.query(`SELECT * FROM ${table}`).all() as Record<string, unknown>[];
+      if (rows.length === 0) {
+        completed.push({ table, rows: 0 });
+        continue;
+      }
+      const cols = Object.keys(rows[0]!);
+      const placeholders = cols.map(() => "?").join(",");
+      const insertSql = `INSERT INTO ${ident(prefix + table)} (${cols.map((c) => ident(c)).join(",")}) VALUES (${placeholders})`;
+      for (let i = 0; i < rows.length; i += 500) {
+        const batch = rows.slice(i, i + 500);
+        for (const row of batch) {
+          const vals = cols.map((c) => {
+            const v = row[c];
+            return v === undefined ? null : v;
+          });
+          await conn.query(insertSql, vals);
+        }
+      }
+      const [countRows] = await conn.query(`SELECT COUNT(*) AS c FROM ${ident(prefix + table)}`);
+      const countRow = (countRows as Record<string, unknown>[])[0];
+      const count = (countRow?.c as number) ?? -1;
+      if (count !== rows.length) {
+        throw new Error(`Row-count mismatch for daemon ${table}: sqlite=${rows.length} mysql=${count}`);
+      }
+      completed.push({ table, rows: rows.length });
+    }
+    sqliteRo.close();
+
+    await conn.query("SET FOREIGN_KEY_CHECKS = 1");
+    return { ok: true, tables: completed };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { ok: false, error: redactPassword(msg), partial: completed.map((c) => `${c.table}=${c.rows}`) };
+  } finally {
+    if (conn) conn.release();
+    if (pool) await pool.end();
   }
 }
 
