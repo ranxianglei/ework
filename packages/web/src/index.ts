@@ -240,8 +240,16 @@ function daemonEnvPath(): string | null {
     const p = join(dataDir, ".env");
     return existsSync(p) ? p : null;
   }
-  const conventional = join(homedir(), ".local", "share", "ework-daemon", ".env");
-  return existsSync(conventional) ? conventional : null;
+  // Conventional paths: standalone install, then ework-aio managed layout
+  // (~/.local/share/ework-aio/ework-daemon/.env).
+  const candidates = [
+    join(homedir(), ".local", "share", "ework-daemon", ".env"),
+    join(homedir(), ".local", "share", "ework-aio", "ework-daemon", ".env"),
+  ];
+  for (const c of candidates) {
+    if (existsSync(c)) return c;
+  }
+  return null;
 }
 
 function spawnDaemonRestart(): void {
