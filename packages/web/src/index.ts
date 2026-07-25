@@ -4,6 +4,8 @@ import { readFileSync, appendFileSync } from "fs";
 import { loadConfig, DB_OVERRIDABLE, parseOverride, resolveTtsBackend } from "./config";
 import type { Config } from "./config";
 import { setConfig, initDB } from "./db";
+import { testMysqlConnection, migrateSqliteToMysql, writeMysqlEnv } from "./db-admin";
+import type { MysqlTargetOpts } from "./db-admin";
 import { checkAuth, makeAuthCookieHeader, clearAuthCookieHeader, loginHTML, sanitizeNext, ensureBootstrapAdmin, ensureBootstrapSystem, isReservedSystemLogin } from "./auth";
 import { OpencodeClient, OpencodeError } from "./opencode";
 import { renderMarkdown } from "./render/markdown";
@@ -170,6 +172,32 @@ function html(body: string, status = 200): Response {
     status,
     headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-cache", ...SEC_HEADERS },
   });
+}
+
+// The prefix regex below must match db.ts:WORK_DB_PREFIX exactly — if the API
+// accepts a prefix that boot rejects, the wizard writes a .env that restarts
+// into a crash. Any change here must be mirrored in db.ts + db-admin.ts.
+function parseDbTargetOpts(payload: unknown): MysqlTargetOpts | { error: string } {
+  if (typeof payload !== "object" || payload === null) return { error: "invalid body" };
+  const p = payload as Record<string, unknown>;
+  const host = typeof p.host === "string" ? p.host.trim() : "";
+  const portNum = Number(p.port);
+  const user = typeof p.user === "string" ? p.user.trim() : "";
+  const password = typeof p.password === "string" ? p.password : "";
+  const database = typeof p.database === "string" ? p.database.trim() : "";
+  const prefix = typeof p.prefix === "string" ? p.prefix.trim() : "";
+  if (!host) return { error: "host required" };
+  if (!user) return { error: "user required" };
+  if (!database) return { error: "database required" };
+  if (!Number.isInteger(portNum) || portNum < 1 || portNum > 65535) {
+    return { error: "port must be an integer 1-65535" };
+  }
+  if (prefix && !/^[A-Za-z_][A-Za-z0-9_]{0,31}$/.test(prefix)) {
+    return { error: "prefix must match ^[A-Za-z_][A-Za-z0-9_]{0,31}$" };
+  }
+  const opts: MysqlTargetOpts = { host, port: portNum, user, password, database };
+  if (prefix) opts.prefix = prefix;
+  return opts;
 }
 
 const REPO_ISSUE_RE = /^\/([^/]+)\/([^/]+)\/issues\/(\d+)$/;
@@ -603,6 +631,40 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     headers.set("content-type", "audio/mpeg");
     headers.set("cache-control", "no-cache");
     return new Response(stream, { status: 200, headers });
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/db/test") {
+    if (!ctx.user || ctx.user.is_admin !== 1) return json({ error: "admin required" }, 403);
+    if (!rateLimit(`db-test:${ip}`, 5, 5 / 60)) return json({ error: "rate limited" }, 429);
+    const payload = await req.json().catch(() => ({}));
+    const parsed = parseDbTargetOpts(payload);
+    if ("error" in parsed) return json(parsed, 400);
+    const result = await testMysqlConnection(parsed);
+    return json(result, result.ok ? 200 : 422);
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/db/migrate") {
+    if (!ctx.user || ctx.user.is_admin !== 1) return json({ error: "admin required" }, 403);
+    if (!rateLimit(`db-migrate:${ip}`, 2, 2 / 3600)) return json({ error: "rate limited" }, 429);
+    const payload = await req.json().catch(() => ({}));
+    const parsed = parseDbTargetOpts(payload);
+    if ("error" in parsed) return json(parsed, 400);
+    const result = await migrateSqliteToMysql(parsed);
+    return json(result, result.ok ? 200 : 422);
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/db/enable") {
+    if (!ctx.user || ctx.user.is_admin !== 1) return json({ error: "admin required" }, 403);
+    if (!rateLimit(`db-enable:${ip}`, 3, 3 / 3600)) return json({ error: "rate limited" }, 429);
+    const payload = await req.json().catch(() => ({}));
+    const parsed = parseDbTargetOpts(payload);
+    if ("error" in parsed) return json(parsed, 400);
+    const envResult = await writeMysqlEnv(join(process.cwd(), ".env"), parsed);
+    // Exit after the response flushes; the supervisor (systemd / ework-aio)
+    // restarts the process, which re-reads .env and boots against MySQL.
+    // P4 may refine this with a graceful drain or an ework-aio CLI call.
+    setTimeout(() => process.exit(0), 750);
+    return json({ ok: true, ...envResult, restarting: true });
   }
 
   if (url.pathname === "/settings") {
