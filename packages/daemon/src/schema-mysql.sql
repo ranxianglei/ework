@@ -55,3 +55,20 @@ CREATE TABLE IF NOT EXISTS {{messages}} (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE INDEX idx_messages_session ON {{messages}} (session_id);
 CREATE INDEX idx_messages_status ON {{messages}} (status);
+
+-- Multi-machine coordination (Phase 1). daemons register, heartbeat, and
+-- lease issues via issues.owner_daemon_id. id is a DB-allocated logical slot
+-- (not IP-bound) so a restarted daemon re-adopts an orphan id. Dates are
+-- VARCHAR(40) ISO-8601 to match the rest of the schema. The issues.owner_daemon_id
+-- column + op_sessions runtime-state columns + their indexes are added by
+-- idempotent ALTER in db.ts initDB() so existing DBs upgrade in-place.
+CREATE TABLE IF NOT EXISTS {{daemons}} (
+  id                  BIGINT       PRIMARY KEY AUTO_INCREMENT,
+  display_name        VARCHAR(255) NOT NULL DEFAULT '',
+  internal_endpoint   VARCHAR(255) NOT NULL DEFAULT '',
+  capacity            INT          NOT NULL DEFAULT 4,
+  last_heartbeat      VARCHAR(40)  NOT NULL,
+  registered_at       VARCHAR(40)  NOT NULL,
+  status              VARCHAR(16)  NOT NULL DEFAULT 'active'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE INDEX idx_daemons_heartbeat ON {{daemons}} (last_heartbeat);

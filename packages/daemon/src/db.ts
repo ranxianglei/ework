@@ -286,7 +286,86 @@ export async function initDB(): Promise<AsyncDatabase> {
   } else {
     _driver = await SqliteDriver.create();
   }
+  await runMigrations(_driver);
   return _driver;
+}
+
+// Idempotent additive migrations for the multi-machine coordination layer
+// (Phase 1). The new daemons table is in the schema files; these ALTERs add
+// nullable columns to existing tables so an upgraded DB matches a fresh one.
+// Checked per-column so re-running on an already-migrated DB is a no-op.
+async function runMigrations(db: AsyncDatabase): Promise<void> {
+  const prefix = DB_PREFIX;
+  const tIssues = `${prefix}issues`;
+  const tSessions = `${prefix}op_sessions`;
+
+  const sqlite = db.dialect === "sqlite";
+
+  // Column-existence check branches on driver: SQLite has PRAGMA table_info,
+  // MySQL has information_schema.columns. Both return >=1 row if present.
+  const hasColumn = async (table: string, col: string): Promise<boolean> => {
+    if (sqlite) {
+      const rows = await db.all<{ name: string }>(
+        `PRAGMA table_info(${table})`
+      );
+      return rows.some((r) => r.name === col);
+    }
+    const row = await db.get<{ cnt: number }>(
+      `SELECT COUNT(*) AS cnt FROM information_schema.columns
+       WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?`,
+      [table, col]
+    );
+    return Number(row?.cnt ?? 0) > 0;
+  };
+
+  const ensureColumn = async (table: string, col: string, ddl: string): Promise<void> => {
+    if (await hasColumn(table, col)) return;
+    await db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+  };
+
+  // issues.owner_daemon_id — points at the leasing daemon (nullable = unclaimed).
+  await ensureColumn(
+    tIssues,
+    "owner_daemon_id",
+    sqlite
+      ? "owner_daemon_id INTEGER REFERENCES {{daemons}}(id)"
+      : "owner_daemon_id BIGINT NULL"
+  );
+
+  // op_sessions runtime-state columns (previously in-memory Maps; now persisted
+  // so a restarted daemon can recover the nudge/generation state).
+  await ensureColumn(tSessions, "last_output_at", "last_output_at VARCHAR(40)");
+  await ensureColumn(
+    tSessions,
+    "nudge_rounds",
+    sqlite ? "nudge_rounds INTEGER NOT NULL DEFAULT 0" : "nudge_rounds INT NOT NULL DEFAULT 0"
+  );
+  await ensureColumn(
+    tSessions,
+    "stuck_nudge_rounds",
+    sqlite ? "stuck_nudge_rounds INTEGER NOT NULL DEFAULT 0" : "stuck_nudge_rounds INT NOT NULL DEFAULT 0"
+  );
+  await ensureColumn(
+    tSessions,
+    "generation",
+    sqlite ? "generation INTEGER NOT NULL DEFAULT 0" : "generation INT NOT NULL DEFAULT 0"
+  );
+
+  // Index over owner_daemon_id — added after the column exists. SQLite tolerates
+  // IF NOT EXISTS; MySQL lacks it, so we tolerate ER_DUP_KEYNAME (1061) on re-runs.
+  if (sqlite) {
+    await db.exec(`CREATE INDEX IF NOT EXISTS idx_issues_owner ON ${tIssues}(owner_daemon_id)`);
+  } else {
+    try {
+      await db.exec(`CREATE INDEX idx_issues_owner ON ${tIssues}(owner_daemon_id)`);
+    } catch (e) {
+      if (e && typeof e === "object" && "errno" in e && (e as { errno: number }).errno === 1061) {
+        // index already exists — expected on re-runs
+      } else {
+        throw e;
+      }
+    }
+  }
 }
 
 /** Returns the initialized AsyncDatabase. Throws if initDB() wasn't awaited. */

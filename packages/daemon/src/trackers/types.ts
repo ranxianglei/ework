@@ -65,6 +65,8 @@ export interface Issue {
   title: string;
   createdAt: Date;
   updatedAt: Date;
+  /** Daemon id currently leasing this issue (null/undefined = unclaimed). */
+  ownerDaemonId?: number | null;
 }
 
 export type SessionState = "idle" | "running";
@@ -84,6 +86,12 @@ export interface OpSession {
   progressCommentId?: string;
   reactionCommentId?: string;
   currentPrompt?: string;
+  // Multi-machine runtime state (Phase 1): persisted so a restarted daemon
+  // picks up nudge/generation counters rather than resetting to zero.
+  lastOutputAt?: number;
+  nudgeRounds?: number;
+  stuckNudgeRounds?: number;
+  generation?: number;
 }
 
 /** Message = a prompt enqueued for a session */

@@ -48,3 +48,21 @@ CREATE TABLE IF NOT EXISTS {{messages}} (
 CREATE INDEX IF NOT EXISTS idx_sessions_issue ON {{op_sessions}}(issue_id);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON {{messages}}(session_id);
 CREATE INDEX IF NOT EXISTS idx_messages_status ON {{messages}}(status);
+
+-- Multi-machine coordination (Phase 1). daemons register, heartbeat, and
+-- lease issues via issues.owner_daemon_id. id is a DB-allocated logical slot
+-- (not IP-bound) so a restarted daemon re-adopts an orphan id. Dates are
+-- TEXT ISO-8601 to match the rest of the schema. The issues.owner_daemon_id
+-- column + op_sessions runtime-state columns + their indexes are added by
+-- idempotent ALTER in db.ts initDB() so existing DBs upgrade in-place.
+CREATE TABLE IF NOT EXISTS {{daemons}} (
+  id INTEGER PRIMARY KEY,
+  display_name TEXT NOT NULL DEFAULT '',
+  internal_endpoint TEXT NOT NULL DEFAULT '',
+  capacity INTEGER NOT NULL DEFAULT 4,
+  last_heartbeat TEXT NOT NULL,
+  registered_at TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active'
+);
+
+CREATE INDEX IF NOT EXISTS idx_daemons_heartbeat ON {{daemons}}(last_heartbeat);
