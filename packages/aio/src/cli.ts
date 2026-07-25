@@ -22,6 +22,7 @@ import {
 } from "./types.ts";
 import { runInstall } from "./commands/install.ts";
 import { runUninstall } from "./commands/uninstall.ts";
+import { runUpgrade } from "./commands/upgrade.ts";
 import {
   runStart,
   runStop,
@@ -48,6 +49,9 @@ Commands:
                                   Add 'systemd' to also write+enable systemd
                                   units. Without 'systemd', runs in pure
                                   PID-file mode (no systemctl calls).
+  upgrade                         Pull latest ework-aio from npm and restart
+                                  services. Use this to update — don't re-run
+                                  'install' for version bumps.
   uninstall                       Stop services and remove units (data preserved)
   status                          Show service status (PID-file mode)
   logs [web|daemon]               Tail logs (Ctrl+C to stop)
@@ -428,6 +432,10 @@ export async function main(
       case "install": {
         enforceRootGuard(opts, logger);
         await runInstall(opts, logger);
+        return 0;
+      }
+      case "upgrade": {
+        await runUpgrade(opts, logger);
         return 0;
       }
       case "uninstall": {
