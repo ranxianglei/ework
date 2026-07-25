@@ -1,4 +1,4 @@
-import type { OpencodeClient, SessionListItem, SessionExport, SessionMessage, MessagePart, ToolState } from "../opencode";
+import type { OpencodeClientInterface, SessionListItem, SessionExport, SessionMessage, MessagePart, ToolState } from "../opencode";
 import { THEME_CSS, escapeHtml, escapeAttr, tabNavHTML } from "../render/layout";
 import { renderMarkdown, linkifySessionIDs, linkifyAbsPaths } from "../render/markdown";
 import { BUILD_ID } from "../build";
@@ -8,7 +8,7 @@ import { homedir } from "os";
 
 const LIST_LIMIT = 100;
 
-export async function buildSessionList(client: OpencodeClient, q: string): Promise<{ html: string }> {
+export async function buildSessionList(client: OpencodeClientInterface, q: string): Promise<{ html: string }> {
   let sessions = await client.listSessions(LIST_LIMIT);
   const needle = q.trim().toLowerCase();
   if (needle) {
@@ -57,7 +57,7 @@ function sessionRow(s: SessionListItem): string {
 </a>`;
 }
 
-export async function buildSessionView(client: OpencodeClient, id: string, desc: boolean, collapseLines: number, limit = 30, all = false): Promise<{ html: string }> {
+export async function buildSessionView(client: OpencodeClientInterface, id: string, desc: boolean, collapseLines: number, limit = 30, all = false): Promise<{ html: string }> {
   const data = await client.exportSession(id);
   const info = data.info;
   const title = info.title || id;

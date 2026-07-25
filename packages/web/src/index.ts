@@ -9,7 +9,7 @@ import { setConfig, initDB } from "./db";
 import { testMysqlConnection, migrateSqliteToMysql, writeMysqlEnv, migrateMysqlToSqlite, writeSqliteEnv, migrateDaemonSqliteToMysql } from "./db-admin";
 import type { MysqlTargetOpts } from "./db-admin";
 import { checkAuth, makeAuthCookieHeader, clearAuthCookieHeader, loginHTML, sanitizeNext, ensureBootstrapAdmin, ensureBootstrapSystem, isReservedSystemLogin } from "./auth";
-import { OpencodeClient, OpencodeError } from "./opencode";
+import { OpencodeError, createOpencodeClient } from "./opencode";
 import { renderMarkdown } from "./render/markdown";
 import { log, uptimeSeconds, version } from "./logger";
 import { buildIssueThread, fetchIssuePage, fetchIssueSince, errorPage } from "./views/issueThread";
@@ -95,7 +95,7 @@ const STATIC_DIR = join(__dirname, "static");
 
 await initDB();
 const cfg: Config = await loadConfig();
-const opencode = new OpencodeClient(cfg);
+const opencode = createOpencodeClient(cfg, cfg.daemonWebhookUrl);
 
 async function autoWireDaemon(projectId: number, origin: string): Promise<void> {
   if (!cfg.autowireActive) {
