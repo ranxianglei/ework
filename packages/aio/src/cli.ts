@@ -12,6 +12,7 @@
 //   - Unknown flags → error. We never silently swallow typos.
 
 import os from "node:os";
+import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { Logger, InstallError, log as defaultLogger } from "./log.ts";
 import {
@@ -35,7 +36,10 @@ import {
   type ConfigArgs,
 } from "./commands/config.ts";
 
-const VERSION = "0.2.7-dev";
+// Read from package.json — never hardcode (every release reported "0.2.7-dev").
+const VERSION: string = JSON.parse(
+  readFileSync(new URL("../package.json", import.meta.url), "utf-8"),
+).version;
 
 const USAGE = `ework-aio <command> [options]
 
