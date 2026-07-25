@@ -22,6 +22,7 @@ import type { GlobalOptions, ServiceTarget } from "../types.ts";
 
 interface ServicePaths {
   bin: string;
+  pkg: string;
   dataDir: string;
   envFile: string;
   pidFile: string;
@@ -33,6 +34,7 @@ function servicePaths(paths: PathConfig, svc: "web" | "daemon"): ServicePaths {
   if (svc === "web") {
     return {
       bin: "ework-web",
+      pkg: "ework-web",
       dataDir: paths.webDataDir,
       envFile: paths.webEnvFile,
       pidFile: paths.webPidFile,
@@ -46,6 +48,9 @@ function servicePaths(paths: PathConfig, svc: "web" | "daemon"): ServicePaths {
     // and exits — spawning it leaves the daemon "looking dead" with help text
     // in the log. See install.ts preflight for the full rationale.
     bin: "ework-daemon-server",
+    // npm package name differs from the bin name — the error hint must use the
+    // package name, not the bin, or the user gets a 404 trying to install.
+    pkg: "ework-daemon",
     dataDir: paths.daemonDataDir,
     envFile: paths.daemonEnvFile,
     pidFile: paths.daemonPidFile,
@@ -74,7 +79,7 @@ async function startOne(
   const sp = servicePaths(paths, svc);
   const binPath = resolveCommand(sp.bin);
   if (!binPath) {
-    throw new InstallError(`${sp.bin} not found on PATH — install with: npm install -g ${sp.bin}`);
+    throw new InstallError(`${sp.bin} not found on PATH — install with: npm install -g ${sp.pkg}`);
   }
   const existingPid = await readPidFile(sp.pidFile);
   if (existingPid !== null && isProcessRunning(existingPid)) {
