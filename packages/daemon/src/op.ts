@@ -1,8 +1,5 @@
-import { Database } from "bun:sqlite";
-import { mkdirSync, existsSync } from "fs";
-import { join } from "path";
-import { homedir } from "os";
 import { log } from "./logger";
+import { getDB } from "./db";
 import type { TrackerRef, Issue, IssueState, OpSession, SessionState, Message } from "./trackers/types";
 
 // ─── Row Types ───
@@ -105,233 +102,36 @@ export function sessionToTrackerRef(session: OpSession, issue: Issue): TrackerRe
   };
 }
 
-// ─── Store (SQLite DAO) ───
+// ─── Store (async DAO over the global AsyncDatabase from db.ts) ───
 
 export class Store {
-  private db: Database;
-
-  private issueStmts!: {
-    getById: ReturnType<Database["prepare"]>;
-    getByTrackerRef: ReturnType<Database["prepare"]>;
-    insert: ReturnType<Database["prepare"]>;
-    updateState: ReturnType<Database["prepare"]>;
-    updateTitle: ReturnType<Database["prepare"]>;
-    listActive: ReturnType<Database["prepare"]>;
-    listAll: ReturnType<Database["prepare"]>;
-  };
-
-  private sessionStmts!: {
-    getById: ReturnType<Database["prepare"]>;
-    getByName: ReturnType<Database["prepare"]>;
-    getByIssue: ReturnType<Database["prepare"]>;
-    insert: ReturnType<Database["prepare"]>;
-    update: ReturnType<Database["prepare"]>;
-    listAll: ReturnType<Database["prepare"]>;
-    listNonIdle: ReturnType<Database["prepare"]>;
-  };
-
-  private msgStmts!: {
-    getById: ReturnType<Database["prepare"]>;
-    insert: ReturnType<Database["prepare"]>;
-    getNextPending: ReturnType<Database["prepare"]>;
-    updateStatus: ReturnType<Database["prepare"]>;
-    updateStatusSelect: ReturnType<Database["prepare"]>;
-    getBySession: ReturnType<Database["prepare"]>;
-    getPendingOrRunning: ReturnType<Database["prepare"]>;
-    findByCommentId: ReturnType<Database["prepare"]>;
-    getRecentBySession: ReturnType<Database["prepare"]>;
-  };
-
-  constructor(dbPath?: string) {
-    const resolved = dbPath ?? join(
-      process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share"),
-      "ework-daemon",
-      "ework-daemon.db"
-    );
-    const dir = join(resolved, "..");
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-
-    this.db = new Database(resolved, { create: true });
-    this.db.exec("PRAGMA journal_mode = WAL");
-    this.db.exec("PRAGMA foreign_keys = ON");
-
-    this.initSchema();
-    this.migrateOldSchema();
-    this.prepareStatements();
-  }
-
-  private initSchema() {
-    // Drop old tables with incompatible schemas
-    const oldMessages = this.db.prepare(
-      "SELECT sql FROM sqlite_master WHERE type='table' AND name='messages'"
-    ).get() as { sql: string } | null;
-    if (oldMessages && oldMessages.sql.includes('op_id')) {
-      log.info("store: dropping old messages table (incompatible schema)");
-      this.db.exec("DROP TABLE messages");
-    }
-    const oldSessions = this.db.prepare(
-      "SELECT sql FROM sqlite_master WHERE type='table' AND name='sessions'"
-    ).get() as { sql: string } | null;
-    if (oldSessions) {
-      log.info("store: dropping old sessions table");
-      this.db.exec("DROP TABLE IF EXISTS sessions");
-    }
-
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS issues (
-        id TEXT PRIMARY KEY,
-        tracker_type TEXT NOT NULL,
-        tracker_scope_key TEXT NOT NULL,
-        tracker_scope TEXT NOT NULL,
-        tracker_issue_id TEXT NOT NULL,
-        state TEXT NOT NULL DEFAULT 'created',
-        title TEXT NOT NULL DEFAULT '',
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        UNIQUE(tracker_type, tracker_scope_key, tracker_issue_id)
-      )
-    `);
-
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS op_sessions (
-        id TEXT PRIMARY KEY,
-        issue_id TEXT NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
-        name TEXT NOT NULL,
-        state TEXT NOT NULL DEFAULT 'idle',
-        opencode_session_id TEXT,
-        opencode_pid INTEGER,
-        workdir TEXT,
-        created_at TEXT NOT NULL,
-        started_at INTEGER,
-        progress_comment_id TEXT,
-        reaction_comment_id TEXT,
-        current_prompt TEXT,
-        UNIQUE(issue_id, name)
-      )
-    `);
-
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS messages (
-        id TEXT PRIMARY KEY,
-        session_id TEXT NOT NULL REFERENCES op_sessions(id) ON DELETE CASCADE,
-        content TEXT NOT NULL,
-        source_comment_id TEXT,
-        reaction_comment_id TEXT,
-        status TEXT NOT NULL DEFAULT 'pending',
-        attempts INTEGER NOT NULL DEFAULT 0,
-        error TEXT,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      )
-    `);
-
-    this.db.exec("CREATE INDEX IF NOT EXISTS idx_sessions_issue ON op_sessions(issue_id)");
-    this.db.exec("CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id)");
-    this.db.exec("CREATE INDEX IF NOT EXISTS idx_messages_status ON messages(status)");
-  }
-
-  private migrateOldSchema() {
-    const hasOldOps = this.db.prepare(
-      "SELECT name FROM sqlite_master WHERE type='table' AND name='ops'"
-    ).get();
-    if (!hasOldOps) return;
-
-    log.info("store: migrating old ops table to issues + op_sessions");
-
-    this.db.exec(`
-      INSERT OR IGNORE INTO issues (id, tracker_type, tracker_scope_key, tracker_scope, tracker_issue_id, state, title, created_at, updated_at)
-      SELECT
-        lower(hex(randomblob(4))),
-        tracker_type, tracker_scope_key, tracker_scope, tracker_issue_id,
-        CASE WHEN status = 'closed' THEN 'closed' ELSE 'active' END,
-        '',
-        created_at, last_activity_at
-      FROM ops
-      WHERE tracker_type IS NOT NULL
-    `);
-
-    this.db.exec(`DROP TABLE IF EXISTS ops`);
-    this.db.exec(`DROP TABLE IF EXISTS sessions`);
-  }
-
-  private prepareStatements() {
-    this.issueStmts = {
-      getById: this.db.prepare("SELECT * FROM issues WHERE id = ?"),
-      getByTrackerRef: this.db.prepare(
-        "SELECT * FROM issues WHERE tracker_type = ? AND tracker_scope_key = ? AND tracker_issue_id = ?"
-      ),
-      insert: this.db.prepare(
-        "INSERT OR IGNORE INTO issues (id, tracker_type, tracker_scope_key, tracker_scope, tracker_issue_id, state, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
-      ),
-      updateState: this.db.prepare("UPDATE issues SET state = ?, updated_at = ? WHERE id = ?"),
-      updateTitle: this.db.prepare("UPDATE issues SET title = ?, updated_at = ? WHERE id = ?"),
-      listActive: this.db.prepare("SELECT * FROM issues WHERE state != 'closed'"),
-      listAll: this.db.prepare("SELECT * FROM issues"),
-    };
-
-    this.sessionStmts = {
-      getById: this.db.prepare("SELECT * FROM op_sessions WHERE id = ?"),
-      getByName: this.db.prepare(
-        "SELECT * FROM op_sessions WHERE issue_id = ? AND name = ?"
-      ),
-      getByIssue: this.db.prepare(
-        "SELECT * FROM op_sessions WHERE issue_id = ? ORDER BY created_at"
-      ),
-      insert: this.db.prepare(
-        "INSERT OR IGNORE INTO op_sessions (id, issue_id, name, state, opencode_session_id, opencode_pid, workdir, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-      ),
-      update: this.db.prepare(
-        `UPDATE op_sessions SET state = ?, opencode_session_id = ?, opencode_pid = ?, workdir = ?,
-         started_at = ?, progress_comment_id = ?, reaction_comment_id = ?, current_prompt = ? WHERE id = ?`
-      ),
-      listAll: this.db.prepare("SELECT * FROM op_sessions"),
-      listNonIdle: this.db.prepare("SELECT * FROM op_sessions WHERE state != 'idle'"),
-    };
-
-    this.msgStmts = {
-      getById: this.db.prepare("SELECT * FROM messages WHERE id = ?"),
-      insert: this.db.prepare(
-        "INSERT OR IGNORE INTO messages (id, session_id, content, source_comment_id, reaction_comment_id, status, attempts, error, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-      ),
-      getNextPending: this.db.prepare(
-        "SELECT * FROM messages WHERE session_id = ? AND status = 'pending' ORDER BY created_at ASC LIMIT 1"
-      ),
-      updateStatus: this.db.prepare(
-        "UPDATE messages SET status = ?, attempts = ?, error = ?, updated_at = ? WHERE id = ?"
-      ),
-      updateStatusSelect: this.db.prepare("SELECT * FROM messages WHERE id = ?"),
-      getBySession: this.db.prepare(
-        "SELECT * FROM messages WHERE session_id = ? ORDER BY created_at DESC"
-      ),
-      getPendingOrRunning: this.db.prepare(
-        "SELECT * FROM messages WHERE status IN ('pending', 'running') ORDER BY created_at ASC"
-      ),
-      findByCommentId: this.db.prepare(
-        "SELECT * FROM messages WHERE source_comment_id = ?"
-      ),
-      getRecentBySession: this.db.prepare(
-        "SELECT * FROM messages WHERE session_id = ? ORDER BY created_at DESC LIMIT ?"
-      ),
-    };
-  }
+  // No constructor work: the DB is opened globally by initDB() at boot.
+  // Tests rely on tests/setup.ts to call initDB() in beforeAll.
 
   // ─── Issues ───
 
-  getIssue(id: string): Issue | undefined {
-    const row = this.issueStmts.getById.get(id) as IssueRow | null;
+  async getIssue(id: string): Promise<Issue | undefined> {
+    const row = await getDB().get<IssueRow>("SELECT * FROM {{issues}} WHERE id = ?", [id]);
     return row ? rowToIssue(row) : undefined;
   }
 
-  findIssue(trackerType: string, scopeKey: string, issueId: string): Issue | undefined {
-    const row = this.issueStmts.getByTrackerRef.get(trackerType, scopeKey, issueId) as IssueRow | null;
+  async findIssue(trackerType: string, scopeKey: string, issueId: string): Promise<Issue | undefined> {
+    const row = await getDB().get<IssueRow>(
+      "SELECT * FROM {{issues}} WHERE tracker_type = ? AND tracker_scope_key = ? AND tracker_issue_id = ?",
+      [trackerType, scopeKey, issueId]
+    );
     return row ? rowToIssue(row) : undefined;
   }
 
-  findOrCreateIssue(ref: TrackerRef, scopeKey: string, title: string): Issue {
-    const existing = this.findIssue(ref.trackerType, scopeKey, ref.issueId);
+  async findOrCreateIssue(ref: TrackerRef, scopeKey: string, title: string): Promise<Issue> {
+    const existing = await this.findIssue(ref.trackerType, scopeKey, ref.issueId);
     if (existing) {
       if (title && existing.title !== title) {
-        this.issueStmts.updateTitle.run(title, new Date().toISOString(), existing.id);
+        await getDB().run("UPDATE {{issues}} SET title = ?, updated_at = ? WHERE id = ?", [
+          title,
+          new Date().toISOString(),
+          existing.id,
+        ]);
         existing.title = title;
       }
       return existing;
@@ -339,14 +139,13 @@ export class Store {
 
     const now = new Date();
     const id = crypto.randomUUID();
-    this.issueStmts.insert.run(
-      id, ref.trackerType, scopeKey,
-      JSON.stringify(ref.scope), ref.issueId,
-      "created", title, now.toISOString(), now.toISOString()
+    await getDB().run(
+      "INSERT OR IGNORE INTO {{issues}} (id, tracker_type, tracker_scope_key, tracker_scope, tracker_issue_id, state, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [id, ref.trackerType, scopeKey, JSON.stringify(ref.scope), ref.issueId, "created", title, now.toISOString(), now.toISOString()]
     );
 
     // Re-read in case INSERT OR IGNORE hit a concurrent insert
-    const inserted = this.findIssue(ref.trackerType, scopeKey, ref.issueId);
+    const inserted = await this.findIssue(ref.trackerType, scopeKey, ref.issueId);
     if (inserted) return inserted;
 
     return {
@@ -356,36 +155,49 @@ export class Store {
     };
   }
 
-  updateIssueState(id: string, state: IssueState) {
-    this.issueStmts.updateState.run(state, new Date().toISOString(), id);
+  async updateIssueState(id: string, state: IssueState): Promise<void> {
+    await getDB().run("UPDATE {{issues}} SET state = ?, updated_at = ? WHERE id = ?", [
+      state,
+      new Date().toISOString(),
+      id,
+    ]);
   }
 
-  listActiveIssues(): Issue[] {
-    return (this.issueStmts.listActive.all() as IssueRow[]).map(rowToIssue);
+  async listActiveIssues(): Promise<Issue[]> {
+    const rows = await getDB().all<IssueRow>("SELECT * FROM {{issues}} WHERE state != 'closed'");
+    return rows.map(rowToIssue);
   }
 
-  listAllIssues(): Issue[] {
-    return (this.issueStmts.listAll.all() as IssueRow[]).map(rowToIssue);
+  async listAllIssues(): Promise<Issue[]> {
+    const rows = await getDB().all<IssueRow>("SELECT * FROM {{issues}}");
+    return rows.map(rowToIssue);
   }
 
   // ─── OpSessions ───
 
-  getSession(id: string): OpSession | undefined {
-    const row = this.sessionStmts.getById.get(id) as SessionRow | null;
+  async getSession(id: string): Promise<OpSession | undefined> {
+    const row = await getDB().get<SessionRow>("SELECT * FROM {{op_sessions}} WHERE id = ?", [id]);
     return row ? rowToSession(row) : undefined;
   }
 
-  getSessionByName(issueId: string, name: string): OpSession | undefined {
-    const row = this.sessionStmts.getByName.get(issueId, name) as SessionRow | null;
+  async getSessionByName(issueId: string, name: string): Promise<OpSession | undefined> {
+    const row = await getDB().get<SessionRow>(
+      "SELECT * FROM {{op_sessions}} WHERE issue_id = ? AND name = ?",
+      [issueId, name]
+    );
     return row ? rowToSession(row) : undefined;
   }
 
-  getSessionsForIssue(issueId: string): OpSession[] {
-    return (this.sessionStmts.getByIssue.all(issueId) as SessionRow[]).map(rowToSession);
+  async getSessionsForIssue(issueId: string): Promise<OpSession[]> {
+    const rows = await getDB().all<SessionRow>(
+      "SELECT * FROM {{op_sessions}} WHERE issue_id = ? ORDER BY created_at",
+      [issueId]
+    );
+    return rows.map(rowToSession);
   }
 
-  createSession(issueId: string, name: string): OpSession {
-    const existing = this.getSessionByName(issueId, name);
+  async createSession(issueId: string, name: string): Promise<OpSession> {
+    const existing = await this.getSessionByName(issueId, name);
     if (existing) return existing;
 
     const session: OpSession = {
@@ -395,50 +207,61 @@ export class Store {
       state: "idle",
       createdAt: new Date(),
     };
-    this.sessionStmts.insert.run(
-      session.id, session.issueId, session.name, session.state,
-      null, null, null, session.createdAt.toISOString()
+    await getDB().run(
+      "INSERT OR IGNORE INTO {{op_sessions}} (id, issue_id, name, state, opencode_session_id, opencode_pid, workdir, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      [session.id, session.issueId, session.name, session.state, null, null, null, session.createdAt.toISOString()]
     );
     return session;
   }
 
-  updateSession(id: string, patch: Partial<OpSession>): OpSession | undefined {
-    const row = this.sessionStmts.getById.get(id) as SessionRow | null;
+  async updateSession(id: string, patch: Partial<OpSession>): Promise<OpSession | undefined> {
+    const row = await getDB().get<SessionRow>("SELECT * FROM {{op_sessions}} WHERE id = ?", [id]);
     if (!row) return undefined;
     const existing = rowToSession(row);
     const updated = { ...existing, ...patch };
 
-    this.sessionStmts.update.run(
-      updated.state,
-      updated.opencodeSessionId ?? null,
-      updated.opencodePid ?? null,
-      updated.workdir ?? null,
-      updated.startedAt ?? null,
-      updated.progressCommentId ?? null,
-      updated.reactionCommentId ?? null,
-      updated.currentPrompt ?? null,
-      id
+    await getDB().run(
+      `UPDATE {{op_sessions}} SET state = ?, opencode_session_id = ?, opencode_pid = ?, workdir = ?,
+       started_at = ?, progress_comment_id = ?, reaction_comment_id = ?, current_prompt = ? WHERE id = ?`,
+      [
+        updated.state,
+        updated.opencodeSessionId ?? null,
+        updated.opencodePid ?? null,
+        updated.workdir ?? null,
+        updated.startedAt ?? null,
+        updated.progressCommentId ?? null,
+        updated.reactionCommentId ?? null,
+        updated.currentPrompt ?? null,
+        id,
+      ]
     );
     return updated;
   }
 
-  listAllSessions(): OpSession[] {
-    return (this.sessionStmts.listAll.all() as SessionRow[]).map(rowToSession);
+  async listAllSessions(): Promise<OpSession[]> {
+    const rows = await getDB().all<SessionRow>("SELECT * FROM {{op_sessions}}");
+    return rows.map(rowToSession);
   }
 
-  listNonIdleSessions(): OpSession[] {
-    return (this.sessionStmts.listNonIdle.all() as SessionRow[]).map(rowToSession);
+  async listNonIdleSessions(): Promise<OpSession[]> {
+    const rows = await getDB().all<SessionRow>("SELECT * FROM {{op_sessions}} WHERE state != 'idle'");
+    return rows.map(rowToSession);
   }
 
   // ─── Messages ───
 
-  createMessage(sessionId: string, content: string, sourceCommentId?: string, reactionCommentId?: string, model?: string): Message {
+  async createMessage(
+    sessionId: string,
+    content: string,
+    sourceCommentId?: string,
+    reactionCommentId?: string,
+    model?: string,
+  ): Promise<Message> {
     const now = new Date().toISOString();
     const id = crypto.randomUUID();
-    this.msgStmts.insert.run(
-      id, sessionId, content,
-      sourceCommentId ?? null, reactionCommentId ?? null,
-      "pending", 0, null, now, now
+    await getDB().run(
+      "INSERT OR IGNORE INTO {{messages}} (id, session_id, content, source_comment_id, reaction_comment_id, status, attempts, error, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [id, sessionId, content, sourceCommentId ?? null, reactionCommentId ?? null, "pending", 0, null, now, now]
     );
     return {
       id, sessionId, content, sourceCommentId, reactionCommentId,
@@ -448,40 +271,63 @@ export class Store {
     };
   }
 
-  getMessage(id: string): Message | undefined {
-    const row = this.msgStmts.getById.get(id) as MessageRow | null;
+  async getMessage(id: string): Promise<Message | undefined> {
+    const row = await getDB().get<MessageRow>("SELECT * FROM {{messages}} WHERE id = ?", [id]);
     return row ? rowToMessage(row) : undefined;
   }
 
-  getNextPendingMessage(sessionId: string): Message | undefined {
-    const row = this.msgStmts.getNextPending.get(sessionId) as MessageRow | null;
+  async getNextPendingMessage(sessionId: string): Promise<Message | undefined> {
+    const row = await getDB().get<MessageRow>(
+      "SELECT * FROM {{messages}} WHERE session_id = ? AND status = 'pending' ORDER BY created_at ASC LIMIT 1",
+      [sessionId]
+    );
     return row ? rowToMessage(row) : undefined;
   }
 
-  updateMessageStatus(id: string, status: Message["status"], error?: string) {
-    const row = this.msgStmts.updateStatusSelect.get(id) as MessageRow | null;
+  async updateMessageStatus(id: string, status: Message["status"], error?: string): Promise<void> {
+    const row = await getDB().get<MessageRow>("SELECT * FROM {{messages}} WHERE id = ?", [id]);
     const attempts = row ? row.attempts + (status === "failed" ? 1 : 0) : 0;
-    this.msgStmts.updateStatus.run(status, attempts, error ?? null, new Date().toISOString(), id);
+    await getDB().run(
+      "UPDATE {{messages}} SET status = ?, attempts = ?, error = ?, updated_at = ? WHERE id = ?",
+      [status, attempts, error ?? null, new Date().toISOString(), id]
+    );
   }
 
-  getMessagesForSession(sessionId: string): Message[] {
-    return (this.msgStmts.getBySession.all(sessionId) as MessageRow[]).map(rowToMessage);
+  async getMessagesForSession(sessionId: string): Promise<Message[]> {
+    const rows = await getDB().all<MessageRow>(
+      "SELECT * FROM {{messages}} WHERE session_id = ? ORDER BY created_at DESC",
+      [sessionId]
+    );
+    return rows.map(rowToMessage);
   }
 
-  getRecentMessages(sessionId: string, limit: number): Message[] {
-    return (this.msgStmts.getRecentBySession.all(sessionId, limit) as MessageRow[]).map(rowToMessage);
+  async getRecentMessages(sessionId: string, limit: number): Promise<Message[]> {
+    const rows = await getDB().all<MessageRow>(
+      "SELECT * FROM {{messages}} WHERE session_id = ? ORDER BY created_at DESC LIMIT ?",
+      [sessionId, limit]
+    );
+    return rows.map(rowToMessage);
   }
 
-  getPendingOrRunningMessages(): Message[] {
-    return (this.msgStmts.getPendingOrRunning.all() as MessageRow[]).map(rowToMessage);
+  async getPendingOrRunningMessages(): Promise<Message[]> {
+    const rows = await getDB().all<MessageRow>(
+      "SELECT * FROM {{messages}} WHERE status IN ('pending', 'running') ORDER BY created_at ASC"
+    );
+    return rows.map(rowToMessage);
   }
 
-  findMessageByCommentId(commentId: string): Message | undefined {
-    const row = this.msgStmts.findByCommentId.get(commentId) as MessageRow | null;
+  async findMessageByCommentId(commentId: string): Promise<Message | undefined> {
+    const row = await getDB().get<MessageRow>(
+      "SELECT * FROM {{messages}} WHERE source_comment_id = ?",
+      [commentId]
+    );
     return row ? rowToMessage(row) : undefined;
   }
 
-  close() {
-    this.db.close();
+  async close(): Promise<void> {
+    // The DB singleton is owned by db.ts; callers close it via shutdown of the
+    // driver there. This method is retained for API compatibility (tests,
+    // index.ts shutdown) and is a no-op now.
+    log.debug("store.close() is a no-op; DB lifecycle is managed by db.ts");
   }
 }

@@ -47,7 +47,7 @@ export function createServer(
 
   async function handleApi(req: Request, pathname: string): Promise<Response> {
     if (pathname === "/api/status") {
-      const status = engine.getStatus();
+      const status = await engine.getStatus();
       return json({
         env: cfg.env,
         daemon: { host: cfg.daemon.host, port: cfg.daemon.port },
@@ -56,36 +56,36 @@ export function createServer(
         pending: status.pendingCount,
         processes: status.processCount,
         observedIssues: status.observedIssues,
-        issues: store.listAllIssues().length,
-        sessions: store.listAllSessions().length,
+        issues: (await store.listAllIssues()).length,
+        sessions: (await store.listAllSessions()).length,
       });
     }
 
     if (pathname === "/api/issues") {
-      return json(store.listAllIssues());
+      return json(await store.listAllIssues());
     }
 
     if (pathname === "/api/sessions") {
-      return json(store.listAllSessions());
+      return json(await store.listAllSessions());
     }
 
     const issueIdMatch = pathname.match(/^\/api\/issues\/([0-9a-f-]+)$/);
     if (issueIdMatch) {
-      const issue = store.getIssue(issueIdMatch[1]!);
+      const issue = await store.getIssue(issueIdMatch[1]!);
       if (!issue) return json({ error: "not found" }, 404);
-      const sessions = store.getSessionsForIssue(issue.id);
+      const sessions = await store.getSessionsForIssue(issue.id);
       return json({ ...issue, sessions });
     }
 
     const sessionIdMatch = pathname.match(/^\/api\/sessions\/([0-9a-f-]+)$/);
     if (sessionIdMatch) {
-      const session = store.getSession(sessionIdMatch[1]!);
+      const session = await store.getSession(sessionIdMatch[1]!);
       if (!session) return json({ error: "not found" }, 404);
       return json(session);
     }
 
     if (pathname === "/api/queue") {
-      return json(engine.getQueue());
+      return json(await engine.getQueue());
     }
 
     if (pathname === "/api/processes") {
@@ -94,16 +94,16 @@ export function createServer(
 
     const sessionMsgsMatch = pathname.match(/^\/api\/sessions\/([0-9a-f-]+)\/messages$/);
     if (sessionMsgsMatch) {
-      const session = store.getSession(sessionMsgsMatch[1]!);
+      const session = await store.getSession(sessionMsgsMatch[1]!);
       if (!session) return json({ error: "not found" }, 404);
-      return json(store.getMessagesForSession(session.id));
+      return json(await store.getMessagesForSession(session.id));
     }
 
     const msgRetryMatch = pathname.match(/^\/api\/messages\/([0-9a-f-]+)\/retry$/);
     if (msgRetryMatch && req.method === "PATCH") {
-      const result = engine.retryMessage(msgRetryMatch[1]!);
+      const result = await engine.retryMessage(msgRetryMatch[1]!);
       if (!result) {
-        const msg = store.getMessage(msgRetryMatch[1]!);
+        const msg = await store.getMessage(msgRetryMatch[1]!);
         if (!msg) return json({ error: "not found" }, 404);
         if (msg.status !== "failed") return json({ error: "only failed messages can be retried" }, 400);
       }
@@ -114,7 +114,7 @@ export function createServer(
     if (forceStopMatch && req.method === "DELETE") {
       const key = decodeURIComponent(forceStopMatch[1]!);
       log.warn(`api: DELETE /api/processes/${key} (force-stop request)`);
-      const wasKilled = engine.forceStop(key);
+      const wasKilled = await engine.forceStop(key);
       return json({ ok: true, stopped: wasKilled });
     }
 

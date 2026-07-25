@@ -138,13 +138,13 @@ export class Engine {
     return join(this.cfg.opencode.baseWorkdir, repoName);
   }
 
-  private persistRuntimeState(sessionId: string) {
-    const session = this.store.getSession(sessionId);
+  private async persistRuntimeState(sessionId: string) {
+    const session = await this.store.getSession(sessionId);
     if (!session) return;
-    const issue = this.store.getIssue(session.issueId);
+    const issue = await this.store.getIssue(session.issueId);
     if (!issue) return;
     const k = this.sessionKey(session, issue);
-    this.store.updateSession(sessionId, {
+    await this.store.updateSession(sessionId, {
       startedAt: this.startedAt.get(k),
       progressCommentId: this.progressCommentId.get(k),
       currentPrompt: this.currentPrompt.get(k),
@@ -234,13 +234,13 @@ export class Engine {
     model?: string,
   ) {
     // Create or find issue
-    const issue = this.store.findOrCreateIssue(ref, scopeKey, issueData.title);
+    const issue = await this.store.findOrCreateIssue(ref, scopeKey, issueData.title);
     if (issue.state === "closed") {
       // Issue was closed before, now reopened
-      this.store.updateIssueState(issue.id, "active");
+      await this.store.updateIssueState(issue.id, "active");
       issue.state = "active";
     } else if (issue.state === "created") {
-      this.store.updateIssueState(issue.id, "active");
+      await this.store.updateIssueState(issue.id, "active");
       issue.state = "active";
     }
 
@@ -249,14 +249,14 @@ export class Engine {
 
     // Create default session for bot user
     const defaultSessionName = this.cfg.bot.username;
-    let session = this.store.getSessionByName(issue.id, defaultSessionName);
+    let session = await this.store.getSessionByName(issue.id, defaultSessionName);
     if (session && session.state === "running") {
       log.info(`engine: duplicate issue_opened — session already running for ${scopeKey}#${ref.issueId}`);
       this.startObserver(issue);
       return;
     }
     if (!session) {
-      session = this.store.createSession(issue.id, defaultSessionName);
+      session = await this.store.createSession(issue.id, defaultSessionName);
     }
 
     const k = this.sessionKey(session, issue);
@@ -271,7 +271,7 @@ export class Engine {
       this.handleLargeContent(workdir, issueData.body, "issue-body.txt"),
       issueData.author, workdir, instructions
     );
-    this.enqueueOrRun(session, issue, prompt, undefined, model);
+    await this.enqueueOrRun(session, issue, prompt, undefined, model);
   }
 
   private async handleCommented(
@@ -292,7 +292,7 @@ export class Engine {
     if (issueData.state !== "open") return;
 
     if (comment.id) {
-      if (this.processingComments.has(comment.id) || this.store.findMessageByCommentId(comment.id)) {
+      if (this.processingComments.has(comment.id) || await this.store.findMessageByCommentId(comment.id)) {
         log.info(`engine: duplicate comment ${comment.id}, skipping`);
         return;
       }
@@ -301,11 +301,11 @@ export class Engine {
 
     try {
     // Find issue
-    let issue = this.store.findIssue(ref.trackerType, scopeKey, ref.issueId);
+    let issue = await this.store.findIssue(ref.trackerType, scopeKey, ref.issueId);
     if (!issue) {
       // Issue not tracked yet — auto-track it
-      issue = this.store.findOrCreateIssue(ref, scopeKey, issueData.title);
-      this.store.updateIssueState(issue.id, "active");
+      issue = await this.store.findOrCreateIssue(ref, scopeKey, issueData.title);
+      await this.store.updateIssueState(issue.id, "active");
       issue.state = "active";
       this.startObserver(issue);
     } else if (issue.state === "closed") {
@@ -325,12 +325,12 @@ export class Engine {
 
     if (mentionName) {
       // @mention → targeted delivery
-      let session = this.store.getSessionByName(issue.id, mentionName);
+      let session = await this.store.getSessionByName(issue.id, mentionName);
 
       if (session) {
         // Forward to existing session
         if (dirPath) {
-          this.store.updateSession(session.id, { workdir: dirPath });
+          await this.store.updateSession(session.id, { workdir: dirPath });
           session.workdir = dirPath;
         }
         const workdir = this.resolveWorkdir(session, issue);
@@ -343,12 +343,12 @@ export class Engine {
         // Immediate ack
         await tracker.createComment(ref, `[system] ✓ Message forwarded to **${session.name}**${this.running.has(this.sessionKey(session, issue)) ? " (running)" : ""}.\n> session: \`${session.id}\` | workdir: \`${workdir}\``);
 
-        this.enqueueOrRun(session, issue, prompt, comment.id, model);
+        await this.enqueueOrRun(session, issue, prompt, comment.id, model);
       } else {
         // Create new session
-        session = this.store.createSession(issue.id, mentionName);
+        session = await this.store.createSession(issue.id, mentionName);
         if (dirPath) {
-          this.store.updateSession(session.id, { workdir: dirPath });
+          await this.store.updateSession(session.id, { workdir: dirPath });
           session.workdir = dirPath;
         }
         const workdir = this.resolveWorkdir(session, issue);
@@ -361,20 +361,20 @@ export class Engine {
           this.handleLargeContent(workdir, issueData.body, "issue-body.txt"),
           issueData.author, workdir, instructions
         );
-        this.enqueueOrRun(session, issue, prompt, comment.id, model);
+        await this.enqueueOrRun(session, issue, prompt, comment.id, model);
       }
     } else {
       // No valid @mention → forward to the most recently active session only.
       // Broadcasting to all sessions makes multiple AIs race on the same request;
       // routing to the last-active lets the user continue without re-@mentioning,
       // while @mention switches to a different AI.
-      const sessions = this.store.getSessionsForIssue(issue.id);
+      const sessions = await this.store.getSessionsForIssue(issue.id);
       if (sessions.length === 0) return;
 
       const session = pickLastActive(sessions);
       if (!session) return;
       if (dirPath) {
-        this.store.updateSession(session.id, { workdir: dirPath });
+        await this.store.updateSession(session.id, { workdir: dirPath });
         session.workdir = dirPath;
       }
       const workdir = this.resolveWorkdir(session, issue);
@@ -384,7 +384,7 @@ export class Engine {
         comment.author, issueData.title, workdir, instructions
       );
       await tracker.createComment(ref, `[system] ✓ Message forwarded to **${session.name}**${this.running.has(this.sessionKey(session, issue)) ? " (running)" : ""}.\n> session: \`${session.id}\` | workdir: \`${workdir}\``);
-      this.enqueueOrRun(session, issue, prompt, comment.id, model);
+      await this.enqueueOrRun(session, issue, prompt, comment.id, model);
     }
     } finally {
       if (comment.id) this.processingComments.delete(comment.id);
@@ -396,14 +396,14 @@ export class Engine {
     scopeKey: string,
     tracker: IssueTracker
   ) {
-    const issue = this.store.findIssue(ref.trackerType, scopeKey, ref.issueId);
+    const issue = await this.store.findIssue(ref.trackerType, scopeKey, ref.issueId);
     if (!issue) return;
 
-    this.store.updateIssueState(issue.id, "closed");
+    await this.store.updateIssueState(issue.id, "closed");
     this.stopObserver(issue.id);
 
     // Kill all running processes for this issue's sessions
-    const sessions = this.store.getSessionsForIssue(issue.id);
+    const sessions = await this.store.getSessionsForIssue(issue.id);
     for (const session of sessions) {
       const k = this.sessionKey(session, issue);
       const proc = this.processes.get(k);
@@ -414,14 +414,14 @@ export class Engine {
       // Clear runtime state
       this.clearRuntimeState(k);
       // Mark pending/running messages as interrupted
-      const msgs = this.store.getMessagesForSession(session.id);
+      const msgs = await this.store.getMessagesForSession(session.id);
       for (const msg of msgs) {
         if (msg.status === "pending" || msg.status === "running") {
-          this.store.updateMessageStatus(msg.id, "interrupted", "issue closed");
+          await this.store.updateMessageStatus(msg.id, "interrupted", "issue closed");
         }
       }
       // Update session state
-      this.store.updateSession(session.id, { state: "idle", opencodePid: undefined });
+      await this.store.updateSession(session.id, { state: "idle", opencodePid: undefined });
     }
 
     log.info(`engine: issue closed, ${sessions.length} sessions paused for ${scopeKey}#${ref.issueId}`);
@@ -444,32 +444,32 @@ export class Engine {
 
   // ─── Preemptive Scheduler ───
 
-  private enqueueOrRun(session: OpSession, issue: Issue, prompt: string, sourceCommentId?: string, model?: string) {
+  private async enqueueOrRun(session: OpSession, issue: Issue, prompt: string, sourceCommentId?: string, model?: string) {
     const k = this.sessionKey(session, issue);
 
     this.stuckNudgeRounds.delete(k);
     this.processExitNudgeRounds.delete(k);
 
-    const msg = this.store.createMessage(session.id, prompt, sourceCommentId, undefined, model);
+    const msg = await this.store.createMessage(session.id, prompt, sourceCommentId, undefined, model);
 
     if (this.running.has(k)) {
       // PREEMPTIVE: Kill running process, new message takes priority
       log.info(`engine: preempting ${k} with new message ${msg.id.slice(0, 8)}`);
-      this.preemptSession(k, session, issue, msg);
+      await this.preemptSession(k, session, issue, msg);
       return;
     }
 
     // Not running — execute directly
-    this.executeMessage(k, session, issue, msg);
+    await this.executeMessage(k, session, issue, msg);
   }
 
-  private preemptSession(k: string, session: OpSession, issue: Issue, newMsg: Message) {
+  private async preemptSession(k: string, session: OpSession, issue: Issue, newMsg: Message) {
     const proc = this.processes.get(k);
     const oldMsgId = this.currentMessage.get(k);
 
     // Mark old message as interrupted
     if (oldMsgId) {
-      this.store.updateMessageStatus(oldMsgId, "interrupted", "preempted by new message");
+      await this.store.updateMessageStatus(oldMsgId, "interrupted", "preempted by new message");
     }
 
     // Kill running process
@@ -486,19 +486,19 @@ export class Engine {
     this.startedAt.delete(k);
 
     // Execute new message
-    this.executeMessage(k, session, issue, newMsg);
+    await this.executeMessage(k, session, issue, newMsg);
   }
 
-  private executeMessage(k: string, session: OpSession, issue: Issue, msg: Message) {
+  private async executeMessage(k: string, session: OpSession, issue: Issue, msg: Message) {
     log.info(`engine: executing msg ${msg.id.slice(0, 8)} for ${k}`);
     this.running.add(k);
-    this.store.updateMessageStatus(msg.id, "running");
+    await this.store.updateMessageStatus(msg.id, "running");
     this.currentMessage.set(k, msg.id);
 
     // Update session state
-    this.store.updateSession(session.id, { state: "running" });
+    await this.store.updateSession(session.id, { state: "running" });
 
-    this.execProcess(k, session, issue, msg);
+    void this.execProcess(k, session, issue, msg);
   }
 
   // ─── Process Manager ───
@@ -562,8 +562,8 @@ export class Engine {
       this.currentPrompt.set(k, msg.content);
 
       // Persist PID for crash recovery
-      this.store.updateSession(session.id, { opencodePid: proc.pid });
-      this.persistRuntimeState(session.id);
+      await this.store.updateSession(session.id, { opencodePid: proc.pid });
+      await this.persistRuntimeState(session.id);
 
       log.info(`engine: spawned pid=${proc.pid} for ${k}`);
 
@@ -594,7 +594,7 @@ export class Engine {
                 // Persist now, not at exit: a preempt/crash before exit must
                 // not lose the ID, otherwise the re-run opens a fresh session.
                 if (!session.opencodeSessionId) {
-                  this.store.updateSession(session.id, { opencodeSessionId: sid });
+                  await this.store.updateSession(session.id, { opencodeSessionId: sid });
                   session.opencodeSessionId = sid;
                   log.info(`engine: captured sessionID=${sid.slice(0, 8)} for ${k} (early persist)`);
                 }
@@ -617,26 +617,26 @@ export class Engine {
 
       this.processes.delete(k);
       this.lastOutputAt.delete(k);
-      this.store.updateSession(session.id, { opencodePid: undefined });
+      await this.store.updateSession(session.id, { opencodePid: undefined });
 
       if (exitCode !== 0) {
         log.error(`engine: pid=${proc.pid} exited ${exitCode} for ${k}`);
         log.error(`  stderr: ${stderr.slice(0, 2000)}`);
-        this.store.updateMessageStatus(msg.id, "failed", `exit ${exitCode}: ${stderr.slice(0, 500)}`);
+        await this.store.updateMessageStatus(msg.id, "failed", `exit ${exitCode}: ${stderr.slice(0, 500)}`);
       } else {
         log.info(`engine: pid=${proc.pid} completed for ${k}`);
         if (stderr) log.warn(`engine: pid=${proc.pid} stderr on exit 0: ${stderr.slice(0, 500)}`);
         if (!opencodeSessionId) log.warn(`engine: pid=${proc.pid} produced NO sessionID (no stdout output)`);
-        this.store.updateMessageStatus(msg.id, "done");
+        await this.store.updateMessageStatus(msg.id, "done");
       }
 
       // Save opencode session ID for continuity
       if (opencodeSessionId && !session.opencodeSessionId) {
-        this.store.updateSession(session.id, { opencodeSessionId });
+        await this.store.updateSession(session.id, { opencodeSessionId });
       }
     } catch (err) {
       log.error(`engine: exec failed for ${k}:`, err);
-      this.store.updateMessageStatus(msg.id, "failed", (err as Error).message);
+      await this.store.updateMessageStatus(msg.id, "failed", (err as Error).message);
     }
 
     await this.finishRun(k, session, issue, exitCode, gen);
@@ -686,14 +686,14 @@ export class Engine {
     }
     this.progressCommentId.delete(k);
     this.currentPrompt.delete(k);
-    this.persistRuntimeState(session.id);
+    await this.persistRuntimeState(session.id);
 
 
     // spawn failed (exitCode === null) → skip completion check
     if (exitCode === null) {
       log.info(`engine: spawn failed for ${k}, skipping completion check`);
-      this.store.updateSession(session.id, { opencodePid: undefined });
-      this.deactivateIfIdle(k, session, issue);
+      await this.store.updateSession(session.id, { opencodePid: undefined });
+      await this.deactivateIfIdle(k, session, issue);
       return;
     }
     if (superseded()) {
@@ -712,19 +712,19 @@ export class Engine {
     if (hasRecent) {
       log.info(`engine: recent [bot] reply found for ${k}, marking done`);
       this.nudgeRounds.delete(k);
-      this.persistRuntimeState(session.id);
+      await this.persistRuntimeState(session.id);
     } else {
       const nudgeRound = this.nudgeRounds.get(k) ?? 0;
       if (exitCode === 0 && nudgeRound < Engine.MAX_NUDGE_ROUNDS) {
         log.info(`engine: no recent [bot] reply for ${k}, nudging (round ${nudgeRound + 1}/${Engine.MAX_NUDGE_ROUNDS})`);
         this.nudgeRounds.set(k, nudgeRound + 1);
         this.currentPrompt.delete(k);
-        this.persistRuntimeState(session.id);
+        await this.persistRuntimeState(session.id);
 
         const instructions = tracker.getTrackerInstructions(ref);
         const nudgePrompt = this.buildNudgePrompt(session, issue, instructions);
-        const nudgeMsg = this.store.createMessage(session.id, nudgePrompt);
-        this.dequeueOrIdle(k, session, issue, nudgeMsg);
+        const nudgeMsg = await this.store.createMessage(session.id, nudgePrompt);
+        await this.dequeueOrIdle(k, session, issue, nudgeMsg);
         return;
       }
       log.info(`engine: no recent [bot] reply for ${k}, marking done (nudge exhausted or process failed)`);
@@ -734,7 +734,7 @@ export class Engine {
     }
 
     // Remove eyes on source comment; react +1/-1 on the bot's last reply (fallback: source)
-    const recentMsgs = this.store.getRecentMessages(session.id, 1);
+    const recentMsgs = await this.store.getRecentMessages(session.id, 1);
     const lastMsg = recentMsgs[0];
     if (lastMsg?.sourceCommentId) {
       // Check if any other session is still running on this issue
@@ -755,30 +755,30 @@ export class Engine {
       log.info(`engine: finishRun aborted (superseded) for ${k}`);
       return;
     }
-    this.deactivateIfIdle(k, session, issue);
+    await this.deactivateIfIdle(k, session, issue);
   }
 
-  private deactivateIfIdle(k: string, session: OpSession, issue: Issue) {
-    const nextMsg = this.store.getNextPendingMessage(session.id);
+  private async deactivateIfIdle(k: string, session: OpSession, issue: Issue) {
+    const nextMsg = await this.store.getNextPendingMessage(session.id);
     if (nextMsg) {
-      const current = this.store.getSession(session.id);
+      const current = await this.store.getSession(session.id);
       if (current && current.state !== "idle") {
-        this.dequeueOrIdle(k, current, issue, nextMsg);
+        await this.dequeueOrIdle(k, current, issue, nextMsg);
         return;
       }
     }
 
     this.clearRuntimeState(k);
-    this.store.updateSession(session.id, { state: "idle" });
+    await this.store.updateSession(session.id, { state: "idle" });
   }
 
-  private dequeueOrIdle(k: string, session: OpSession, issue: Issue, msg: Message) {
+  private async dequeueOrIdle(k: string, session: OpSession, issue: Issue, msg: Message) {
     log.info(`engine: running dequeued msg ${msg.id.slice(0, 8)} for ${k}`);
-    this.store.updateMessageStatus(msg.id, "running");
+    await this.store.updateMessageStatus(msg.id, "running");
     this.running.add(k);
     this.currentMessage.set(k, msg.id);
-    this.store.updateSession(session.id, { state: "running" });
-    this.execProcess(k, session, issue, msg);
+    await this.store.updateSession(session.id, { state: "running" });
+    void this.execProcess(k, session, issue, msg);
   }
 
   // ─── Prompts ───
@@ -918,7 +918,7 @@ export class Engine {
   }
 
   private async runObserverCycle() {
-    const activeIssues = this.store.listActiveIssues();
+    const activeIssues = await this.store.listActiveIssues();
 
     for (const issue of activeIssues) {
       if (!this.observedIssues.has(issue.id)) continue;
@@ -932,7 +932,7 @@ export class Engine {
 
   private async observeIssue(issue: Issue) {
     const tracker = this.getTracker(issue.trackerType);
-    const sessions = this.store.getSessionsForIssue(issue.id);
+    const sessions = await this.store.getSessionsForIssue(issue.id);
 
     for (const session of sessions) {
       if (session.state !== "running") continue;
@@ -952,12 +952,12 @@ export class Engine {
           this.processes.delete(k);
           this.lastOutputAt.delete(k);
           this.running.delete(k);
-          this.store.updateSession(session.id, { state: "idle", opencodePid: undefined });
+          await this.store.updateSession(session.id, { state: "idle", opencodePid: undefined });
 
           // Mark running message as failed
           const msgId = this.currentMessage.get(k);
           if (msgId) {
-            this.store.updateMessageStatus(msgId, "failed", "process died unexpectedly");
+            await this.store.updateMessageStatus(msgId, "failed", "process died unexpectedly");
             this.currentMessage.delete(k);
           }
 
@@ -977,8 +977,8 @@ export class Engine {
 
               const instructions = tracker.getTrackerInstructions(ref);
               const nudgePrompt = this.buildProcessExitNudgePrompt(session, issue, instructions);
-              const nudgeMsg = this.store.createMessage(session.id, nudgePrompt);
-              this.dequeueOrIdle(k, session, issue, nudgeMsg);
+              const nudgeMsg = await this.store.createMessage(session.id, nudgePrompt);
+              await this.dequeueOrIdle(k, session, issue, nudgeMsg);
               continue;
             } else {
               // AI already replied before dying — no need to nudge, but user must be
@@ -997,9 +997,9 @@ export class Engine {
           }
 
           // Try to dequeue next message
-          const nextMsg = this.store.getNextPendingMessage(session.id);
+          const nextMsg = await this.store.getNextPendingMessage(session.id);
           if (nextMsg) {
-            this.dequeueOrIdle(k, session, issue, nextMsg);
+            await this.dequeueOrIdle(k, session, issue, nextMsg);
           }
           continue;
         }
@@ -1021,8 +1021,8 @@ export class Engine {
 
             const instructions = tracker.getTrackerInstructions(ref);
             const nudgePrompt = this.buildStuckNudgePrompt(session, issue, instructions, minutes);
-            const nudgeMsg = this.store.createMessage(session.id, nudgePrompt);
-            this.dequeueOrIdle(k, session, issue, nudgeMsg);
+            const nudgeMsg = await this.store.createMessage(session.id, nudgePrompt);
+            await this.dequeueOrIdle(k, session, issue, nudgeMsg);
           } else {
             log.warn(`engine: stuck for ${minutes}min on ${k}, stuck nudge exhausted (${stuckNudgeRound}/${this.maxStuckNudges}), giving up`);
             await tracker.createComment(ref, `[system] ⛔ **${session.name}** stuck for ${minutes} min, gave up after ${this.maxStuckNudges} restart(s).`).catch(
@@ -1035,7 +1035,7 @@ export class Engine {
       } else if (session.state === "running" && !this.running.has(k)) {
         log.warn(`engine: observer fixing orphaned running state for ${k}`);
         this.running.delete(k);
-        this.store.updateSession(session.id, { state: "idle" });
+        await this.store.updateSession(session.id, { state: "idle" });
       }
     }
 
@@ -1057,7 +1057,7 @@ export class Engine {
         } else {
           const result = await tracker.createComment(ref, body);
           this.progressCommentId.set(k, result.id);
-          this.persistRuntimeState(session.id);
+          await this.persistRuntimeState(session.id);
         }
       } catch (err) {
         log.error(`engine: progress report failed for ${k}:`, (err as Error).message);
@@ -1071,7 +1071,7 @@ export class Engine {
   // ─── Recovery ───
 
   private async recover() {
-    const allSessions = this.store.listAllSessions();
+    const allSessions = await this.store.listAllSessions();
     for (const session of allSessions) {
       if (session.opencodePid) {
         try {
@@ -1088,13 +1088,13 @@ export class Engine {
             try { process.kill(session.opencodePid, "SIGKILL"); } catch { /* dead */ }
           }
         } catch { /* already dead */ }
-        this.store.updateSession(session.id, { opencodePid: undefined });
+        await this.store.updateSession(session.id, { opencodePid: undefined });
       }
     }
 
     // Restore runtime state from DB
     for (const session of allSessions) {
-      const issue = this.store.getIssue(session.issueId);
+      const issue = await this.store.getIssue(session.issueId);
       if (!issue || issue.state === "closed") continue;
       const k = this.sessionKey(session, issue);
       if (session.startedAt != null) this.startedAt.set(k, session.startedAt);
@@ -1110,7 +1110,7 @@ export class Engine {
     }
 
     // Recover stuck messages
-    const stuck = this.store.getPendingOrRunningMessages();
+    const stuck = await this.store.getPendingOrRunningMessages();
     if (stuck.length === 0) return;
 
     log.info(`engine: recovering ${stuck.length} stuck messages`);
@@ -1118,7 +1118,7 @@ export class Engine {
     // Reset running messages to pending
     for (const msg of stuck) {
       if (msg.status === "running") {
-        this.store.updateMessageStatus(msg.id, "pending");
+        await this.store.updateMessageStatus(msg.id, "pending");
       }
     }
 
@@ -1131,9 +1131,9 @@ export class Engine {
     }
 
     for (const [sessionId, msgs] of bySession) {
-      const session = this.store.getSession(sessionId);
+      const session = await this.store.getSession(sessionId);
       if (!session) continue;
-      const issue = this.store.getIssue(session.issueId);
+      const issue = await this.store.getIssue(session.issueId);
       if (!issue || issue.state === "closed") continue;
 
       const k = this.sessionKey(session, issue);
@@ -1147,37 +1147,37 @@ export class Engine {
       const comments = await tracker.listComments(ref).catch((): TrackerComment[] => []);
       if (this.hasRecentBotReply(comments, tracker)) {
         log.info(`engine: recovered msg ${first.id.slice(0, 8)} for ${k} — bot reply detected, marking done`);
-        this.store.updateMessageStatus(first.id, "done");
-        const next = this.store.getNextPendingMessage(session.id);
-        if (next) { this.dequeueOrIdle(k, session, issue, next); }
+        await this.store.updateMessageStatus(first.id, "done");
+        const next = await this.store.getNextPendingMessage(session.id);
+        if (next) { await this.dequeueOrIdle(k, session, issue, next); }
         continue;
       }
 
       log.info(`engine: recovering msg ${first.id.slice(0, 8)} for ${k}`);
-      this.dequeueOrIdle(k, session, issue, first);
+      await this.dequeueOrIdle(k, session, issue, first);
     }
   }
 
   // ─── API Methods ───
 
-  retryMessage(messageId: string): boolean {
-    const msg = this.store.getMessage(messageId);
+  async retryMessage(messageId: string): Promise<boolean> {
+    const msg = await this.store.getMessage(messageId);
     if (!msg || msg.status !== "failed") return false;
-    const session = this.store.getSession(msg.sessionId);
+    const session = await this.store.getSession(msg.sessionId);
     if (!session) return false;
-    const issue = this.store.getIssue(session.issueId);
+    const issue = await this.store.getIssue(session.issueId);
     if (!issue || issue.state === "closed") return false;
 
-    this.store.updateMessageStatus(messageId, "pending");
+    await this.store.updateMessageStatus(messageId, "pending");
     const k = this.sessionKey(session, issue);
     if (!this.running.has(k)) {
-      this.dequeueOrIdle(k, session, issue, msg);
+      await this.dequeueOrIdle(k, session, issue, msg);
     }
     return true;
   }
 
-  getStatus() {
-    const pendingCount = this.store.getPendingOrRunningMessages().filter(m => m.status === "pending").length;
+  async getStatus() {
+    const pendingCount = (await this.store.getPendingOrRunningMessages()).filter(m => m.status === "pending").length;
     return {
       runningCount: this.running.size,
       runningKeys: [...this.running],
@@ -1187,13 +1187,13 @@ export class Engine {
     };
   }
 
-  getQueue(): Record<string, number> {
+  async getQueue(): Promise<Record<string, number>> {
     const result: Record<string, number> = {};
-    const allPending = this.store.getPendingOrRunningMessages().filter(m => m.status === "pending");
+    const allPending = (await this.store.getPendingOrRunningMessages()).filter(m => m.status === "pending");
     for (const msg of allPending) {
-      const session = this.store.getSession(msg.sessionId);
+      const session = await this.store.getSession(msg.sessionId);
       if (!session) continue;
-      const issue = this.store.getIssue(session.issueId);
+      const issue = await this.store.getIssue(session.issueId);
       if (!issue) continue;
       const k = this.sessionKey(session, issue);
       result[k] = (result[k] ?? 0) + 1;
@@ -1224,7 +1224,7 @@ export class Engine {
     try { process.kill(pid, signal); } catch { /* already dead */ }
   }
 
-  forceStop(key: string): boolean {
+  async forceStop(key: string): Promise<boolean> {
     const proc = this.processes.get(key);
     this.stopping.add(key);
     log.warn(`engine: forceStop ${key}, pid=${proc?.pid ?? "none"}`);
@@ -1248,22 +1248,22 @@ export class Engine {
     // Update session and messages
     const parsed = parseKey(key);
     if (parsed) {
-      const issue = this.store.findIssue(parsed.trackerType, parsed.scopeKey, parsed.issueId);
+      const issue = await this.store.findIssue(parsed.trackerType, parsed.scopeKey, parsed.issueId);
       if (issue) {
-        const session = this.store.getSessionByName(issue.id, parsed.sessionName);
+        const session = await this.store.getSessionByName(issue.id, parsed.sessionName);
         if (session) {
           if (progressId) {
             const ref = this.sessionToRef(session, issue);
             const tracker = this.getTracker(issue.trackerType);
             void tracker.editComment(ref, progressId, `[system] ⛔ **${session.name}** force-stopped.`).catch(() => {});
           }
-          const msgs = this.store.getMessagesForSession(session.id);
+          const msgs = await this.store.getMessagesForSession(session.id);
           for (const msg of msgs) {
             if (msg.status === "pending" || msg.status === "running") {
-              this.store.updateMessageStatus(msg.id, "failed", "force stopped");
+              await this.store.updateMessageStatus(msg.id, "failed", "force stopped");
             }
           }
-          this.store.updateSession(session.id, {
+          await this.store.updateSession(session.id, {
             state: "idle",
             opencodePid: undefined,
             startedAt: undefined,

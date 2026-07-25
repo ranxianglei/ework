@@ -30,7 +30,15 @@ export const configSchema = z.object({
     baseWorkdir: z.string(),
   }),
   db: z.object({
+    driver: z.enum(["sqlite", "mysql"]).default("sqlite"),
+    host: z.string().default("127.0.0.1"),
+    port: z.coerce.number().default(3306),
+    user: z.string().default("ework-daemon"),
+    password: z.string().default(""),
+    name: z.string().default("ework-daemon"),
     path: z.string(),
+    prefix: z.string().default(""),
+    skipCreate: z.boolean().default(false),
   }),
   completionCheck: z.object({
     apiKey: z.string(),
@@ -59,6 +67,21 @@ const TEST_DEFAULTS = {
   db: { path: join(process.cwd(), "test", "ework-daemon-test.db") },
 };
 
+function readDbSection(fallbackPath: string) {
+  const driver = (process.env.WORK_DB_DRIVER ?? "sqlite").trim().toLowerCase();
+  return {
+    driver: (driver === "mysql" ? "mysql" : "sqlite") as "sqlite" | "mysql",
+    host: process.env.WORK_DB_HOST ?? "127.0.0.1",
+    port: process.env.WORK_DB_PORT ? Number(process.env.WORK_DB_PORT) : 3306,
+    user: process.env.WORK_DB_USER ?? "ework-daemon",
+    password: process.env.WORK_DB_PASSWORD ?? "",
+    name: process.env.WORK_DB_NAME ?? "ework-daemon",
+    path: process.env.WORK_DB_PATH ?? process.env.DAEMON_DB_PATH ?? fallbackPath,
+    prefix: process.env.WORK_DB_PREFIX ?? "",
+    skipCreate: process.env.WORK_DB_SKIP_CREATE === "1" || process.env.WORK_DB_SKIP_CREATE === "true",
+  };
+}
+
 export function loadConfig(): Config {
   const env = getEnv();
 
@@ -84,9 +107,7 @@ export function loadConfig(): Config {
         binary: process.env.OPENCODE_BINARY ?? TEST_DEFAULTS.opencode.binary,
         baseWorkdir: process.env.OPENCODE_BASE_WORKDIR ?? TEST_DEFAULTS.opencode.baseWorkdir,
       },
-      db: {
-        path: process.env.DAEMON_DB_PATH ?? TEST_DEFAULTS.db.path,
-      },
+      db: readDbSection(TEST_DEFAULTS.db.path),
       completionCheck: process.env.COMPLETION_CHECK_API_KEY ? {
         apiKey: process.env.COMPLETION_CHECK_API_KEY,
         baseURL: process.env.COMPLETION_CHECK_BASE_URL ?? "",
@@ -118,9 +139,7 @@ export function loadConfig(): Config {
       binary: process.env.OPENCODE_BINARY ?? "opencode",
       baseWorkdir: process.env.OPENCODE_BASE_WORKDIR,
     },
-    db: {
-      path: process.env.DAEMON_DB_PATH ?? PRODUCTION_DB_DEFAULT,
-    },
+    db: readDbSection(PRODUCTION_DB_DEFAULT),
     completionCheck: process.env.COMPLETION_CHECK_API_KEY ? {
       apiKey: process.env.COMPLETION_CHECK_API_KEY,
       baseURL: process.env.COMPLETION_CHECK_BASE_URL ?? "",
