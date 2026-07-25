@@ -6,7 +6,7 @@ import { homedir } from "os";
 import { loadConfig, DB_OVERRIDABLE, parseOverride, resolveTtsBackend } from "./config";
 import type { Config } from "./config";
 import { setConfig, initDB } from "./db";
-import { testMysqlConnection, migrateSqliteToMysql, writeMysqlEnv } from "./db-admin";
+import { testMysqlConnection, migrateSqliteToMysql, writeMysqlEnv, migrateMysqlToSqlite, writeSqliteEnv } from "./db-admin";
 import type { MysqlTargetOpts } from "./db-admin";
 import { checkAuth, makeAuthCookieHeader, clearAuthCookieHeader, loginHTML, sanitizeNext, ensureBootstrapAdmin, ensureBootstrapSystem, isReservedSystemLogin } from "./auth";
 import { OpencodeClient, OpencodeError } from "./opencode";
@@ -750,6 +750,17 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     } catch (e) {
       return json({ ok: false, configured: false, error: errMsg(e), manual: daemonManualInstructions(daemonOpts) });
     }
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/db/revert") {
+    if (!ctx.user || ctx.user.is_admin !== 1) return json({ error: "admin required" }, 403);
+    if (!rateLimit(`db-revert:${ip}`, 2, 2 / 3600)) return json({ error: "rate limited" }, 429);
+    const targetPath = join(process.cwd(), "ework.sqlite");
+    const result = await migrateMysqlToSqlite(targetPath);
+    if (!result.ok) return json(result, 422);
+    await writeSqliteEnv(join(process.cwd(), ".env"), targetPath);
+    scheduleRestart();
+    return json({ ...result, targetPath, restarting: true });
   }
 
   if (url.pathname === "/settings") {

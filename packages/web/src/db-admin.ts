@@ -11,7 +11,8 @@
 // wizard can fail/retry without affecting live traffic.
 
 import { createPool, type Pool, type PoolConnection } from "mysql2/promise";
-import { readFileSync, writeFileSync, existsSync } from "fs";
+import { Database, type SQLQueryBindings } from "bun:sqlite";
+import { readFileSync, writeFileSync, existsSync, unlinkSync } from "fs";
 import { join } from "path";
 import { getDB } from "./db";
 
@@ -439,6 +440,121 @@ export async function writeMysqlEnv(
   if (missing.length > 0) {
     if (out.length > 0 && out[out.length - 1] !== "") out.push("");
     out.push("# ework-web: MySQL backend (written by db-admin migration)");
+    for (const k of missing) {
+      out.push(`${k}=${desired[k] ?? ""}`);
+      written.push(k);
+    }
+  }
+
+  writeFileSync(envPath, out.join("\n") + "\n", "utf8");
+  return { written, envPath };
+}
+
+// Reverse migration: MySQL → SQLite. Creates a fresh SQLite file at targetPath,
+// applies schema.sql, copies all 14 tables from the running MySQL driver.
+// Used as the safety net when the MySQL switch goes wrong.
+export async function migrateMysqlToSqlite(targetPath: string): Promise<MigrateResult> {
+  const target = new Database(targetPath, { create: true, readwrite: true });
+  const completed: { table: string; rows: number }[] = [];
+
+  try {
+    target.exec("PRAGMA journal_mode = WAL");
+    target.exec("PRAGMA foreign_keys = ON");
+
+    // config table (same shape as db.ts:144 — not in schema.sql).
+    // `key` is NOT reserved in SQLite (unlike MySQL).
+    target.exec(
+      applyTargetPrefix(
+        "CREATE TABLE IF NOT EXISTS {{config}} (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL)",
+        ""
+      )
+    );
+
+    // schema.sql — bun:sqlite's exec handles the whole file (comments + multi-statement).
+    const schema = readFileSync(join(import.meta.dir, "schema.sql"), "utf8");
+    target.exec(applyTargetPrefix(schema, ""));
+
+    const source = getDB();
+    for (const table of MIGRATION_TABLE_ORDER) {
+      const rows = await source.all<Record<string, unknown>>(`SELECT * FROM {{${table}}}`);
+      if (rows.length === 0) {
+        completed.push({ table, rows: 0 });
+        continue;
+      }
+      const first = rows[0];
+      if (!first) {
+        completed.push({ table, rows: 0 });
+        continue;
+      }
+      const cols = Object.keys(first);
+      if (cols.length === 0) {
+        completed.push({ table, rows: rows.length });
+        continue;
+      }
+
+      const placeholders = cols.map(() => "?").join(",");
+      const insertSql = `INSERT INTO ${table} (${cols.join(",")}) VALUES (${placeholders})`;
+
+      target.transaction(() => {
+        for (const row of rows) {
+          const vals = cols.map((c) => {
+            const v = (row as Record<string, unknown>)[c];
+            return v === undefined ? null : v;
+          });
+          target.query(insertSql).run(...(vals as SQLQueryBindings[]));
+        }
+      })();
+
+      const countRow = target.query(`SELECT COUNT(*) AS c FROM ${table}`).get() as { c: number } | null;
+      const count = countRow?.c ?? -1;
+      if (count !== rows.length) {
+        throw new Error(`Row-count mismatch for ${table}: mysql=${rows.length} sqlite=${count}`);
+      }
+      completed.push({ table, rows: rows.length });
+    }
+
+    target.close();
+    return { ok: true, tables: completed };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    try { target.close(); } catch { /* already closed */ }
+    try { unlinkSync(targetPath); } catch { /* file may not exist */ }
+    return { ok: false, error: redactPassword(msg), partial: completed.map((c) => `${c.table}=${c.rows}`) };
+  }
+}
+
+export async function writeSqliteEnv(envPath: string, dbPath: string): Promise<WriteEnvResult> {
+  const desired: Record<string, string> = {
+    WORK_DB_DRIVER: "sqlite",
+    WORK_DB_PATH: dbPath,
+  };
+
+  const linesIn = existsSync(envPath)
+    ? readFileSync(envPath, "utf8").split(/\r?\n/)
+    : [];
+
+  const written: string[] = [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+
+  for (const line of linesIn) {
+    const m = line.match(/^([A-Z][A-Z0-9_]*)\s*=\s*(.*)$/);
+    if (m) {
+      const key = m[1] ?? "";
+      if (key in desired) {
+        out.push(`${key}=${desired[key] ?? ""}`);
+        written.push(key);
+        seen.add(key);
+        continue;
+      }
+    }
+    out.push(line);
+  }
+
+  const missing = Object.keys(desired).filter((k) => !seen.has(k));
+  if (missing.length > 0) {
+    if (out.length > 0 && out[out.length - 1] !== "") out.push("");
+    out.push("# ework-web: revert to SQLite (written by db-admin migration)");
     for (const k of missing) {
       out.push(`${k}=${desired[k] ?? ""}`);
       written.push(k);

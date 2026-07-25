@@ -62,6 +62,7 @@ function buildDbSection(viewer: UserRow): string {
 <button type="button" id="db-enable" class="secondary">④ 启用并重启</button>
 </div>
 <div id="db-result" class="db-result"></div>
+${isMysql ? `<hr style="border:0;border-top:1px solid var(--border);margin:1rem 0"><div class="db-controls"><button type="button" id="db-revert" class="secondary">⚠ 切回 SQLite（安全网）</button></div><div id="db-revert-result" class="db-result"></div>` : ""}
 <script>
 (function(){
 var R=document.getElementById('db-result');
@@ -90,6 +91,19 @@ document.getElementById('db-test').onclick=function(){act('test');};
 document.getElementById('db-migrate').onclick=function(){act('migrate');};
 document.getElementById('db-daemon').onclick=function(){act('daemon-config');};
 document.getElementById('db-enable').onclick=function(){act('enable');};
+if(document.getElementById('db-revert')){
+document.getElementById('db-revert').onclick=async function(){
+if(!confirm('确认切回 SQLite？将创建新的 SQLite 文件并迁移数据，然后重启。'))return;
+var R=document.getElementById('db-revert-result');
+R.className='db-result db-loading';R.textContent='正在迁移到 SQLite…';
+try{
+var res=await fetch('/api/db/revert',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+var data=await res.json();
+if(data.ok){R.className='db-result db-ok';R.textContent='✓ 已迁移到 '+data.targetPath+'。进程重启中…';setTimeout(poll,3000);}
+else{R.className='db-result db-err';R.textContent='✗ '+(data.error||'未知错误')+(data.partial?'\\n部分完成: '+data.partial.join(', '):'');}
+}catch(e){R.className='db-result db-err';R.textContent='✗ '+(e.message||String(e));}
+};
+}
 })();
 </script>
 </section>`;
