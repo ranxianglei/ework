@@ -28,6 +28,9 @@ export const configSchema = z.object({
   opencode: z.object({
     binary: z.string().default("opencode"),
     baseWorkdir: z.string(),
+    dbPath: z.string().default(
+      `${process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share")}/opencode/opencode.db`
+    ),
   }),
   work: z.object({
     capacity: z.coerce.number().int().positive().default(4),
@@ -120,6 +123,7 @@ export function loadConfig(): Config {
       opencode: {
         binary: process.env.OPENCODE_BINARY ?? TEST_DEFAULTS.opencode.binary,
         baseWorkdir: process.env.OPENCODE_BASE_WORKDIR ?? TEST_DEFAULTS.opencode.baseWorkdir,
+        dbPath: process.env.OPENCODE_DB_PATH ?? `${process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share")}/opencode/opencode.db`,
       },
       work: readWorkSection(),
       db: readDbSection(TEST_DEFAULTS.db.path),
@@ -153,6 +157,7 @@ export function loadConfig(): Config {
     opencode: {
       binary: process.env.OPENCODE_BINARY ?? "opencode",
       baseWorkdir: process.env.OPENCODE_BASE_WORKDIR,
+      dbPath: process.env.OPENCODE_DB_PATH ?? `${process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share")}/opencode/opencode.db`,
     },
     work: readWorkSection(),
     db: readDbSection(PRODUCTION_DB_DEFAULT),

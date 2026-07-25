@@ -2,6 +2,7 @@ import type { Config } from "./config";
 import type { Store } from "./op";
 import type { Engine } from "./opencode";
 import type { IssueTracker, TrackerEvent } from "./trackers/types";
+import { OpencodeReader, OpencodeReaderError } from "./opencode-reader";
 import { log, uptimeSeconds, version } from "./logger";
 
 type TrackerMap = Map<string, IssueTracker>;
@@ -19,6 +20,7 @@ export function createServer(
   engine: Engine,
   trackers: TrackerMap
 ) {
+  const reader = new OpencodeReader(cfg.opencode.binary, cfg.opencode.dbPath);
   async function handleWebhook(req: Request, tracker: IssueTracker): Promise<Response> {
     const rawBody = await req.text();
     const headers: Record<string, string | null> = {};
@@ -116,6 +118,35 @@ export function createServer(
       log.warn(`api: DELETE /api/processes/${key} (force-stop request)`);
       const wasKilled = await engine.forceStop(key);
       return json({ ok: true, stopped: wasKilled });
+    }
+
+    if (pathname === "/api/opencode/sessions") {
+      const url = new URL(req.url);
+      const limit = Math.min(Math.max(Number(url.searchParams.get("limit") ?? "50"), 1), 500);
+      const sessions = await reader.listSessions(limit);
+      return json(sessions);
+    }
+
+    const ocExportMatch = pathname.match(/^\/api\/opencode\/sessions\/([A-Za-z0-9_-]+)\/export$/);
+    if (ocExportMatch) {
+      try {
+        const data = await reader.exportSession(ocExportMatch[1]!);
+        return json(data);
+      } catch (e) {
+        if (e instanceof OpencodeReaderError) return json({ error: e.message }, e.status);
+        return json({ error: "export failed" }, 502);
+      }
+    }
+
+    const ocRawMatch = pathname.match(/^\/api\/opencode\/sessions\/([A-Za-z0-9_-]+)\/raw$/);
+    if (ocRawMatch) {
+      try {
+        const raw = await reader.exportSessionRaw(ocRawMatch[1]!);
+        return json({ raw });
+      } catch (e) {
+        if (e instanceof OpencodeReaderError) return json({ error: e.message }, e.status);
+        return json({ error: "export failed" }, 502);
+      }
     }
 
     return json({ error: "not found" }, 404);
