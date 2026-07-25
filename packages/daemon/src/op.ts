@@ -378,6 +378,31 @@ export class Store {
     return ins.insertId;
   }
 
+  /**
+   * On restart, absorb ownership from a previous incarnation on the same host.
+   * Transfers issues + deletes stale daemon rows with matching display_name and
+   * endpoint. This fixes the boot-race where a killed daemon's lease hasn't
+   * expired yet, blocking the new daemon from claiming its own issues.
+   */
+  async absorbSameHostDaemons(
+    daemonId: number,
+    displayName: string,
+    endpoint: string,
+  ): Promise<number> {
+    const db = getDB();
+    const transferred = await db.run(
+      "UPDATE {{issues}} SET owner_daemon_id = ? WHERE owner_daemon_id IN (" +
+        "SELECT id FROM {{daemons}} WHERE display_name = ? AND internal_endpoint = ? AND id != ?" +
+        ")",
+      [daemonId, displayName, endpoint, daemonId],
+    );
+    await db.run(
+      "DELETE FROM {{daemons}} WHERE display_name = ? AND internal_endpoint = ? AND id != ?",
+      [displayName, endpoint, daemonId],
+    );
+    return transferred.changes;
+  }
+
   async heartbeat(daemonId: number): Promise<void> {
     await getDB().run(
       "UPDATE {{daemons}} SET last_heartbeat = ? WHERE id = ?",

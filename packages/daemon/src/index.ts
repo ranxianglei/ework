@@ -44,8 +44,10 @@ async function boot() {
   const displayName = hostname();
   const internalEndpoint = `${config.daemon.host}:${config.daemon.port}`;
   const daemonId = await store.registerDaemon(displayName, internalEndpoint, config.work.capacity, config.work.leaseTtlMs);
+  const absorbed = await store.absorbSameHostDaemons(daemonId, displayName, internalEndpoint);
   const claimed = await store.claimAllOwnerless(daemonId);
   log.info(`  daemon registered: id=${daemonId} (adopted orphan slot if id was reused)`);
+  if (absorbed > 0) log.info(`  restart recovery: absorbed ${absorbed} issue(s) from previous incarnation`);
   if (claimed > 0) log.info(`  first-boot migration: claimed ${claimed} previously-ownerless issue(s)`);
 
   const engine = new Engine(config, store, trackers, { daemonId });
