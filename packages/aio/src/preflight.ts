@@ -70,11 +70,23 @@ export function checkPreflight(
 export const REQUIRED_COMMANDS: readonly string[] = ["bun", "npm", "opencode"];
 export const OPTIONAL_COMMANDS: readonly string[] = ["systemctl", "sudo"];
 
+export function isDevRepo(): boolean {
+  const pkgRoot = path.resolve(import.meta.dir, "..");
+  return fs.existsSync(path.join(pkgRoot, ".git"));
+}
+
 // Ensure `ework-aio` is reachable from PATH. npm puts the bin at its own
 // global prefix's bin dir, which may differ from every dir on PATH (e.g.
 // prefix changed after a node upgrade). Walk PATH in order and, at the
 // first writable dir, create/repair a symlink to our actual bin.
+//
+// Skip when running from a dev checkout (detected via .git dir in package
+// root). A dev-repo symlink would shadow the npm global install and pin the
+// user to stale bundled deps — exactly the bug where `upgrade` pulls latest
+// but `restart` still runs 0.1.0 from the dev repo's node_modules.
 export function ensureSelfBinSymlink(logger: Logger): void {
+  if (isDevRepo()) return;
+
   const ourBin = path.resolve(import.meta.dir, "..", "bin", "ework-aio");
   if (!fs.existsSync(ourBin)) return;
   const ourBinReal = fs.realpathSync(ourBin);

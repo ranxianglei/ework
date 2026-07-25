@@ -24,7 +24,7 @@ import { resolvePaths, type PathConfig } from "../paths.ts";
 import { type InstallContext } from "../config.ts";
 import { ensureEnvFile, parseEnvFile, patchEnvKey } from "../env.ts";
 import { startProcess, isProcessRunning, readPidFile } from "../pidfile.ts";
-import { checkPreflight, resolveCommand, resolveBundledBin, ensureSelfBinSymlink, REQUIRED_COMMANDS } from "../preflight.ts";
+import { checkPreflight, resolveCommand, resolveBundledBin, ensureSelfBinSymlink, isDevRepo, REQUIRED_COMMANDS } from "../preflight.ts";
 import {
   generateUnitFile,
   writeUnitFile,
@@ -106,6 +106,10 @@ export async function runInstall(
   logger.ok(`preflight: bun, npm, opencode all on PATH`);
 
   ensureSelfBinSymlink(logger);
+
+  if (isDevRepo()) {
+    logger.warn("running from dev checkout — bundled deps may differ from published versions. For production use 'npm install -g ework-aio' instead.");
+  }
 
   // 2. Resolve ework-web / ework-daemon binaries.
   //
