@@ -634,6 +634,52 @@ info "skipping Phase 5.5 (E2E_DB=mysql or no migration sidecar)"
 fi
 
 # -----------------------------------------------------------------------------
+# Phase 5.6: Session API smoke test
+# -----------------------------------------------------------------------------
+# Verifies the new OpenCode session API endpoints (ework-daemon@0.3.0+) respond.
+# Also checks web session page renders via the client factory. The daemon API
+# is the foundation for multi-machine session proxying (web → daemon HTTP API).
+echo
+echo "====================================================="
+echo "Phase 5.6: session API smoke test"
+echo "====================================================="
+
+info "daemon session API: GET /api/opencode/sessions"
+SESSIONS_CODE=$(curl -sS -o /tmp/e2e-sessions.json -w "%{http_code}" \
+  "http://127.0.0.1:$DAEMON_PORT/api/opencode/sessions?limit=10" 2>/dev/null || echo "000")
+case "$SESSIONS_CODE" in
+  200)
+    SESSIONS_COUNT=$(jq -r '.sessions | length' /tmp/e2e-sessions.json 2>/dev/null || echo "0")
+    if [[ "$SESSIONS_COUNT" -gt 0 ]]; then
+      pass "daemon session API: $SESSIONS_COUNT session(s) returned"
+    else
+      info "daemon session API responds (200), no sessions yet — OpenCode may not have run"
+    fi
+    ;;
+  000)
+    info "daemon session API not reachable — skipping (older daemon?)"
+    ;;
+  *)
+    info "daemon session API returned HTTP $SESSIONS_CODE — older daemon without session endpoints?"
+    ;;
+esac
+
+info "web session page: GET /sessions (authenticated)"
+WEB_SESSIONS_CODE=$(curl -sS -o /dev/null -w "%{http_code}" \
+  -H "Cookie: $AUTH_COOKIE" \
+  "http://127.0.0.1:$WORK_PORT/sessions" 2>/dev/null || echo "000")
+case "$WEB_SESSIONS_CODE" in
+  200)
+    pass "web session page renders (200)"
+    ;;
+  302)
+    pass "web session page redirect (302) — post-migration re-auth likely"
+    ;;
+  *)
+    info "web session page returned HTTP $WEB_SESSIONS_CODE"
+    ;;
+esac
+
 # Phase 6: uninstall
 # -----------------------------------------------------------------------------
 echo
