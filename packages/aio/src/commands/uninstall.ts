@@ -2,6 +2,8 @@
 // all user data. Idempotent — missing units or stale PID files are not
 // errors. Data dir is never touched; user removes it manually if desired.
 
+import path from "node:path";
+import { existsSync } from "node:fs";
 import { Logger } from "../log.ts";
 import { resolvePaths } from "../paths.ts";
 import { stopProcess } from "../pidfile.ts";
@@ -58,7 +60,23 @@ export async function runUninstall(opts: GlobalOptions, logger: Logger): Promise
   }
 
   // 3. Print recovery hint.
+  // Derive ework-aio's own install path from import.meta.dir so the removal
+  // command works even when npm's global prefix changed since install (the
+  // bin symlink may live under a different prefix than `npm prefix -g`).
+  const pkgRoot = path.resolve(import.meta.dir, "..", "..");
+  const binCandidates = [
+    path.join(pkgRoot, "..", "..", "..", "bin", "ework-aio"),
+    path.join(pkgRoot, "..", "..", "bin", "ework-aio"),
+  ];
+  const binPath = binCandidates.find((p) => existsSync(p));
+  const rmSelf = `rm -rf ${pkgRoot}${binPath ? ` ${binPath}` : ""}`;
+
   logger.hr();
   logger.ok(`services removed. data preserved at ${paths.dataDir}`);
-  logger.warn(`to fully remove: rm -rf ${paths.dataDir} && npm uninstall -g ework-aio ework-web ework-daemon opencode-ework`);
+  logger.warn(
+    `to fully remove:\n` +
+    `  rm -rf ${paths.dataDir}\n` +
+    `  ${rmSelf}\n` +
+    `  npm uninstall -g ework-web ework-daemon opencode-ework`,
+  );
 }
