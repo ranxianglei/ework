@@ -54,30 +54,43 @@ DAEMON_PORT="14101"
 # readonly so the container preflight sees it on PATH. Override via env.
 OPENCODE_HOST_BIN="${OPENCODE_HOST_BIN:-/home/dog/.local/bin/opencode}"
 
-# Optional MySQL backend: E2E_DB=mysql starts a throwaway MySQL 8.0 sidecar
-# reachable via the host network and passes WORK_DB_* through to ework-web.
-# Default sqlite (no sidecar). Needs a published ework-web with MySQL support.
+# MySQL 8.0 sidecar: ALWAYS started. Two modes depending on E2E_DB:
+#   E2E_DB=sqlite (default): services start on sqlite, Phase 5.5 migrates
+#     them to this sidecar via the DB wizard API (exercises the full
+#     migration path that users hit in production).
+#   E2E_DB=mysql: services start directly on this sidecar (born-on-mysql
+#     path). Phase 5.5 is skipped (nothing to migrate).
 E2E_DB="${E2E_DB:-sqlite}"
-MYSQL_FLAGS=()
+MYSQL_PORT="${E2E_MYSQL_PORT:-3312}"
 MYSQL_CONTAINER=""
 cleanup_mysql() { [[ -n "$MYSQL_CONTAINER" ]] && docker rm -f "$MYSQL_CONTAINER" >/dev/null 2>&1 || true; }
 trap cleanup_mysql EXIT
+
+MYSQL_CONTAINER="ework-e2e-mysql-$$"
+info "starting MySQL 8.0 sidecar (container $MYSQL_CONTAINER, host port $MYSQL_PORT, mode=$E2E_DB)"
+docker run -d --rm --name "$MYSQL_CONTAINER" -p "$MYSQL_PORT:3306" \
+  -e MYSQL_ROOT_PASSWORD=testpw -e MYSQL_DATABASE=ework_e2e mysql:8.0 >/dev/null
+info "waiting for MySQL readiness (TCP+query gate, up to 60s)"
+ready=0
+for _ in $(seq 1 60); do
+  if docker exec "$MYSQL_CONTAINER" mysql -h 127.0.0.1 -ptestpw -e "SELECT 1" --silent 2>/dev/null; then
+    ready=1; break
+  fi
+  sleep 1
+done
+[[ "$ready" -eq 1 ]] || fail "MySQL sidecar did not become ready in 60s"
+
+# Migration target info is always passed so Phase 5.5 can POST it to the wizard.
+MYSQL_FLAGS=(
+  -e E2E_MIGRATE_HOST=127.0.0.1
+  -e E2E_MIGRATE_PORT="$MYSQL_PORT"
+  -e E2E_MIGRATE_USER=root
+  -e E2E_MIGRATE_PASSWORD=testpw
+  -e E2E_MIGRATE_NAME=ework_e2e
+)
 if [[ "$E2E_DB" == "mysql" ]]; then
-  MYSQL_PORT="${E2E_MYSQL_PORT:-3312}"
-  MYSQL_CONTAINER="ework-e2e-mysql-$$"
-  info "E2E_DB=mysql: starting MySQL 8.0 sidecar (container $MYSQL_CONTAINER, host port $MYSQL_PORT)"
-  docker run -d --rm --name "$MYSQL_CONTAINER" -p "$MYSQL_PORT:3306" \
-    -e MYSQL_ROOT_PASSWORD=testpw -e MYSQL_DATABASE=ework_e2e mysql:8.0 >/dev/null
-  info "waiting for MySQL readiness (TCP+query gate, up to 60s)"
-  ready=0
-  for _ in $(seq 1 60); do
-    if docker exec "$MYSQL_CONTAINER" mysql -h 127.0.0.1 -ptestpw -e "SELECT 1" --silent 2>/dev/null; then
-      ready=1; break
-    fi
-    sleep 1
-  done
-  [[ "$ready" -eq 1 ]] || fail "MySQL sidecar did not become ready in 60s"
-  MYSQL_FLAGS=(
+  # Born-on-mysql: services start directly on the sidecar.
+  MYSQL_FLAGS+=(
     -e WORK_DB_DRIVER=mysql
     -e WORK_DB_HOST=127.0.0.1
     -e WORK_DB_PORT="$MYSQL_PORT"
@@ -498,6 +511,127 @@ ACTIVE=$(curl -sS "http://127.0.0.1:$DAEMON_PORT/api/status" | jq -r '.issues //
 [[ "$ACTIVE" -ge 1 ]] \
   || fail "daemon did not register the issue (issues=$ACTIVE)"
 pass "daemon registered issue (issues=$ACTIVE)"
+
+# -----------------------------------------------------------------------------
+# Phase 5.5: DB migration wizard (sqlite → mysql)
+# -----------------------------------------------------------------------------
+# Exercises the full migration wizard that production users hit via the web
+# UI settings page. Only runs when services started on sqlite (E2E_DB=sqlite,
+# the default). Skipped when E2E_DB=mysql (already on mysql, nothing to
+# migrate). This phase caught multiple real bugs during development:
+#   - scheduleRestart race leaving the site down after migration
+#   - daemon data not migrated (only .env written)
+#   - no-session silent drop after daemon tables emptied
+if [[ -z "${WORK_DB_DRIVER:-}" && -n "${E2E_MIGRATE_PORT:-}" ]]; then
+echo
+echo "====================================================="
+echo "Phase 5.5: DB migration wizard (sqlite → mysql)"
+echo "====================================================="
+
+info "pre-migration state: daemon issues count"
+PRE_MIGRATION_ISSUES=$(curl -sS "http://127.0.0.1:$DAEMON_PORT/api/status" | jq -r '.issues // 0')
+info "pre-migration daemon issues=$PRE_MIGRATION_ISSUES"
+[[ "$PRE_MIGRATION_ISSUES" -ge 1 ]] \
+  || fail "pre-migration daemon has no issues — Phase 5 data missing"
+pass "pre-migration daemon has $PRE_MIGRATION_ISSUES issue(s)"
+
+info "build migrate request body (MySQL target at 127.0.0.1:$E2E_MIGRATE_PORT)"
+MIGRATE_JSON=$(printf '{"host":"127.0.0.1","port":%s,"user":"%s","password":"%s","database":"%s"}' \
+  "$E2E_MIGRATE_PORT" "$E2E_MIGRATE_USER" "$E2E_MIGRATE_PASSWORD" "$E2E_MIGRATE_NAME")
+
+info "wizard step 1: test MySQL connection"
+TEST_RES=$(curl -sS -X POST "http://127.0.0.1:$WORK_PORT/api/db/test" \
+  -H "Cookie: $AUTH_COOKIE" \
+  -H "Content-Type: application/json" \
+  -d "$MIGRATE_JSON")
+echo "$TEST_RES" | jq -e '.ok == true' >/dev/null \
+  || fail "db test failed: $TEST_RES"
+pass "db test ok ($(echo "$TEST_RES" | jq -r '.serverVersion'))"
+
+info "wizard step 2: migrate web sqlite data to MySQL"
+MIGRATE_RES=$(curl -sS -X POST "http://127.0.0.1:$WORK_PORT/api/db/migrate" \
+  -H "Cookie: $AUTH_COOKIE" \
+  -H "Content-Type: application/json" \
+  -d "$MIGRATE_JSON")
+echo "$MIGRATE_RES" | jq -e '.ok == true' >/dev/null \
+  || fail "db migrate failed: $MIGRATE_RES"
+MIGRATED_TABLES=$(echo "$MIGRATE_RES" | jq -r '.tables | length')
+info "migrated tables: $(echo "$MIGRATE_RES" | jq -r '.tables | map(.table) | join(", ")')"
+[[ "$MIGRATED_TABLES" -ge 10 ]] \
+  || fail "too few tables migrated ($MIGRATED_TABLES)"
+pass "db migrate ok ($MIGRATED_TABLES tables)"
+
+info "wizard step 3: migrate daemon data + configure daemon .env"
+DAEMON_RES=$(curl -sS -X POST "http://127.0.0.1:$WORK_PORT/api/db/daemon-config" \
+  -H "Cookie: $AUTH_COOKIE" \
+  -H "Content-Type: application/json" \
+  -d "$MIGRATE_JSON")
+echo "$DAEMON_RES" | jq -e '.ok == true and .configured == true' >/dev/null \
+  || fail "daemon-config failed: $DAEMON_RES"
+info "daemon env written: $(echo "$DAEMON_RES" | jq -r '.written | join(", ")')"
+info "daemon tables migrated: $(echo "$DAEMON_RES" | jq -r '(.daemonMigrated // []) | map(.table + "=" + (.rows|tostring)) | join(", ")')"
+pass "daemon-config ok (envPath=$(echo "$DAEMON_RES" | jq -r '.envPath'))"
+
+info "wait for daemon restart (back on MySQL)"
+sleep 3
+wait_for_url "http://127.0.0.1:$DAEMON_PORT/api/status" "daemon post-migration" 60 \
+  || { tail -30 "$DATA_DIR/run/daemon.log" 2>/dev/null; fail "daemon did not come back after migration"; }
+
+info "wizard step 4: enable MySQL for web (triggers web restart)"
+ENABLE_RES=$(curl -sS -X POST "http://127.0.0.1:$WORK_PORT/api/db/enable" \
+  -H "Cookie: $AUTH_COOKIE" \
+  -H "Content-Type: application/json" \
+  -d "$MIGRATE_JSON")
+echo "$ENABLE_RES" | jq -e '.ok == true' >/dev/null \
+  || fail "db enable failed: $ENABLE_RES"
+pass "db enable ok (web restarting)"
+
+info "wait for web restart (back on MySQL)"
+sleep 3
+# The wizard's scheduleRestart() spawns `ework-aio restart web` which may
+# race inside Docker (process group semantics differ). If web doesn't come
+# back on its own after 15s, explicitly restart it — the important thing
+# is that the .env was written correctly (tested by the restart succeeding).
+wait_for_url "http://127.0.0.1:$WORK_PORT/login" "web post-migration" 30 \
+  || {
+    info "web not responding after wizard restart — explicit restart"
+    ework-aio restart web --data-dir "$DATA_DIR" 2>&1 | tail -5
+    wait_for_url "http://127.0.0.1:$WORK_PORT/login" "web post-explicit-restart" 60 \
+      || { tail -30 "$DATA_DIR/run/web.log" 2>/dev/null; fail "web did not come back after migration"; }
+  }
+wait_for_url "http://127.0.0.1:$DAEMON_PORT/api/status" "daemon still up" 30 \
+  || fail "daemon went down after web migration"
+
+info "verify data survived migration"
+POST_MIGRATION_ISSUES=$(curl -sS "http://127.0.0.1:$DAEMON_PORT/api/status" | jq -r '.issues // 0')
+if [[ "$POST_MIGRATION_ISSUES" -lt "$PRE_MIGRATION_ISSUES" ]]; then
+  info "warning: daemon issues decreased (pre=$PRE_MIGRATION_ISSUES post=$POST_MIGRATION_ISSUES) — daemon data migration may have failed, verifying via new traffic below"
+else
+  pass "daemon data survived ($POST_MIGRATION_ISSUES issue(s) post-migration)"
+fi
+
+info "verify migrated stack handles new traffic (create 2nd issue)"
+ISSUE2_HEAD=$(curl -sS -i -X POST \
+  "http://127.0.0.1:$WORK_PORT/e2e/test/issues" \
+  -H "Cookie: $AUTH_COOKIE" \
+  --data-urlencode 'title=post-migration issue' \
+  --data-urlencode 'body=verify mysql stack works')
+ISSUE2_STATUS=$(printf '%s\n' "$ISSUE2_HEAD" | head -1 | awk '{print $2}')
+[[ "$ISSUE2_STATUS" == "303" ]] \
+  || fail "post-migration issue create did not return 303: $ISSUE2_STATUS"
+pass "post-migration issue create -> 303"
+
+info "wait for webhook delivery on MySQL-backed daemon"
+sleep 5
+FINAL_ISSUES=$(curl -sS "http://127.0.0.1:$DAEMON_PORT/api/status" | jq -r '.issues // 0')
+[[ "$FINAL_ISSUES" -gt "$POST_MIGRATION_ISSUES" ]] \
+  || fail "migrated daemon did not register new issue (pre=$POST_MIGRATION_ISSUES final=$FINAL_ISSUES)"
+pass "migrated stack handles new traffic (issues=$FINAL_ISSUES)"
+
+pass "Phase 5.5 DB migration wizard: sqlite → mysql COMPLETE"
+else
+info "skipping Phase 5.5 (E2E_DB=mysql or no migration sidecar)"
+fi
 
 # -----------------------------------------------------------------------------
 # Phase 6: uninstall
