@@ -17,12 +17,13 @@ import {
   isProcessRunning,
 } from "../pidfile.ts";
 import { parseEnvFile } from "../env.ts";
-import { resolveCommand } from "../preflight.ts";
+import { resolveCommand, resolveBundledBin } from "../preflight.ts";
 import type { GlobalOptions, ServiceTarget } from "../types.ts";
 
 interface ServicePaths {
   bin: string;
   pkg: string;
+  binRelPath: string;
   dataDir: string;
   envFile: string;
   pidFile: string;
@@ -35,6 +36,7 @@ function servicePaths(paths: PathConfig, svc: "web" | "daemon"): ServicePaths {
     return {
       bin: "ework-web",
       pkg: "ework-web",
+      binRelPath: "bin/ework-web.js",
       dataDir: paths.webDataDir,
       envFile: paths.webEnvFile,
       pidFile: paths.webPidFile,
@@ -43,14 +45,9 @@ function servicePaths(paths: PathConfig, svc: "web" | "daemon"): ServicePaths {
     };
   }
   return {
-    // ework-daemon ships two bins; only `ework-daemon-server` actually starts
-    // the HTTP server. The `ework-daemon` bin is a client CLI that prints help
-    // and exits — spawning it leaves the daemon "looking dead" with help text
-    // in the log. See install.ts preflight for the full rationale.
     bin: "ework-daemon-server",
-    // npm package name differs from the bin name — the error hint must use the
-    // package name, not the bin, or the user gets a 404 trying to install.
     pkg: "ework-daemon",
+    binRelPath: "bin/ework-daemon-server.js",
     dataDir: paths.daemonDataDir,
     envFile: paths.daemonEnvFile,
     pidFile: paths.daemonPidFile,
@@ -77,9 +74,9 @@ async function startOne(
   logger: Logger,
 ): Promise<boolean> {
   const sp = servicePaths(paths, svc);
-  const binPath = resolveCommand(sp.bin);
+  const binPath = resolveBundledBin(sp.pkg, sp.binRelPath) ?? resolveCommand(sp.bin);
   if (!binPath) {
-    throw new InstallError(`${sp.bin} not found on PATH — install with: npm install -g ${sp.pkg}`);
+    throw new InstallError(`${sp.bin} not found — update with: npm install -g ework-aio@latest`);
   }
   const existingPid = await readPidFile(sp.pidFile);
   if (existingPid !== null && isProcessRunning(existingPid)) {
