@@ -42,6 +42,23 @@ export function detectMention(text: string): string | null {
   return null;
 }
 
+/**
+ * Pick the most recently active session from a list: the one whose process last
+ * started (`startedAt`), falling back to creation time when a session has never
+ * run yet. Returns `undefined` for an empty list.
+ *
+ * Used by the no-mention dispatch path to route a comment to a single session
+ * (the "last AI") instead of broadcasting to all of them.
+ */
+export function pickLastActive(sessions: OpSession[]): OpSession | undefined {
+  if (sessions.length === 0) return undefined;
+  return sessions.reduce((a, b) => {
+    const aT = a.startedAt ?? a.createdAt.getTime();
+    const bT = b.startedAt ?? b.createdAt.getTime();
+    return bT > aT ? b : a;
+  });
+}
+
 // ─── Engine ───
 
 export class Engine {
@@ -303,7 +320,7 @@ export class Engine {
     // falls through to broadcast instead of spawning a phantom session (ework-daemon#2).
     const mentionName = rawMention && this.isAllowedAgent(rawMention) ? rawMention : null;
     if (rawMention && !mentionName) {
-      log.info(`engine: @${rawMention} is not an allowed agent — broadcasting instead of spawning`);
+      log.info(`engine: @${rawMention} is not an allowed agent — routing to last session instead of spawning`);
     }
 
     if (mentionName) {
@@ -347,27 +364,27 @@ export class Engine {
         this.enqueueOrRun(session, issue, prompt, comment.id, model);
       }
     } else {
-      // No @mention → broadcast to all sessions on this issue
+      // No valid @mention → forward to the most recently active session only.
+      // Broadcasting to all sessions makes multiple AIs race on the same request;
+      // routing to the last-active lets the user continue without re-@mentioning,
+      // while @mention switches to a different AI.
       const sessions = this.store.getSessionsForIssue(issue.id);
       if (sessions.length === 0) return;
 
-      for (const session of sessions) {
-        if (dirPath) {
-          this.store.updateSession(session.id, { workdir: dirPath });
-          session.workdir = dirPath;
-        }
-        const workdir = this.resolveWorkdir(session, issue);
-        const instructions = tracker.getTrackerInstructions(ref);
-        const prompt = this.buildForwardPrompt(
-          session.name, this.handleLargeContent(workdir, comment.body, `comment-${comment.id}.txt`),
-          comment.author, issueData.title, workdir, instructions
-        );
-        this.enqueueOrRun(session, issue, prompt, comment.id, model);
+      const session = pickLastActive(sessions);
+      if (!session) return;
+      if (dirPath) {
+        this.store.updateSession(session.id, { workdir: dirPath });
+        session.workdir = dirPath;
       }
-
-      // Immediate ack
-      const names = sessions.map(s => `**${s.name}** (\`${s.opencodeSessionId ?? s.id}\`, \`${this.resolveWorkdir(s, issue)}\`)`).join(", ");
-      await tracker.createComment(ref, `[system] ✓ Message broadcasted to: ${names}.`);
+      const workdir = this.resolveWorkdir(session, issue);
+      const instructions = tracker.getTrackerInstructions(ref);
+      const prompt = this.buildForwardPrompt(
+        session.name, this.handleLargeContent(workdir, comment.body, `comment-${comment.id}.txt`),
+        comment.author, issueData.title, workdir, instructions
+      );
+      await tracker.createComment(ref, `[system] ✓ Message forwarded to **${session.name}**${this.running.has(this.sessionKey(session, issue)) ? " (running)" : ""}.\n> session: \`${session.id}\` | workdir: \`${workdir}\``);
+      this.enqueueOrRun(session, issue, prompt, comment.id, model);
     }
     } finally {
       if (comment.id) this.processingComments.delete(comment.id);
