@@ -205,25 +205,20 @@ function parseDbTargetOpts(payload: unknown): MysqlTargetOpts | { error: string 
 // Two restart paths depending on how this process was launched. Both run
 // AFTER the HTTP response is sent (caller schedules this last):
 //   systemd (INVOCATION_ID set): exit → the unit's Restart=always brings us back
-//   PID-file mode (ework-aio start): `ework-aio restart web` SIGTERMs us via the
-//     pidfile and spawns a fresh process that re-reads the updated .env.
-// The ework-aio spawn is UNSAFE under systemd — it would start a second process
-// on the same port — so the INVOCATION_ID gate is load-bearing.
+//   PID-file mode (ework-aio start): spawn `ework-aio restart web`, then exit.
+//     The restart child reads our PID file, finds a dead PID (stale), cleans
+//     up, and starts fresh. Always exiting avoids the race where the child
+//     SIGTERMs us while we're still serving the old config.
 function scheduleRestart(): void {
   if (process.env.INVOCATION_ID) {
     setTimeout(() => process.exit(0), 750);
     return;
   }
-  const child = spawn("ework-aio", ["restart", "web"], {
+  spawn("ework-aio", ["restart", "web"], {
     detached: true,
     stdio: "ignore",
-  });
-  child.on("error", () => {
-    // ework-aio not on PATH (dev mode) — best-effort exit; if no supervisor
-    // is watching, the admin restarts manually.
-    setTimeout(() => process.exit(0), 750);
-  });
-  child.unref();
+  }).unref();
+  setTimeout(() => process.exit(0), 1500);
 }
 
 // The daemon's `issues` table (thin ref) collides with the web's `issues`
