@@ -1,6 +1,7 @@
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { readFileSync, appendFileSync } from "fs";
+import { spawn } from "child_process";
 import { loadConfig, DB_OVERRIDABLE, parseOverride, resolveTtsBackend } from "./config";
 import type { Config } from "./config";
 import { setConfig, initDB } from "./db";
@@ -198,6 +199,30 @@ function parseDbTargetOpts(payload: unknown): MysqlTargetOpts | { error: string 
   const opts: MysqlTargetOpts = { host, port: portNum, user, password, database };
   if (prefix) opts.prefix = prefix;
   return opts;
+}
+
+// Two restart paths depending on how this process was launched. Both run
+// AFTER the HTTP response is sent (caller schedules this last):
+//   systemd (INVOCATION_ID set): exit → the unit's Restart=always brings us back
+//   PID-file mode (ework-aio start): `ework-aio restart web` SIGTERMs us via the
+//     pidfile and spawns a fresh process that re-reads the updated .env.
+// The ework-aio spawn is UNSAFE under systemd — it would start a second process
+// on the same port — so the INVOCATION_ID gate is load-bearing.
+function scheduleRestart(): void {
+  if (process.env.INVOCATION_ID) {
+    setTimeout(() => process.exit(0), 750);
+    return;
+  }
+  const child = spawn("ework-aio", ["restart", "web"], {
+    detached: true,
+    stdio: "ignore",
+  });
+  child.on("error", () => {
+    // ework-aio not on PATH (dev mode) — best-effort exit; if no supervisor
+    // is watching, the admin restarts manually.
+    setTimeout(() => process.exit(0), 750);
+  });
+  child.unref();
 }
 
 const REPO_ISSUE_RE = /^\/([^/]+)\/([^/]+)\/issues\/(\d+)$/;
@@ -660,10 +685,7 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     const parsed = parseDbTargetOpts(payload);
     if ("error" in parsed) return json(parsed, 400);
     const envResult = await writeMysqlEnv(join(process.cwd(), ".env"), parsed);
-    // Exit after the response flushes; the supervisor (systemd / ework-aio)
-    // restarts the process, which re-reads .env and boots against MySQL.
-    // P4 may refine this with a graceful drain or an ework-aio CLI call.
-    setTimeout(() => process.exit(0), 750);
+    scheduleRestart();
     return json({ ok: true, ...envResult, restarting: true });
   }
 
