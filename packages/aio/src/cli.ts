@@ -49,7 +49,7 @@ Commands:
                                   Add 'systemd' to also write+enable systemd
                                   units. Without 'systemd', runs in pure
                                   PID-file mode (no systemctl calls).
-  upgrade                         Pull latest ework-aio from npm and restart
+  upgrade | update                 Pull latest ework-aio from npm and restart
                                   services. Use this to update — don't re-run
                                   'install' for version bumps.
   uninstall                       Stop services and remove units (data preserved)
@@ -434,7 +434,8 @@ export async function main(
         await runInstall(opts, logger);
         return 0;
       }
-      case "upgrade": {
+      case "upgrade":
+      case "update": {
         await runUpgrade(opts, logger);
         return 0;
       }
