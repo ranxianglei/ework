@@ -240,6 +240,13 @@ export async function runStart(
 ): Promise<void> {
   const paths = resolvePaths({ dataDir: opts.dataDir, scope: opts.scope, useSystemd: false });
   for (const { sp, label } of iterTargets(paths, target)) {
+    if (label === "router") {
+      const binPath = resolveBundledBin(sp.pkg, sp.binRelPath) ?? resolveCommand(sp.bin);
+      if (!binPath) {
+        logger.log(`ework-router skipped (binary not found — install with: npm install -g ework-router)`);
+        continue;
+      }
+    }
     await startFromSp(sp, label, logger);
   }
 }
