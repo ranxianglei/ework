@@ -10,7 +10,7 @@ export type Scope = "user" | "system";
 
 // Which service(s) a command targets. `ps` and `status` use "both";
 // `start web`/`stop daemon` use a single target.
-export type ServiceTarget = "web" | "daemon" | "both";
+export type ServiceTarget = "web" | "daemon" | "router" | "both";
 
 export interface GlobalOptions {
   // Install-time knobs (defaults live in src/types.ts DEFAULTS).

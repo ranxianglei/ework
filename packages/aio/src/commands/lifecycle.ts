@@ -36,7 +36,7 @@ export interface ServicePaths {
   portKey: string | null;
 }
 
-function servicePaths(paths: PathConfig, svc: "web" | "daemon"): ServicePaths {
+function servicePaths(paths: PathConfig, svc: "web" | "daemon" | "router"): ServicePaths {
   if (svc === "web") {
     return {
       bin: "ework-web",
@@ -47,6 +47,18 @@ function servicePaths(paths: PathConfig, svc: "web" | "daemon"): ServicePaths {
       pidFile: paths.webPidFile,
       logFile: paths.webLogFile,
       portKey: "WORK_PORT",
+    };
+  }
+  if (svc === "router") {
+    return {
+      bin: "ework-router",
+      pkg: "ework-router",
+      binRelPath: "bin/ework-router.js",
+      dataDir: paths.routerDataDir,
+      envFile: paths.routerEnvFile,
+      pidFile: paths.routerPidFile,
+      logFile: paths.routerLogFile,
+      portKey: "ROUTER_PORT",
     };
   }
   return {
@@ -95,7 +107,7 @@ async function readLogTail(logFile: string, maxLines: number): Promise<string | 
 }
 
 async function startOne(
-  svc: "web" | "daemon",
+  svc: "web" | "daemon" | "router",
   paths: PathConfig,
   logger: Logger,
 ): Promise<boolean> {
@@ -140,7 +152,7 @@ export async function startFromSp(
   return true;
 }
 
-async function stopOne(svc: "web" | "daemon", paths: PathConfig, logger: Logger): Promise<boolean> {
+async function stopOne(svc: "web" | "daemon" | "router", paths: PathConfig, logger: Logger): Promise<boolean> {
   const sp = servicePaths(paths, svc);
   return stopFromSp(sp, svc, logger);
 }
@@ -194,8 +206,9 @@ function iterDaemonInstances(
   }));
 }
 
-function targets(target: ServiceTarget): Array<"web" | "daemon"> {
-  return target === "both" ? ["web", "daemon"] : [target];
+function targets(target: ServiceTarget): Array<"web" | "daemon" | "router"> {
+  if (target === "both") return ["web", "daemon", "router"];
+  return [target];
 }
 
 function iterTargets(
@@ -206,6 +219,8 @@ function iterTargets(
   for (const svc of targets(target)) {
     if (svc === "web") {
       out.push({ sp: servicePaths(paths, "web"), label: "web" });
+    } else if (svc === "router") {
+      out.push({ sp: servicePaths(paths, "router"), label: "router" });
     } else {
       const insts = iterDaemonInstances(paths);
       if (insts.length === 0) {
@@ -269,6 +284,7 @@ export async function runStatus(opts: GlobalOptions, logger: Logger): Promise<St
 
   const probeTargets: Array<{ sp: ServicePaths; label: string }> = [
     { sp: servicePaths(paths, "web"), label: "web" },
+    { sp: servicePaths(paths, "router"), label: "router" },
   ];
   const daemonInsts = iterDaemonInstances(paths);
   if (daemonInsts.length === 0) {

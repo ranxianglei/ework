@@ -62,12 +62,12 @@ Commands:
     config get <KEY>              Print current value of one key
     config set <KEY> <VALUE>      Set a key, then restart affected service
                                   (unless --no-restart is given)
-    config restart <web|daemon|both>
-                                  Restart one or both services
+    config restart <web|daemon|router|both>
+                                  Restart one or all services
 
-  start [web|daemon|both]         Start services in PID-file mode (default both)
-  stop [web|daemon|both]          Stop services (SIGTERM, 5s grace, then SIGKILL)
-  restart [web|daemon|both]       Stop + start
+  start [web|daemon|router|both]  Start services in PID-file mode (default both)
+  stop [web|daemon|router|both]   Stop services (SIGTERM, 5s grace, then SIGKILL)
+  restart [web|daemon|router|both] Stop + start
   add-daemon [port]               Start an additional daemon instance
   ps                              Show PID-file mode status (alias for 'status')
 
@@ -306,9 +306,9 @@ export function parseArgs(argv: string[]): ParsedArgs {
 
 function parseServiceTarget(arg: string | undefined): ServiceTarget {
   if (arg === undefined || arg === "") return "both";
-  if (arg === "web" || arg === "daemon" || arg === "both") return arg;
+  if (arg === "web" || arg === "daemon" || arg === "router" || arg === "both") return arg;
   throw new InstallError(
-    `Invalid service target '${arg}'. Expected: web | daemon | both`,
+    `Invalid service target '${arg}'. Expected: web | daemon | router | both`,
   );
 }
 

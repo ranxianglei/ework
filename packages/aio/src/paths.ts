@@ -24,8 +24,10 @@ export interface PathConfig {
   dataDir: string;
   webDataDir: string;
   daemonDataDir: string;
+  routerDataDir: string;
   webEnvFile: string;
   daemonEnvFile: string;
+  routerEnvFile: string;
   runDir: string;
   botTokenFile: string;
   opencodeWorkdir: string;
@@ -35,10 +37,13 @@ export interface PathConfig {
   webAttachmentRoot: string;
   webPidFile: string;
   daemonPidFile: string;
+  routerPidFile: string;
   webLogFile: string;
   daemonLogFile: string;
-  webUnitFile: string | null;    // null when not using systemd
+  routerLogFile: string;
+  webUnitFile: string | null;
   daemonUnitFile: string | null;
+  routerUnitFile: string | null;
 }
 
 export interface ResolvePathsOptions {
@@ -63,6 +68,7 @@ export function resolvePaths(opts: ResolvePathsOptions): PathConfig {
   const dataDir = opts.dataDir || path.join(xdgDataHome, "ework-aio");
   const webDataDir = path.join(dataDir, "ework-web");
   const daemonDataDir = path.join(dataDir, "ework-daemon");
+  const routerDataDir = path.join(dataDir, "ework-router");
   const runDir = path.join(dataDir, "run");
 
   // Unit file location depends on scope and whether systemd is opted-in
@@ -77,8 +83,10 @@ export function resolvePaths(opts: ResolvePathsOptions): PathConfig {
     dataDir,
     webDataDir,
     daemonDataDir,
+    routerDataDir,
     webEnvFile: path.join(webDataDir, ".env"),
     daemonEnvFile: path.join(daemonDataDir, ".env"),
+    routerEnvFile: path.join(routerDataDir, ".env"),
     runDir,
     botTokenFile: path.join(dataDir, "bot-token"),
     opencodeWorkdir: path.join(dataDir, "opencode-workdir"),
@@ -88,10 +96,13 @@ export function resolvePaths(opts: ResolvePathsOptions): PathConfig {
     webAttachmentRoot: path.join(webDataDir, "attachments"),
     webPidFile: path.join(runDir, "web.pid"),
     daemonPidFile: path.join(runDir, "daemon.pid"),
+    routerPidFile: path.join(runDir, "router.pid"),
     webLogFile: path.join(runDir, "web.log"),
     daemonLogFile: path.join(runDir, "daemon.log"),
+    routerLogFile: path.join(runDir, "router.log"),
     webUnitFile: unitDir ? path.join(unitDir, "ework-web.service") : null,
     daemonUnitFile: unitDir ? path.join(unitDir, "ework-daemon.service") : null,
+    routerUnitFile: unitDir ? path.join(unitDir, "ework-router.service") : null,
   };
 }
 
