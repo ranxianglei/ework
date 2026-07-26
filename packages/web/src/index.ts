@@ -88,6 +88,7 @@ import {
 import { classifyActor, type CommentView } from "./render/components";
 import { buildWebhooksPage } from "./views/webhooks";
 import { buildWebhookDeliveriesPage } from "./views/webhookDeliveries";
+import { browseRemoteFile, proxyFileSince, RemoteFileError } from "./remote-file";
 import { buildProjectMembersPage } from "./views/projectMembers";
 import { buildProjectUpstreamsPage, trySetUpstreamUrls } from "./views/projectUpstreams";
 import { buildProjectModelPage } from "./views/projectModel";
@@ -599,6 +600,18 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
 
   if (url.pathname === "/file") {
     const rawPath = url.searchParams.get("path") ?? "";
+    const daemonParam = url.searchParams.get("daemon");
+    if (daemonParam && !isLocalhost(daemonParam)) {
+      try {
+        const mode = url.searchParams.get("mode") ?? "tail";
+        const order = url.searchParams.get("order") ?? "desc";
+        const { html: body } = await browseRemoteFile(daemonParam, rawPath, mode, order, ctx.user?.login);
+        return html(body);
+      } catch (e) {
+        const status = e instanceof RemoteFileError ? e.status : 500;
+        return html(errorPage(status === 404 ? "文件不存在" : "远程访问失败", errMsg(e)), status);
+      }
+    }
     const mode = url.searchParams.get("mode") ?? undefined;
     const order = url.searchParams.get("order") ?? undefined;
     try {
@@ -628,6 +641,15 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     const rawPath = url.searchParams.get("path") ?? "";
     const after = Number(url.searchParams.get("after") ?? "0");
     if (!Number.isFinite(after) || after < 0) return json({ error: "bad after" }, 400);
+    const daemonParam = url.searchParams.get("daemon");
+    if (daemonParam && !isLocalhost(daemonParam)) {
+      try {
+        return json(await proxyFileSince(daemonParam, rawPath, after));
+      } catch (e) {
+        const status = e instanceof RemoteFileError ? e.status : 500;
+        return json({ error: errMsg(e) }, status);
+      }
+    }
     try {
       const delta = readFileSince(cfg, rawPath, after);
       return json(delta);
