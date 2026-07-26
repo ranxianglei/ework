@@ -247,6 +247,11 @@
       if (deployBtn) deployBtn.disabled = false;
       return;
     }
+    if (/^(127\.|localhost$|0\.0\.0\.0$)/.test(mysqlHost)) {
+      setDeployResult('✗ MySQL 主机必须是远程机器可达的地址（不能是 ' + mysqlHost + '）。请使用 LAN IP，如 192.168.x.x', 'err');
+      if (deployBtn) deployBtn.disabled = false;
+      return;
+    }
 
     deployResultEl.textContent = '';
     appendDeployLog('▶ 部署 ' + targets.length + ' 个目标（超时 ' + (timeoutMs / 1000) + 's/个）...\n\n');

@@ -85,7 +85,7 @@ function buildEnvBlock(env: Map<string, string>, target: DeployTarget): string {
   return lines.join("\n");
 }
 
-function buildSetupScript(envBlock: string, daemonPort: number): string {
+function buildSetupScript(envBlock: string, daemonPort: number, mysqlHost: string, mysqlPort: string): string {
   return [
     "set -e",
     `command -v npm >/dev/null 2>&1 || { curl -fsSL https://deb.nodesource.com/setup_22.x | sudo bash -; sudo apt-get install -y nodejs; }`,
@@ -95,9 +95,11 @@ function buildSetupScript(envBlock: string, daemonPort: number): string {
     `mkdir -p "$HOME/.local/lib"`,
     `npm config set prefix "$HOME/.local/lib"`,
     `grep -q '.local/lib/bin' "$HOME/.bashrc" 2>/dev/null || echo 'export PATH="$HOME/.local/lib/bin:$HOME/.bun/bin:$PATH"' >> "$HOME/.bashrc"`,
-    `echo "[1/4] installing ework-aio..."`,
+    `echo "[1/5] checking MySQL connectivity to ${mysqlHost}:${mysqlPort}..."`,
+    `timeout 5 bash -c "echo > /dev/tcp/${mysqlHost}/${mysqlPort}" 2>/dev/null && echo "MySQL port reachable" || { echo "MySQL UNREACHABLE at ${mysqlHost}:${mysqlPort} — daemon will fail to connect"; exit 1; }`,
+    `echo "[2/5] installing ework-aio..."`,
     `npm install -g ework-aio`,
-    `echo "[2/4] writing daemon config..."`,
+    `echo "[3/5] writing daemon config..."`,
     `mkdir -p ~/.local/share/ework-aio/ework-daemon`,
     `REMOTE_IP=$(hostname -I 2>/dev/null | awk '{print $1}')`,
     `DAEMON_ENDPOINT_LINE=""`,
@@ -106,9 +108,9 @@ function buildSetupScript(envBlock: string, daemonPort: number): string {
     envBlock,
     `EWORK_DAEMON_ENV_EOF`,
     `echo "$DAEMON_ENDPOINT_LINE"; } > ~/.local/share/ework-aio/ework-daemon/.env`,
-    `echo "[3/4] starting daemon..."`,
+    `echo "[4/5] starting daemon..."`,
     `ework-aio start daemon`,
-    `echo "[4/4] verifying daemon is alive..."`,
+    `echo "[5/5] verifying daemon is alive..."`,
     `sleep 2`,
     `curl -sf --max-time 3 http://127.0.0.1:${String(daemonPort)}/api/status >/dev/null 2>&1 && echo "DAEMON_ALIVE" || echo "DAEMON_WARNING: status check failed (may need a moment to boot)"`,
     `echo DAEMON_STARTED`,
@@ -132,7 +134,7 @@ export async function deployRemoteDaemon(opts: DeployOpts): Promise<DeployResult
   }
   const env = parseEnvFile(envContent);
   const envBlock = buildEnvBlock(env, opts);
-  const script = buildSetupScript(envBlock, opts.daemonPort ?? 3101);
+  const script = buildSetupScript(envBlock, opts.daemonPort ?? 3101, opts.mysqlHost, String(env.get("WORK_DB_PORT") ?? "3306"));
 
   const args = [
     "ssh",

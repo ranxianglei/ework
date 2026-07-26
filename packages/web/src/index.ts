@@ -973,25 +973,31 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     if (targets.length === 0 || !mysqlHost) {
       return json({ ok: false, error: "至少需要一个目标 + mysqlHost" }, 400);
     }
-    if (targets.length === 1) {
-      const [single] = targets;
-      if (!single) return json({ ok: false, error: "no target" }, 400);
-      const result = await deployRemoteDaemon({ ...single, timeoutMs });
-      return json(result, result.ok ? 200 : 422);
-    }
 
     const { readable, writable } = new TransformStream();
     const writer = writable.getWriter();
     const enc = new TextEncoder();
     const send = (s: string) => writer.write(enc.encode(`data: ${JSON.stringify(s)}\n\n`));
 
-    deployBatch(targets, timeoutMs, (label, chunk) => send(`[${label}] ${chunk}`))
-      .then((results) => {
-        const ok = [...results.values()].every((r) => r.ok);
-        send(`\n${ok ? "ALL OK" : "SOME FAILED"}: ${[...results.entries()].map(([k, v]) => `${k}=${v.ok ? "✓" : "✗"}`).join(", ")}`);
-      })
-      .catch((e) => send(`ERROR: ${e instanceof Error ? e.message : String(e)}`))
-      .finally(() => writer.close());
+    if (targets.length === 1) {
+      const [single] = targets;
+      send(`▶ 部署到 ${single!.sshHost}:${single!.daemonPort ?? 3101}（超时 ${timeoutMs / 1000}s）...\n\n`);
+      deployRemoteDaemon({ ...single!, timeoutMs, onOutput: (chunk) => send(chunk) })
+        .then((result) => {
+          send(`\n${result.ok ? "✓ 成功" : "✗ 失败"}: ${result.ok ? "daemon 已部署" : (result.error || "未知错误")}\n`);
+          if (result.output) send(result.output);
+        })
+        .catch((e) => send(`\n✗ 异常: ${e instanceof Error ? e.message : String(e)}\n`))
+        .finally(() => writer.close());
+    } else {
+      deployBatch(targets, timeoutMs, (label, chunk) => send(`[${label}] ${chunk}`))
+        .then((results) => {
+          const ok = [...results.values()].every((r) => r.ok);
+          send(`\n${ok ? "ALL OK" : "SOME FAILED"}: ${[...results.entries()].map(([k, v]) => `${k}=${v.ok ? "✓" : "✗"}`).join(", ")}`);
+        })
+        .catch((e) => send(`ERROR: ${e instanceof Error ? e.message : String(e)}`))
+        .finally(() => writer.close());
+    }
 
     return new Response(readable, {
       headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" },
