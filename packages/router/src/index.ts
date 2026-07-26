@@ -68,6 +68,21 @@ async function handleWebhook(req: Request, cfg: Config): Promise<Response> {
 
   const daemons = await getActiveDaemons(cfg);
   if (daemons.length === 0) {
+    if (cfg.ROUTER_FALLBACK_ENDPOINT) {
+      log("info", "no active daemons, using fallback", { fallback: cfg.ROUTER_FALLBACK_ENDPOINT });
+      const result = await forwardToDaemon(cfg.ROUTER_FALLBACK_ENDPOINT, body, cfg.ROUTER_FORWARD_TIMEOUT_MS);
+      return new Response(JSON.stringify({
+        ok: result.ok,
+        routed: true,
+        daemon: { id: 0, endpoint: cfg.ROUTER_FALLBACK_ENDPOINT },
+        reason: "fallback",
+        forwardStatus: result.status,
+        forwardBody: result.body.slice(0, 500),
+      }), {
+        status: result.ok ? 200 : 502,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
     log("warn", "no active daemons available");
     return new Response(JSON.stringify({ ok: false, error: "no active daemons", routed: false }), {
       status: 503,
