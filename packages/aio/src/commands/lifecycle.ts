@@ -271,6 +271,14 @@ export async function runRestart(
   const paths = resolvePaths({ dataDir: opts.dataDir, scope: opts.scope, useSystemd: false });
   for (const { sp, label } of iterTargets(paths, target)) {
     await stopFromSp(sp, label, logger);
+    if (label === "router") {
+      try {
+        await startFromSp(sp, label, logger);
+      } catch (e) {
+        logger.log(`ework-router skipped (${(e as Error).message})`);
+      }
+      continue;
+    }
     await startFromSp(sp, label, logger);
   }
 }
