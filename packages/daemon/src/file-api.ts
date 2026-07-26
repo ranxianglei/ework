@@ -40,7 +40,7 @@ function validateFilePath(cfg: Config, rawPath: string): string {
     let rr: string;
     try { rr = realpathSync(r); } catch { return false; }
     const rel = relative(rr, rp);
-    return rel.length > 0 && !rel.startsWith("..") && !isAbsolute(rel);
+    return !rel.startsWith("..") && !isAbsolute(rel);
   });
   if (!inRoot) throw new FileApiError("denied: outside allowlisted roots", 403);
   return rp;
