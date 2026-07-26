@@ -41,6 +41,7 @@ export function resolveCommand(cmd: string): string | null {
 // the user to "install ework-web first" even though it was already bundled
 // (B-1). Returns the absolute bin path, or null if not bundled.
 export function resolveBundledBin(pkgName: string, binRelPath: string): string | null {
+  if (isDevRepo()) return null;
   const root = process.env.AIO_PACKAGE_ROOT || DEFAULT_PACKAGE_ROOT;
   const candidate = path.join(root, "node_modules", pkgName, binRelPath);
   return fs.existsSync(candidate) ? candidate : null;
