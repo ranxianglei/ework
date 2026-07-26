@@ -81,16 +81,16 @@ function buildDaemonSection(viewer: UserRow): string {
 <details style="margin-top:.7rem">
 <summary style="cursor:pointer;font-size:13px;color:var(--text-muted)">📡 SSH 远程部署</summary>
 <div style="margin-top:.5rem">
-<label class="sf"><span>SSH 主机</span><input type="text" id="deploy-host" placeholder="192.168.1.100" autocomplete="off"></label>
 <label class="sf"><span>SSH 用户</span><input type="text" id="deploy-user" placeholder="root" value="root" autocomplete="off"></label>
 <label class="sf"><span>SSH 端口</span><input type="number" id="deploy-ssh-port" value="22" min="1" max="65535" autocomplete="off"></label>
 <label class="sf"><span>SSH 密钥</span><input type="text" id="deploy-key" placeholder="~/.ssh/id_rsa" autocomplete="off"></label>
-<label class="sf"><span>Daemon 端口</span><input type="number" id="deploy-daemon-port" placeholder="3101" min="1" max="65535" autocomplete="off"></label>
 <label class="sf"><span>MySQL 主机（远程可见）</span><input type="text" id="deploy-mysql-host" placeholder="192.168.1.1" autocomplete="off"></label>
-<div class="db-controls"><button type="button" id="daemon-deploy">部署到远程</button></div>
+<label class="sf"><span>超时（秒）</span><input type="number" id="deploy-timeout" value="180" min="30" max="600" autocomplete="off"></label>
+<label class="sf" style="align-items:flex-start"><span>目标机器</span><textarea id="deploy-targets" rows="4" style="flex:1;padding:.35rem .5rem;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:12px;font-family:ui-monospace,monospace" placeholder="每行一个，格式：&#10;192.168.1.100&#10;192.168.1.101:3201&#10;10.0.0.5:3202&#10;（不带端口则用默认 3101）"></textarea></label>
+<div class="db-controls"><button type="button" id="daemon-deploy">部署（支持批量）</button></div>
 </div>
 </details>
-<div id="deploy-result" class="db-result"></div>
+<div id="deploy-result" class="db-result" style="max-height:400px;overflow-y:auto;font-family:ui-monospace,monospace;font-size:11px"></div>
 <script src="/static/daemon-mgr.js"></script>
 </section>`;
 }

@@ -93,7 +93,7 @@ import { buildProjectMembersPage } from "./views/projectMembers";
 import { buildProjectUpstreamsPage, trySetUpstreamUrls } from "./views/projectUpstreams";
 import { buildProjectModelPage } from "./views/projectModel";
 import { handleGiteaApi } from "./giteaApi";
-import { deployRemoteDaemon } from "./daemon-deploy";
+import { deployRemoteDaemon, deployBatch, type DeployTarget } from "./daemon-deploy";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const STATIC_DIR = join(__dirname, "static");
@@ -902,25 +902,68 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
 
   if (req.method === "POST" && url.pathname === "/api/daemons/deploy") {
     if (!ctx.user || ctx.user.is_admin !== 1) return json({ error: "admin required" }, 403);
-    if (!rateLimit(`daemons-deploy:${ip}`, 3, 3 / 3600)) return json({ error: "rate limited" }, 429);
+    if (!rateLimit(`daemons-deploy:${ip}`, 10, 10 / 3600)) return json({ error: "rate limited" }, 429);
     const payload = await req.json().catch(() => ({} as unknown));
     if (!payload || typeof payload !== "object") return json({ ok: false, error: "invalid body" }, 400);
     const obj = payload as Record<string, unknown>;
-    const sshHost = typeof obj.sshHost === "string" ? obj.sshHost.trim() : "";
-    const sshUser = typeof obj.sshUser === "string" ? obj.sshUser.trim() : "";
+    const sshUser = typeof obj.sshUser === "string" ? obj.sshUser.trim() : "root";
     const mysqlHost = typeof obj.mysqlHost === "string" ? obj.mysqlHost.trim() : "";
-    if (!sshHost || !sshUser || !mysqlHost) {
-      return json({ ok: false, error: "sshHost, sshUser, mysqlHost 必填" }, 400);
-    }
     const sshPort = typeof obj.sshPort === "number" && Number.isFinite(obj.sshPort) && obj.sshPort > 0 && obj.sshPort < 65536
       ? Math.trunc(obj.sshPort)
       : 22;
     const sshKeyFile = typeof obj.sshKeyFile === "string" && obj.sshKeyFile.trim() ? obj.sshKeyFile.trim() : undefined;
-    const daemonPort = typeof obj.daemonPort === "number" && Number.isFinite(obj.daemonPort) && obj.daemonPort > 0 && obj.daemonPort < 65536
-      ? Math.trunc(obj.daemonPort)
-      : undefined;
-    const result = await deployRemoteDaemon({ sshHost, sshUser, sshPort, sshKeyFile, daemonPort, mysqlHost });
-    return json(result, result.ok ? 200 : 422);
+    const timeoutMs = typeof obj.timeoutMs === "number" && Number.isFinite(obj.timeoutMs) && obj.timeoutMs >= 30_000 && obj.timeoutMs <= 600_000
+      ? Math.trunc(obj.timeoutMs)
+      : 180_000;
+
+    const targets: DeployTarget[] = [];
+    if (Array.isArray(obj.targets)) {
+      for (const t of obj.targets) {
+        if (!t || typeof t !== "object") continue;
+        const r = t as Record<string, unknown>;
+        const host = typeof r.host === "string" ? r.host.trim() : "";
+        if (!host) continue;
+        targets.push({
+          sshHost: host, sshUser, sshPort, sshKeyFile, mysqlHost,
+          daemonPort: typeof r.daemonPort === "number" ? Math.trunc(r.daemonPort) : undefined,
+        });
+      }
+    } else {
+      const sshHost = typeof obj.sshHost === "string" ? obj.sshHost.trim() : "";
+      if (sshHost) {
+        targets.push({
+          sshHost, sshUser, sshPort, sshKeyFile, mysqlHost,
+          daemonPort: typeof obj.daemonPort === "number" ? Math.trunc(obj.daemonPort) : undefined,
+        });
+      }
+    }
+
+    if (targets.length === 0 || !mysqlHost) {
+      return json({ ok: false, error: "至少需要一个目标 + mysqlHost" }, 400);
+    }
+    if (targets.length === 1) {
+      const [single] = targets;
+      if (!single) return json({ ok: false, error: "no target" }, 400);
+      const result = await deployRemoteDaemon({ ...single, timeoutMs });
+      return json(result, result.ok ? 200 : 422);
+    }
+
+    const { readable, writable } = new TransformStream();
+    const writer = writable.getWriter();
+    const enc = new TextEncoder();
+    const send = (s: string) => writer.write(enc.encode(`data: ${JSON.stringify(s)}\n\n`));
+
+    deployBatch(targets, timeoutMs, (label, chunk) => send(`[${label}] ${chunk}`))
+      .then((results) => {
+        const ok = [...results.values()].every((r) => r.ok);
+        send(`\n${ok ? "ALL OK" : "SOME FAILED"}: ${[...results.entries()].map(([k, v]) => `${k}=${v.ok ? "✓" : "✗"}`).join(", ")}`);
+      })
+      .catch((e) => send(`ERROR: ${e instanceof Error ? e.message : String(e)}`))
+      .finally(() => writer.close());
+
+    return new Response(readable, {
+      headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" },
+    });
   }
 
   if (url.pathname === "/settings") {

@@ -156,40 +156,111 @@
     return el && el.value != null ? el.value.trim() : '';
   }
 
+  function appendDeployLog(text) {
+    if (!deployResultEl) return;
+    deployResultEl.className = 'db-result db-loading';
+    deployResultEl.textContent += text;
+    deployResultEl.scrollTop = deployResultEl.scrollHeight;
+  }
+
+  function parseTargets(raw) {
+    var targets = [];
+    var lines = raw.split('\n');
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i].trim();
+      if (!line || line.startsWith('#')) continue;
+      var parts = line.split(':');
+      var host = parts[0].trim();
+      var port = parts.length > 1 ? parseInt(parts[1].trim(), 10) : NaN;
+      if (host) {
+        var t = { host: host };
+        if (Number.isFinite(port) && port > 0) t.daemonPort = port;
+        targets.push(t);
+      }
+    }
+    return targets;
+  }
+
   async function deployRemote() {
     if (deployBtn) deployBtn.disabled = true;
-    setDeployResult('正在通过 SSH 部署（最长 60s）…', 'loading');
-    var body = {
-      sshHost: val('deploy-host'),
-      sshUser: val('deploy-user'),
-      mysqlHost: val('deploy-mysql-host')
-    };
-    var sshPort = Number(val('deploy-ssh-port'));
-    if (Number.isFinite(sshPort) && sshPort > 0) body.sshPort = sshPort;
-    var dPort = Number(val('deploy-daemon-port'));
-    if (Number.isFinite(dPort) && dPort > 0) body.daemonPort = dPort;
+    var targets = parseTargets(val('deploy-targets'));
+    var mysqlHost = val('deploy-mysql-host');
+    var sshUser = val('deploy-user') || 'root';
+    var sshPort = Number(val('deploy-ssh-port')) || 22;
+    var timeoutMs = (Number(val('deploy-timeout')) || 180) * 1000;
     var keyFile = val('deploy-key');
-    if (keyFile) body.sshKeyFile = keyFile;
-    if (!body.sshHost || !body.sshUser || !body.mysqlHost) {
-      setDeployResult('✗ SSH 主机、SSH 用户、MySQL 主机 必填', 'err');
+
+    if (targets.length === 0) {
+      setDeployResult('✗ 请填写至少一个目标机器', 'err');
       if (deployBtn) deployBtn.disabled = false;
       return;
     }
+    if (!mysqlHost) {
+      setDeployResult('✗ MySQL 主机必填', 'err');
+      if (deployBtn) deployBtn.disabled = false;
+      return;
+    }
+
+    deployResultEl.textContent = '';
+    appendDeployLog('▶ 部署 ' + targets.length + ' 个目标（超时 ' + (timeoutMs / 1000) + 's/个）...\n\n');
+
+    var body = {
+      targets: targets,
+      sshUser: sshUser,
+      sshPort: sshPort,
+      mysqlHost: mysqlHost,
+      timeoutMs: timeoutMs
+    };
+    if (keyFile) body.sshKeyFile = keyFile;
+
     try {
       var res = await fetch('/api/daemons/deploy', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body)
       });
-      var data = await res.json();
-      if (data.ok) {
-        setDeployResult('✓ 部署成功' + (data.output ? '\n' + data.output : ''), 'ok');
-        await loadDaemons();
+
+      if (res.headers.get('Content-Type') && res.headers.get('Content-Type').includes('text/event-stream')) {
+        var reader = res.body.getReader();
+        var decoder = new TextDecoder();
+        var allOk = true;
+        while (true) {
+          var chunk = await reader.read();
+          if (chunk.done) break;
+          var text = decoder.decode(chunk.value, { stream: true });
+          var lines = text.split('\n');
+          for (var i = 0; i < lines.length; i++) {
+            var line = lines[i].trim();
+            if (!line.startsWith('data: ')) continue;
+            try {
+              var msg = JSON.parse(line.slice(6));
+              appendDeployLog(msg);
+              if (msg.indexOf('✗') >= 0) allOk = false;
+            } catch (e) { /* skip non-JSON */ }
+          }
+        }
+        if (allOk) {
+          deployResultEl.className = 'db-result db-ok';
+          await loadDaemons();
+        } else {
+          deployResultEl.className = 'db-result db-err';
+        }
       } else {
-        setDeployResult('✗ ' + (data.error || '未知错误') + (data.output ? '\n' + data.output : ''), 'err');
+        var data = await res.json();
+        if (data.ok) {
+          appendDeployLog('✓ 部署成功\n');
+          if (data.output) appendDeployLog(data.output);
+          deployResultEl.className = 'db-result db-ok';
+          await loadDaemons();
+        } else {
+          appendDeployLog('✗ ' + (data.error || '未知错误') + '\n');
+          if (data.output) appendDeployLog(data.output);
+          deployResultEl.className = 'db-result db-err';
+        }
       }
     } catch (e) {
-      setDeployResult('✗ ' + (e.message || String(e)), 'err');
+      appendDeployLog('✗ ' + (e.message || String(e)) + '\n');
+      deployResultEl.className = 'db-result db-err';
     } finally {
       if (deployBtn) deployBtn.disabled = false;
     }

@@ -2,7 +2,7 @@ import { join } from "path";
 import { existsSync, readFileSync } from "fs";
 import { homedir } from "os";
 
-export interface DeployOpts {
+export interface DeployTarget {
   sshHost: string;
   sshUser: string;
   sshPort: number;
@@ -11,14 +11,22 @@ export interface DeployOpts {
   mysqlHost: string;
 }
 
+export interface DeployOpts extends DeployTarget {
+  timeoutMs: number;
+  onOutput?: (chunk: string) => void;
+}
+
 export interface DeployResult {
   ok: boolean;
   output: string;
   error?: string;
 }
 
-// Keys forwarded from the local daemon .env to the remote one. Secrets are
-// never logged — only written to the remote .env over SSH.
+export interface BatchTarget {
+  host: string;
+  daemonPort?: number;
+}
+
 const FORWARD_KEYS = [
   "WORK_DB_DRIVER",
   "WORK_DB_USER",
@@ -63,15 +71,15 @@ function parseEnvFile(content: string): Map<string, string> {
   return out;
 }
 
-function buildEnvBlock(env: Map<string, string>, opts: DeployOpts): string {
+function buildEnvBlock(env: Map<string, string>, target: DeployTarget): string {
   const lines: string[] = [];
   for (const k of FORWARD_KEYS) {
     const v = env.get(k);
     if (v === undefined) continue;
     lines.push(`${k}=${v}`);
   }
-  lines.push(`WORK_DB_HOST=${opts.mysqlHost}`);
-  lines.push(`DAEMON_PORT=${String(opts.daemonPort ?? 3101)}`);
+  lines.push(`WORK_DB_HOST=${target.mysqlHost}`);
+  lines.push(`DAEMON_PORT=${String(target.daemonPort ?? 3101)}`);
   lines.push(`DAEMON_HOST=0.0.0.0`);
   lines.push(`DAEMON_ENV=production`);
   return lines.join("\n");
@@ -87,12 +95,16 @@ function buildSetupScript(envBlock: string): string {
     `mkdir -p "$HOME/.local/lib"`,
     `npm config set prefix "$HOME/.local/lib"`,
     `grep -q '.local/lib/bin' "$HOME/.bashrc" 2>/dev/null || echo 'export PATH="$HOME/.local/lib/bin:$HOME/.bun/bin:$PATH"' >> "$HOME/.bashrc"`,
+    `echo "[1/4] installing ework-aio..."`,
     `npm install -g ework-aio`,
+    `echo "[2/4] writing daemon config..."`,
     `mkdir -p ~/.local/share/ework-aio/ework-daemon`,
     `cat > ~/.local/share/ework-aio/ework-daemon/.env <<'EWORK_DAEMON_ENV_EOF'`,
     envBlock,
     `EWORK_DAEMON_ENV_EOF`,
+    `echo "[3/4] starting daemon..."`,
     `ework-aio start daemon`,
+    `echo "[4/4] done"`,
     `echo DAEMON_STARTED`,
   ].join("\n");
 }
@@ -103,7 +115,7 @@ export async function deployRemoteDaemon(opts: DeployOpts): Promise<DeployResult
     return {
       ok: false,
       output: "",
-      error: "找不到本地 daemon .env（设置 WORK_DAEMON_DATA_DIR 或将 .env 放到 ~/.local/share/ework-aio/ework-daemon/.env）",
+      error: "找不到本地 daemon .env",
     };
   }
   let envContent: string;
@@ -140,23 +152,37 @@ export async function deployRemoteDaemon(opts: DeployOpts): Promise<DeployResult
   const timer = setTimeout(() => {
     ac.abort();
     try { proc.kill(); } catch { /* already dead */ }
-  }, 60_000);
+  }, opts.timeoutMs);
 
-  let stdoutText = "";
-  let stderrText = "";
+  let output = "";
   let exitCode: number | null = null;
   let timedOut = false;
+
+  const decoder = new TextDecoder();
+  const readStream = async (stream: ReadableStream<Uint8Array>) => {
+    const reader = stream.getReader();
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = decoder.decode(value, { stream: true });
+        output += chunk;
+        opts.onOutput?.(chunk);
+      }
+    } catch { /* stream closed */ }
+  };
+
   try {
     ac.signal.addEventListener("abort", () => { timedOut = true; });
-    [stdoutText, stderrText, exitCode] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-      proc.exited,
+    await Promise.all([
+      readStream(proc.stdout as ReadableStream<Uint8Array>),
+      readStream(proc.stderr as ReadableStream<Uint8Array>),
     ]);
+    exitCode = await proc.exited;
   } catch (e) {
     return {
       ok: false,
-      output: stdoutText + stderrText,
+      output,
       error: e instanceof Error ? e.message : String(e),
     };
   } finally {
@@ -166,14 +192,35 @@ export async function deployRemoteDaemon(opts: DeployOpts): Promise<DeployResult
   if (timedOut) {
     return {
       ok: false,
-      output: stdoutText + stderrText,
-      error: "SSH 部署超时（60s）",
+      output,
+      error: `SSH 部署超时（${String(Math.trunc(opts.timeoutMs / 1000))}s）`,
     };
   }
-  const combined = stdoutText + (stderrText ? "\n--- stderr ---\n" + stderrText : "");
   return {
     ok: exitCode === 0,
-    output: combined,
+    output,
     error: exitCode === 0 ? undefined : `ssh 退出码 ${String(exitCode)}`,
   };
+}
+
+export async function deployBatch(
+  targets: DeployTarget[],
+  timeoutMs: number,
+  onOutput: (target: string, chunk: string) => void,
+): Promise<Map<string, DeployResult>> {
+  const results = new Map<string, DeployResult>();
+  await Promise.all(
+    targets.map(async (t) => {
+      const label = `${t.sshUser}@${t.sshHost}:${String(t.sshPort)}`;
+      onOutput(label, `▶ 开始部署到 ${label}\n`);
+      const r = await deployRemoteDaemon({
+        ...t,
+        timeoutMs,
+        onOutput: (chunk) => onOutput(label, chunk),
+      });
+      results.set(label, r);
+      onOutput(label, r.ok ? `✓ ${label} 部署成功\n` : `✗ ${label} ${r.error ?? "失败"}\n`);
+    }),
+  );
+  return results;
 }
