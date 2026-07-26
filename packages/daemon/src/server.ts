@@ -56,6 +56,7 @@ export function createServer(
         env: cfg.env,
         daemon: { host: cfg.daemon.host, port: cfg.daemon.port },
         db: cfg.db.path,
+        driver: cfg.db.driver,
         running: status.runningCount,
         pending: status.pendingCount,
         processes: status.processCount,
