@@ -479,6 +479,9 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
 
   const auth = await checkAuth(req, cfg, ip);
   if (!auth.ok) {
+    if (url.pathname.startsWith("/api/")) {
+      return json({ error: "authentication required" }, 401);
+    }
     const next = sanitizeNext(url.pathname + url.search);
     return Response.redirect(`${url.origin}/login?next=${encodeURIComponent(next)}`, 302);
   }

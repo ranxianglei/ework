@@ -159,6 +159,10 @@
     setResult('正在重启 daemon #' + id + '…', 'loading');
     try {
       var res = await fetch('/api/daemons/' + id + '/restart', { method: 'POST' });
+      if (res.status === 401) {
+        setResult('✗ 登录已过期，请刷新页面重新登录', 'err');
+        return;
+      }
       var data = await res.json();
       if (data.ok) {
         setResult('✓ daemon #' + id + ' 已重新激活', 'ok');
