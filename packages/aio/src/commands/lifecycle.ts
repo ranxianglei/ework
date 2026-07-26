@@ -68,6 +68,27 @@ async function loadEnv(envFile: string): Promise<NodeJS.ProcessEnv> {
   return env;
 }
 
+async function readPort(sp: ServicePaths): Promise<number | null> {
+  try {
+    const content = await Bun.file(sp.envFile).text();
+    const portStr = parseEnvFile(content).entries.get(sp.portKey ?? "");
+    if (portStr) return Number.parseInt(portStr, 10) || null;
+  } catch {
+    // missing .env → no port
+  }
+  return null;
+}
+
+async function readLogTail(logFile: string, maxLines: number): Promise<string | null> {
+  try {
+    const text = await Bun.file(logFile).text();
+    const lines = text.trimEnd().split("\n");
+    return lines.slice(-maxLines).join("\n");
+  } catch {
+    return null;
+  }
+}
+
 async function startOne(
   svc: "web" | "daemon",
   paths: PathConfig,
@@ -92,7 +113,17 @@ async function startOne(
     logFile: sp.logFile,
     pidFile: sp.pidFile,
   });
-  logger.ok(`ework-${svc} started (pid ${pid}, log ${sp.logFile})`);
+
+  await new Promise((r) => setTimeout(r, 1500));
+  if (!isProcessRunning(pid)) {
+    const tail = await readLogTail(sp.logFile, 10);
+    const detail = tail ? `\n${tail}` : "";
+    throw new InstallError(`ework-${svc} failed to start (pid ${pid} exited within 1.5s)${detail}`);
+  }
+
+  const port = await readPort(sp);
+  const portStr = port !== null ? `, http://127.0.0.1:${port}` : "";
+  logger.ok(`ework-${svc} started (pid ${pid}${portStr}, log ${sp.logFile})`);
   return true;
 }
 
@@ -174,20 +205,9 @@ export async function runStatus(opts: GlobalOptions, logger: Logger): Promise<St
     const pid = await readPidFile(sp.pidFile);
     const alive = pid !== null && isProcessRunning(pid);
 
-    let port: number | null = null;
-    try {
-      const content = await Bun.file(sp.envFile).text();
-      const portStr = parseEnvFile(content).entries.get(sp.portKey ?? "");
-      if (portStr) port = Number.parseInt(portStr, 10) || null;
-    } catch {
-      // missing .env → no port
-    }
-
+    let port = await readPort(sp);
     let listening: boolean | null = null;
     if (port !== null) {
-      // web exposes /login; daemon doesn't. Probe a per-service URL so the
-      // status line doesn't lie about the daemon being "not responding"
-      // when it's actually healthy.
       const probeUrl = svc === "web"
         ? `http://127.0.0.1:${port}/login`
         : `http://127.0.0.1:${port}/`;
