@@ -541,25 +541,6 @@ async function recordDelivery(
   }
 }
 
-async function resolveDeliveryUrl(storedUrl: string): Promise<string> {
-  try {
-    const { getActiveDaemons } = await import("./coordination");
-    const daemons = await getActiveDaemons();
-    if (daemons.length === 0) return storedUrl;
-    const storedHost = storedUrl.replace(/^https?:\/\//, "").split("/")[0] ?? "";
-    const storedMatchesDaemon = daemons.some((d) => {
-      const daemonHost = d.endpoint.replace(/^https?:\/\//, "");
-      return daemonHost === storedHost;
-    });
-    if (storedMatchesDaemon) return storedUrl;
-    const best = daemons.sort((a, b) => a.id - b.id)[0]!;
-    const ep = /^https?:\/\//.test(best.endpoint) ? best.endpoint : `http://${best.endpoint}`;
-    return ep.replace(/\/$/, "") + "/webhook/gitea";
-  } catch {
-    return storedUrl;
-  }
-}
-
 async function deliver(
   webhook: WebhookRow,
   event: WebhookEventName,
@@ -567,12 +548,11 @@ async function deliver(
 ): Promise<void> {
   await acquireDeliverySlot();
   try {
-    const targetUrl = await resolveDeliveryUrl(webhook.url);
     for (const attempt of RETRY_DELAYS_MS) {
       if (attempt > 0) await Bun.sleep(attempt);
       const deliveryUuid = randomUUID();
       const headers = buildHeaders(event, deliveryUuid, rawBody, webhook.secret);
-      const result = await postWithTimeout(targetUrl, rawBody, headers);
+      const result = await postWithTimeout(webhook.url, rawBody, headers);
       const success = result.status !== null && result.status >= 200 && result.status < 300;
       await recordDelivery(webhook.id, event, deliveryUuid, rawBody, result);
       if (success) return;
