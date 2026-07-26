@@ -81,7 +81,12 @@ function buildSetupScript(envBlock: string): string {
   return [
     "set -e",
     `command -v npm >/dev/null 2>&1 || { curl -fsSL https://deb.nodesource.com/setup_22.x | sudo bash -; sudo apt-get install -y nodejs; }`,
-    `command -v bun >/dev/null 2>&1 || { curl -fsSL https://bun.sh/install | bash; export BUN_INSTALL="$HOME/.bun"; export PATH="$BUN_INSTALL/bin:$PATH"; }`,
+    `command -v bun >/dev/null 2>&1 || { curl -fsSL https://bun.sh/install | bash; }`,
+    `export BUN_INSTALL="$HOME/.bun"`,
+    `export PATH="$HOME/.local/lib/bin:$BUN_INSTALL/bin:$PATH"`,
+    `mkdir -p "$HOME/.local/lib"`,
+    `npm config set prefix "$HOME/.local/lib"`,
+    `grep -q '.local/lib/bin' "$HOME/.bashrc" 2>/dev/null || echo 'export PATH="$HOME/.local/lib/bin:$HOME/.bun/bin:$PATH"' >> "$HOME/.bashrc"`,
     `npm install -g ework-aio`,
     `mkdir -p ~/.local/share/ework-aio/ework-daemon`,
     `cat > ~/.local/share/ework-aio/ework-daemon/.env <<'EWORK_DAEMON_ENV_EOF'`,
