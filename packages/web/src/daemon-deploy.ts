@@ -112,7 +112,7 @@ function buildSetupScript(envBlock: string, daemonPort: number, mysqlHostRaw: st
     `EWORK_DAEMON_ENV_EOF`,
     `echo "$DAEMON_ENDPOINT_LINE"; } > ~/.local/share/ework-aio/ework-daemon/.env`,
     `echo "[4/5] starting daemon..."`,
-    `ework-aio start daemon`,
+    `ework-aio stop daemon 2>/dev/null; sleep 1; ework-aio start daemon`,
     `echo "[5/5] verifying daemon is alive..."`,
     `sleep 3`,
     `curl -sf --max-time 5 http://127.0.0.1:${String(daemonPort)}/api/status 2>/dev/null && echo "DAEMON_ALIVE" || { echo "DAEMON_FAILED: status check failed"; echo "=== daemon log (last 20 lines) ==="; tail -20 ~/.local/share/ework-aio/run/daemon.log 2>/dev/null || echo "(no log)"; exit 1; }`,
