@@ -67,6 +67,21 @@ ${isMysql ? `<hr style="border:0;border-top:1px solid var(--border);margin:1rem 
 </section>`;
 }
 
+function buildDaemonSection(viewer: UserRow): string {
+  if (viewer.is_admin !== 1) return "";
+  return `<section class="sg daemon-section">
+<h2>Daemon 集群</h2>
+<p class="db-badge">运行中的 daemon 实例。新 daemon 通过 <code>ework-aio add-daemon</code> 启动；停止只标记为 drained，需手动结束进程。</p>
+<div id="daemon-list" class="daemon-list">加载中…</div>
+<div class="db-controls">
+<label class="sf" style="margin:0"><span>端口（可选）</span><input type="number" id="daemon-port" min="1" max="65535" placeholder="自动分配" autocomplete="off"></label>
+<button type="button" id="daemon-add">添加 Daemon</button>
+</div>
+<div id="daemon-result" class="db-result"></div>
+<script src="/static/daemon-mgr.js"></script>
+</section>`;
+}
+
 export function buildSettingsPage(cfg: Config, saved: boolean, viewer: UserRow, models: CachedModel[]): { html: string } {
   const groups = SETTINGS_GROUPS.map(
     (g) =>
@@ -109,6 +124,20 @@ button.secondary{background:transparent;color:var(--text-muted);border:1px solid
 .db-result.db-loading{background:var(--bg);color:var(--text-muted)}
 .db-result.db-ok{background:rgba(40,167,69,.15);color:#5eb88a}
 .db-result.db-err{background:rgba(220,53,69,.15);color:#e87c7c}
+.daemon-list{margin-bottom:.7rem}
+.daemon-list table{width:100%;border-collapse:collapse;font-size:12px}
+.daemon-list th,.daemon-list td{padding:.35rem .4rem;border-bottom:1px solid var(--border);text-align:left;vertical-align:top}
+.daemon-list th{color:var(--text-muted);font-weight:normal;font-size:11px;text-transform:uppercase;letter-spacing:.03em}
+.daemon-list td.endpoint{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;word-break:break-all}
+.daemon-list td.cap{text-align:right;font-variant-numeric:tabular-nums}
+.daemon-list td.heartbeat,.daemon-list td.registered{color:var(--text-muted);font-size:11px;white-space:nowrap}
+.daemon-list .pill{display:inline-block;padding:.12rem .5rem;border-radius:99px;font-size:11px;line-height:1.4}
+.daemon-list .pill.active{background:rgba(40,167,69,.18);color:#5eb88a}
+.daemon-list .pill.drained{background:rgba(255,193,7,.18);color:#d4a942}
+.daemon-list .pill.dead,.daemon-list .pill.unknown{background:rgba(220,53,69,.18);color:#e87c7c}
+.daemon-list button.stop{padding:.25rem .6rem;font-size:11px;background:transparent;color:#e87c7c;border:1px solid rgba(220,53,69,.4)}
+.daemon-list button.stop:hover{background:rgba(220,53,69,.12)}
+.daemon-empty{color:var(--text-muted);font-size:13px;padding:.5rem 0}
 </style></head><body>
 <header class="nav"><a href="/" style="color:var(--header-text)">🏠 ework-web</a><span style="opacity:.8"> · 设置</span></header>
 <main class="wrap">
@@ -121,6 +150,7 @@ ${banner}
 ${modelRefreshForm}
 ${ttsLink}
 ${buildDbSection(viewer)}
+${buildDaemonSection(viewer)}
 </main></body></html>`;
   return { html };
 }

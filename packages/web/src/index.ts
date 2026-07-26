@@ -5,8 +5,8 @@ import { spawn } from "child_process";
 import { homedir } from "os";
 import { loadConfig, DB_OVERRIDABLE, parseOverride, resolveTtsBackend } from "./config";
 import type { Config } from "./config";
-import { setConfig, initDB } from "./db";
-import { getActiveDaemons } from "./coordination";
+import { setConfig, initDB, getDB } from "./db";
+import { getActiveDaemons, listAllDaemons } from "./coordination";
 import { testMysqlConnection, migrateSqliteToMysql, writeMysqlEnv, migrateMysqlToSqlite, writeSqliteEnv, migrateDaemonSqliteToMysql } from "./db-admin";
 import type { MysqlTargetOpts } from "./db-admin";
 import { checkAuth, makeAuthCookieHeader, clearAuthCookieHeader, loginHTML, sanitizeNext, ensureBootstrapAdmin, ensureBootstrapSystem, isReservedSystemLogin } from "./auth";
@@ -411,6 +411,7 @@ function chunkTextTTS(text: string, max = 120): string[] {
 async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean; user: UserRow | null }): Promise<Response> {
   if (url.pathname === "/static/app.js") return staticAsset("app.js", "text/javascript; charset=utf-8", req);
   if (url.pathname === "/static/db-wizard.js") return staticAsset("db-wizard.js", "text/javascript; charset=utf-8", req);
+  if (url.pathname === "/static/daemon-mgr.js") return staticAsset("daemon-mgr.js", "text/javascript; charset=utf-8", req);
   if (url.pathname === "/static/session.js") return staticAsset("session.js", "text/javascript; charset=utf-8", req);
   if (url.pathname === "/static/file.js") return staticAsset("file.js", "text/javascript; charset=utf-8", req);
   if (url.pathname === "/static/tts.js") return staticAsset("tts.js", "text/javascript; charset=utf-8", req);
@@ -829,6 +830,73 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     await writeSqliteEnv(join(process.cwd(), ".env"), targetPath);
     scheduleRestart();
     return json({ ...result, targetPath, restarting: true });
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/daemons") {
+    if (!ctx.user || ctx.user.is_admin !== 1) return json({ error: "admin required" }, 403);
+    return json(await listAllDaemons());
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/daemons") {
+    if (!ctx.user || ctx.user.is_admin !== 1) return json({ error: "admin required" }, 403);
+    if (!rateLimit(`daemons-add:${ip}`, 5, 5 / 3600)) return json({ error: "rate limited" }, 429);
+    const payload = await req.json().catch(() => ({} as unknown));
+    const port = (payload && typeof payload === "object" && "port" in payload
+      ? (payload as { port?: unknown }).port
+      : undefined);
+    const args = ["add-daemon"];
+    if (typeof port === "number" && Number.isFinite(port) && port > 0 && port < 65536) {
+      args.push(String(Math.trunc(port)));
+    } else if (port !== undefined && port !== null) {
+      return json({ ok: false, error: "invalid port" }, 400);
+    }
+    let child: import("child_process").ChildProcessByStdio<null, import("stream").Readable, import("stream").Readable>;
+    try {
+      child = spawn("ework-aio", args, { stdio: ["ignore", "pipe", "pipe"] });
+    } catch {
+      return json({ ok: false, error: "ework-aio not found" });
+    }
+    const result = await new Promise<{ ok: boolean; output?: string; error?: string }>((resolve) => {
+      const ac = new AbortController();
+      const timer = setTimeout(() => {
+        ac.abort();
+        try { child.kill("SIGKILL"); } catch { /* already dead */ }
+      }, 30_000);
+      let stdout = "";
+      let stderr = "";
+      let settled = false;
+      const finish = (r: { ok: boolean; output?: string; error?: string }) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(r);
+      };
+      child.stdout.on("data", (b: Buffer) => { stdout += b.toString("utf-8"); });
+      child.stderr.on("data", (b: Buffer) => { stderr += b.toString("utf-8"); });
+      child.once("error", () => finish({ ok: false, error: "ework-aio not found" }));
+      child.once("exit", (code) => {
+        if (code === 0) finish({ ok: true, output: stdout });
+        else finish({ ok: false, error: stderr.trim() || `ework-aio add-daemon exited with code ${code}` });
+      });
+      ac.signal.addEventListener("abort", () => {
+        finish({ ok: false, error: "timeout: ework-aio add-daemon did not exit within 30s" });
+      });
+    });
+    return json(result, result.ok ? 200 : 422);
+  }
+
+  const daemonIdRe = /^\/api\/daemons\/(\d+)$/;
+  if (req.method === "DELETE" && daemonIdRe.test(url.pathname)) {
+    if (!ctx.user || ctx.user.is_admin !== 1) return json({ error: "admin required" }, 403);
+    const match = url.pathname.match(daemonIdRe);
+    const id = match ? Number(match[1]) : NaN;
+    if (!Number.isFinite(id)) return json({ error: "invalid id" }, 400);
+    try {
+      await getDB().run(`UPDATE {{d_daemons}} SET status = 'drained' WHERE id = ?`, [id]);
+    } catch (e) {
+      return json({ ok: false, error: errMsg(e) });
+    }
+    return json({ ok: true });
   }
 
   if (url.pathname === "/settings") {
