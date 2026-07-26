@@ -29,6 +29,7 @@ export interface BatchTarget {
 
 const FORWARD_KEYS = [
   "WORK_DB_DRIVER",
+  "WORK_DB_PORT",
   "WORK_DB_USER",
   "WORK_DB_PASSWORD",
   "WORK_DB_NAME",
@@ -113,8 +114,9 @@ function buildSetupScript(envBlock: string, daemonPort: number, mysqlHostRaw: st
     `echo "[4/5] starting daemon..."`,
     `ework-aio start daemon`,
     `echo "[5/5] verifying daemon is alive..."`,
-    `sleep 2`,
-    `curl -sf --max-time 3 http://127.0.0.1:${String(daemonPort)}/api/status >/dev/null 2>&1 && echo "DAEMON_ALIVE" || echo "DAEMON_WARNING: status check failed (may need a moment to boot)"`,
+    `sleep 3`,
+    `curl -sf --max-time 5 http://127.0.0.1:${String(daemonPort)}/api/status 2>/dev/null && echo "DAEMON_ALIVE" || { echo "DAEMON_FAILED: status check failed"; echo "=== daemon log (last 20 lines) ==="; tail -20 ~/.local/share/ework-aio/run/daemon.log 2>/dev/null || echo "(no log)"; exit 1; }`,
+    `echo "=== hostname: $(hostname) ==="`,
     `echo DAEMON_STARTED`,
   ].join("\n");
 }
