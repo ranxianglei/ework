@@ -31,6 +31,7 @@ import {
 } from "./commands/lifecycle.ts";
 import { runLogs } from "./commands/logs.ts";
 import { runEnv } from "./commands/env.ts";
+import { runAddDaemon } from "./commands/add-daemon.ts";
 import {
   runConfig,
   printConfigHelp,
@@ -67,6 +68,7 @@ Commands:
   start [web|daemon|both]         Start services in PID-file mode (default both)
   stop [web|daemon|both]          Stop services (SIGTERM, 5s grace, then SIGKILL)
   restart [web|daemon|both]       Stop + start
+  add-daemon [port]               Start an additional daemon instance
   ps                              Show PID-file mode status (alias for 'status')
 
   migrate [options]               Migrate issues from a Gitea instance
@@ -478,6 +480,16 @@ export async function main(
       case "restart": {
         const target = parseServiceTarget(positionals[1]);
         await runRestart(opts, logger, target);
+        return 0;
+      }
+      case "add-daemon": {
+        const port = positionals[1] ? Number.parseInt(positionals[1], 10) : undefined;
+        if (port !== undefined && (!Number.isFinite(port) || port <= 0 || port > 65535)) {
+          throw new InstallError(
+            `add-daemon: invalid port '${positionals[1]}' (must be 1-65535)`,
+          );
+        }
+        await runAddDaemon(opts, logger, port);
         return 0;
       }
       case "migrate": {

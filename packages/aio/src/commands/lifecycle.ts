@@ -9,7 +9,12 @@
 // responding" without having to curl themselves).
 
 import { Logger, InstallError } from "../log.ts";
-import { resolvePaths, type PathConfig } from "../paths.ts";
+import {
+  resolvePaths,
+  daemonInstancePaths,
+  type PathConfig,
+  type DaemonInstance,
+} from "../paths.ts";
 import {
   startProcess,
   stopProcess,
@@ -20,7 +25,7 @@ import { parseEnvFile } from "../env.ts";
 import { resolveCommand, resolveBundledBin } from "../preflight.ts";
 import type { GlobalOptions, ServiceTarget } from "../types.ts";
 
-interface ServicePaths {
+export interface ServicePaths {
   bin: string;
   pkg: string;
   binRelPath: string;
@@ -95,13 +100,21 @@ async function startOne(
   logger: Logger,
 ): Promise<boolean> {
   const sp = servicePaths(paths, svc);
+  return startFromSp(sp, svc, logger);
+}
+
+export async function startFromSp(
+  sp: ServicePaths,
+  label: string,
+  logger: Logger,
+): Promise<boolean> {
   const binPath = resolveBundledBin(sp.pkg, sp.binRelPath) ?? resolveCommand(sp.bin);
   if (!binPath) {
     throw new InstallError(`${sp.bin} not found — update with: npm install -g ework-aio@latest`);
   }
   const existingPid = await readPidFile(sp.pidFile);
   if (existingPid !== null && isProcessRunning(existingPid)) {
-    logger.log(`ework-${svc} already running (pid ${existingPid})`);
+    logger.log(`ework-${label} already running (pid ${existingPid})`);
     return false;
   }
   const env = await loadEnv(sp.envFile);
@@ -118,36 +131,91 @@ async function startOne(
   if (!isProcessRunning(pid)) {
     const tail = await readLogTail(sp.logFile, 10);
     const detail = tail ? `\n${tail}` : "";
-    throw new InstallError(`ework-${svc} failed to start (pid ${pid} exited within 1.5s)${detail}`);
+    throw new InstallError(`ework-${label} failed to start (pid ${pid} exited within 1.5s)${detail}`);
   }
 
   const port = await readPort(sp);
   const portStr = port !== null ? `, http://127.0.0.1:${port}` : "";
-  logger.ok(`ework-${svc} started (pid ${pid}${portStr}, log ${sp.logFile})`);
+  logger.ok(`ework-${label} started (pid ${pid}${portStr}, log ${sp.logFile})`);
   return true;
 }
 
 async function stopOne(svc: "web" | "daemon", paths: PathConfig, logger: Logger): Promise<boolean> {
   const sp = servicePaths(paths, svc);
+  return stopFromSp(sp, svc, logger);
+}
+
+export async function stopFromSp(
+  sp: ServicePaths,
+  label: string,
+  logger: Logger,
+): Promise<boolean> {
   try {
     const result = await stopProcess(sp.pidFile, { graceMs: 5000, sigkillAfter: true });
     if (result.killed) {
-      logger.ok(`ework-${svc} stopped (pid ${result.pid}${result.timedOut ? ", SIGKILL after timeout" : ""})`);
+      logger.ok(`ework-${label} stopped (pid ${result.pid}${result.timedOut ? ", SIGKILL after timeout" : ""})`);
     } else {
-      logger.log(`ework-${svc} was not running (stale pidfile cleaned)`);
+      logger.log(`ework-${label} was not running (stale pidfile cleaned)`);
     }
     return result.killed;
   } catch (err) {
     if (err instanceof Error && /not found or empty/.test(err.message)) {
-      logger.log(`ework-${svc} not running (no pidfile at ${sp.pidFile})`);
+      logger.log(`ework-${label} not running (no pidfile at ${sp.pidFile})`);
       return false;
     }
     throw err;
   }
 }
 
+function daemonSpFromInstance(inst: DaemonInstance): ServicePaths {
+  return {
+    bin: "ework-daemon-server",
+    pkg: "ework-daemon",
+    binRelPath: "bin/ework-daemon-server.js",
+    dataDir: inst.dataDir,
+    envFile: inst.envFile,
+    pidFile: inst.pidFile,
+    logFile: inst.logFile,
+    portKey: "DAEMON_PORT",
+  };
+}
+
+function instanceLabel(num: number): string {
+  return num === 1 ? "daemon" : `daemon-${num}`;
+}
+
+function iterDaemonInstances(
+  paths: PathConfig,
+): Array<{ sp: ServicePaths; label: string }> {
+  const instances = daemonInstancePaths(paths.dataDir, paths.runDir);
+  return instances.map((inst) => ({
+    sp: daemonSpFromInstance(inst),
+    label: instanceLabel(inst.num),
+  }));
+}
+
 function targets(target: ServiceTarget): Array<"web" | "daemon"> {
   return target === "both" ? ["web", "daemon"] : [target];
+}
+
+function iterTargets(
+  paths: PathConfig,
+  target: ServiceTarget,
+): Array<{ sp: ServicePaths; label: string }> {
+  const out: Array<{ sp: ServicePaths; label: string }> = [];
+  for (const svc of targets(target)) {
+    if (svc === "web") {
+      out.push({ sp: servicePaths(paths, "web"), label: "web" });
+    } else {
+      const insts = iterDaemonInstances(paths);
+      if (insts.length === 0) {
+        out.push({ sp: servicePaths(paths, "daemon"), label: "daemon" });
+      } else {
+        out.push(...insts);
+      }
+    }
+  }
+  return out;
 }
 
 export async function runStart(
@@ -156,8 +224,8 @@ export async function runStart(
   target: ServiceTarget,
 ): Promise<void> {
   const paths = resolvePaths({ dataDir: opts.dataDir, scope: opts.scope, useSystemd: false });
-  for (const svc of targets(target)) {
-    await startOne(svc, paths, logger);
+  for (const { sp, label } of iterTargets(paths, target)) {
+    await startFromSp(sp, label, logger);
   }
 }
 
@@ -167,8 +235,8 @@ export async function runStop(
   target: ServiceTarget,
 ): Promise<void> {
   const paths = resolvePaths({ dataDir: opts.dataDir, scope: opts.scope, useSystemd: false });
-  for (const svc of targets(target)) {
-    await stopOne(svc, paths, logger);
+  for (const { sp, label } of iterTargets(paths, target)) {
+    await stopFromSp(sp, label, logger);
   }
 }
 
@@ -178,14 +246,14 @@ export async function runRestart(
   target: ServiceTarget,
 ): Promise<void> {
   const paths = resolvePaths({ dataDir: opts.dataDir, scope: opts.scope, useSystemd: false });
-  for (const svc of targets(target)) {
-    await stopOne(svc, paths, logger);
-    await startOne(svc, paths, logger);
+  for (const { sp, label } of iterTargets(paths, target)) {
+    await stopFromSp(sp, label, logger);
+    await startFromSp(sp, label, logger);
   }
 }
 
 export interface StatusEntry {
-  svc: "web" | "daemon";
+  svc: string;
   pid: number | null;
   alive: boolean;
   port: number | null;
@@ -199,16 +267,25 @@ export async function runStatus(opts: GlobalOptions, logger: Logger): Promise<St
   logger.log("ework-aio status (PID-file mode)");
   logger.hr();
 
+  const probeTargets: Array<{ sp: ServicePaths; label: string }> = [
+    { sp: servicePaths(paths, "web"), label: "web" },
+  ];
+  const daemonInsts = iterDaemonInstances(paths);
+  if (daemonInsts.length === 0) {
+    probeTargets.push({ sp: servicePaths(paths, "daemon"), label: "daemon" });
+  } else {
+    probeTargets.push(...daemonInsts);
+  }
+
   const entries: StatusEntry[] = [];
-  for (const svc of ["web", "daemon"] as const) {
-    const sp = servicePaths(paths, svc);
+  for (const { sp, label } of probeTargets) {
     const pid = await readPidFile(sp.pidFile);
     const alive = pid !== null && isProcessRunning(pid);
 
-    let port = await readPort(sp);
+    const port = await readPort(sp);
     let listening: boolean | null = null;
     if (port !== null) {
-      const probeUrl = svc === "web"
+      const probeUrl = label === "web"
         ? `http://127.0.0.1:${port}/login`
         : `http://127.0.0.1:${port}/`;
       try {
@@ -219,13 +296,13 @@ export async function runStatus(opts: GlobalOptions, logger: Logger): Promise<St
       }
     }
 
-    entries.push({ svc, pid, alive, port, listening });
+    entries.push({ svc: label, pid, alive, port, listening });
 
     const pidStr = pid === null ? "—" : `pid ${pid}`;
     const aliveStr = alive ? "✓ running" : "✗ not running";
     const portStr = port === null ? "(no port in .env)" : `:${port}`;
     const listenStr = listening === null ? "" : listening ? " ✓ listening" : " ✗ not responding";
-    logger.log(`  ework-${svc.padEnd(8)} ${pidStr.padEnd(10)} ${aliveStr}  ${portStr}${listenStr}`);
+    logger.log(`  ework-${label.padEnd(10)} ${pidStr.padEnd(10)} ${aliveStr}  ${portStr}${listenStr}`);
   }
   logger.hr();
   return entries;

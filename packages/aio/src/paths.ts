@@ -18,6 +18,7 @@
 
 import path from "node:path";
 import os from "node:os";
+import { existsSync } from "node:fs";
 
 export interface PathConfig {
   dataDir: string;
@@ -92,4 +93,38 @@ export function resolvePaths(opts: ResolvePathsOptions): PathConfig {
     webUnitFile: unitDir ? path.join(unitDir, "ework-web.service") : null,
     daemonUnitFile: unitDir ? path.join(unitDir, "ework-daemon.service") : null,
   };
+}
+
+export interface DaemonInstance {
+  num: number;
+  dataDir: string;
+  envFile: string;
+  pidFile: string;
+  logFile: string;
+}
+
+export function daemonInstancePaths(dataDir: string, runDir: string): DaemonInstance[] {
+  const instances: DaemonInstance[] = [];
+  const primaryDir = path.join(dataDir, "ework-daemon");
+  if (existsSync(primaryDir)) {
+    instances.push({
+      num: 1,
+      dataDir: primaryDir,
+      envFile: path.join(primaryDir, ".env"),
+      pidFile: path.join(runDir, "daemon.pid"),
+      logFile: path.join(runDir, "daemon.log"),
+    });
+  }
+  for (let i = 2; i <= 100; i++) {
+    const dir = path.join(dataDir, `ework-daemon-${i}`);
+    if (!existsSync(dir)) break;
+    instances.push({
+      num: i,
+      dataDir: dir,
+      envFile: path.join(dir, ".env"),
+      pidFile: path.join(runDir, `daemon-${i}.pid`),
+      logFile: path.join(runDir, `daemon-${i}.log`),
+    });
+  }
+  return instances;
 }
