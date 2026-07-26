@@ -24,6 +24,7 @@ export const configSchema = z.object({
   daemon: z.object({
     port: z.coerce.number().default(3101),
     host: z.string().default("0.0.0.0"),
+    endpoint: z.string().default(""),
   }),
   opencode: z.object({
     binary: z.string().default("opencode"),
@@ -75,7 +76,7 @@ const PRODUCTION_DB_DEFAULT = join(
 const TEST_DEFAULTS = {
   gitea: { url: "http://localhost:9999", token: "test-token", webhookSecret: "" },
   bot: { username: "ework-daemon-test", token: "test-bot-token" },
-  daemon: { port: 3111, host: "0.0.0.0" },
+  daemon: { port: 3111, host: "0.0.0.0", endpoint: "" },
   opencode: { binary: "opencode", baseWorkdir: join(tmpdir(), "ework-daemon-test") },
   work: { capacity: 4, heartbeatMs: 10_000, leaseTtlMs: 60_000 },
   db: { path: join(process.cwd(), "test", "ework-daemon-test.db") },
@@ -124,6 +125,7 @@ export function loadConfig(): Config {
       daemon: {
         port: process.env.DAEMON_PORT ?? TEST_DEFAULTS.daemon.port,
         host: process.env.DAEMON_HOST ?? TEST_DEFAULTS.daemon.host,
+        endpoint: process.env.DAEMON_ENDPOINT ?? "",
       },
       opencode: {
         binary: process.env.OPENCODE_BINARY ?? TEST_DEFAULTS.opencode.binary,
@@ -158,6 +160,7 @@ export function loadConfig(): Config {
     daemon: {
       port: process.env.DAEMON_PORT ?? 3101,
       host: process.env.DAEMON_HOST ?? "0.0.0.0",
+      endpoint: process.env.DAEMON_ENDPOINT ?? "",
     },
     opencode: {
       binary: process.env.OPENCODE_BINARY ?? "opencode",

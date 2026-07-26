@@ -42,7 +42,7 @@ async function boot() {
   // 3. First-boot migration: claim all pre-existing ownerless issues.
   await store.releaseDeadOwners(config.work.leaseTtlMs);
   const displayName = hostname();
-  const internalEndpoint = `${config.daemon.host}:${config.daemon.port}`;
+  const internalEndpoint = config.daemon.endpoint || `${config.daemon.host}:${config.daemon.port}`;
   const daemonId = await store.registerDaemon(displayName, internalEndpoint, config.work.capacity, config.work.leaseTtlMs);
   const absorbed = await store.absorbSameHostDaemons(daemonId, displayName, internalEndpoint);
   const claimed = await store.claimAllOwnerless(daemonId);
