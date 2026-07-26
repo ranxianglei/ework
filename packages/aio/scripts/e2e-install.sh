@@ -709,6 +709,127 @@ case "$DELIVERIES_CODE" in
     ;;
 esac
 
+# Phase 7: multi-daemon coordination (requires MySQL shared DB)
+# -----------------------------------------------------------------------------
+if grep -q 'WORK_DB_DRIVER=mysql' "$DATA_DIR/ework-daemon/.env" 2>/dev/null; then
+echo
+echo "====================================================="
+echo "Phase 7: multi-daemon coordination"
+echo "====================================================="
+
+info "restarting daemon A on MySQL (ework-aio restart may not reload .env)"
+info "daemon .env WORK_DB_* lines:"
+grep WORK_DB "$DATA_DIR/ework-daemon/.env" 2>/dev/null || echo "  (none found)"
+ework-aio stop daemon --data-dir "$DATA_DIR" 2>&1 | tail -1
+sleep 1
+ework-aio start daemon --data-dir "$DATA_DIR" 2>&1 | tail -2
+sleep 3
+timeout 3 curl -sf "http://127.0.0.1:$DAEMON_PORT/healthz" >/dev/null 2>&1 \
+  || fail "daemon A did not respond after restart"
+DAEMON_A_DB=$(grep '"msg":"  db:' "$DATA_DIR/run/daemon.log" 2>/dev/null | tail -1 | sed 's/.*"msg":"//' | sed 's/".*//' || echo "?")
+info "daemon A startup log: $DAEMON_A_DB"
+[[ "$DAEMON_A_DB" == *"3312"* || "$DAEMON_A_DB" == *"mysql"* ]] \
+  || fail "daemon A is NOT on MySQL (log: $DAEMON_A_DB) — coordination requires shared DB"
+pass "daemon A on MySQL"
+
+DAEMON2_PORT=$((DAEMON_PORT + 1))
+DAEMON2_DIR="$DATA_DIR/ework-daemon-2"
+DAEMON2_BIN="$(npm root -g)/ework-aio/node_modules/ework-daemon/bin/ework-daemon-server.js"
+
+mkdir -p "$DAEMON2_DIR"
+cp "$DATA_DIR/ework-daemon/.env" "$DAEMON2_DIR/.env"
+sed -i "s/^DAEMON_PORT=.*/DAEMON_PORT=$DAEMON2_PORT/" "$DAEMON2_DIR/.env"
+echo "WORK_DAEMON_LEASE_TTL_MS=15000" >> "$DAEMON2_DIR/.env"
+
+info "starting daemon B on port $DAEMON2_PORT (short TTL=15s for failover test)"
+( set -a; . "$DAEMON2_DIR/.env" 2>/dev/null; set +a
+  cd "$DAEMON2_DIR"
+  DAEMON_PORT=$DAEMON2_PORT WORK_DAEMON_LEASE_TTL_MS=15000 \
+  exec bun "$DAEMON2_BIN" >> "$DATA_DIR/run/daemon-2.log" 2>&1 ) &
+DAEMON2_PID=$!
+
+for i in $(seq 1 15); do
+  curl -sf "http://127.0.0.1:$DAEMON2_PORT/healthz" >/dev/null 2>&1 && break
+  sleep 1
+done
+curl -sf "http://127.0.0.1:$DAEMON2_PORT/healthz" >/dev/null 2>&1 \
+  || { echo "=== daemon-2.log ==="; cat "$DATA_DIR/run/daemon-2.log" 2>/dev/null | tail -20; echo "=== bin check ==="; ls -la "$DAEMON2_BIN" 2>&1; fail "daemon B did not start on port $DAEMON2_PORT"; }
+pass "daemon B started (pid $DAEMON2_PID, port $DAEMON2_PORT)"
+
+info "daemon B startup config:"
+head -8 "$DATA_DIR/run/daemon-2.log" 2>/dev/null | while read -r line; do echo "  $line"; done
+
+WEBHOOK_SECRET=$(grep GITEA_WEBHOOK_SECRET "$DATA_DIR/ework-daemon/.env" 2>/dev/null | cut -d= -f2)
+
+make_hook() {
+  local payload="$1"
+  if [[ -n "$WEBHOOK_SECRET" ]]; then
+    local sig=$(printf '%s' "$payload" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" -hex | awk '{print $NF}')
+    echo "-H x-gitea-signature:$sig"
+  fi
+}
+
+info "test 1: no-double-spawn — send identical webhook to both daemons"
+ISSUE_HOOK='{"action":"opened","issue":{"number":888,"title":"multi-daemon test","body":"coordination","state":"open","user":{"login":"e2e"}},"repository":{"owner":{"login":"e2e"},"name":"test"}}'
+HOOK_HDR=$(make_hook "$ISSUE_HOOK")
+
+timeout 5 curl -sS -o /dev/null -X POST "http://127.0.0.1:$DAEMON_PORT/webhook/gitea" \
+  -H "Content-Type: application/json" $HOOK_HDR -d "$ISSUE_HOOK" 2>/dev/null || true
+timeout 5 curl -sS -o /dev/null -X POST "http://127.0.0.1:$DAEMON2_PORT/webhook/gitea" \
+  -H "Content-Type: application/json" $HOOK_HDR -d "$ISSUE_HOOK" 2>/dev/null || true
+sleep 3
+
+A_SPAWNED=$(grep -c 'session.*created.*888\|observer started.*888' "$DATA_DIR/run/daemon.log" 2>/dev/null); A_SPAWNED=${A_SPAWNED:-0}
+B_SPAWNED=$(grep -c 'session.*created.*888\|observer started.*888' "$DATA_DIR/run/daemon-2.log" 2>/dev/null); B_SPAWNED=${B_SPAWNED:-0}
+TOTAL=$((A_SPAWNED + B_SPAWNED))
+info "daemon A spawned=$A_SPAWNED  daemon B spawned=$B_SPAWNED  total=$TOTAL"
+[[ "$TOTAL" -eq 2 ]] \
+  || { echo "--- daemon A 888 lines ---"; grep '888' "$DATA_DIR/run/daemon.log" 2>/dev/null | tail -5; echo "--- daemon B 888 lines ---"; grep '888' "$DATA_DIR/run/daemon-2.log" 2>/dev/null | tail -5; fail "no-double-spawn failed: expected 2 log lines (1 spawn), got $TOTAL"; }
+pass "no-double-spawn: exactly 1 daemon spawned for issue 888"
+
+info "test 2: failover — kill owner, verify survivor takes over"
+if [[ "$A_SPAWNED" -eq 1 ]]; then
+  OWNER_PID=$(cat "$DATA_DIR/run/daemon.pid" 2>/dev/null)
+  SURVIVOR_PORT=$DAEMON2_PORT
+  SURVIVOR_LOG="$DATA_DIR/run/daemon-2.log"
+else
+  OWNER_PID=$DAEMON2_PID
+  SURVIVOR_PORT=$DAEMON_PORT
+  SURVIVOR_LOG="$DATA_DIR/run/daemon.log"
+fi
+
+info "killing owner (pid $OWNER_PID)"
+kill "$OWNER_PID" 2>/dev/null
+sleep 1
+pass "owner killed"
+
+info "waiting 18s for lease expiry (TTL=15s)..."
+sleep 18
+
+COMMENT_HOOK='{"action":"created","issue":{"number":888,"title":"multi-daemon test","body":"coordination","state":"open","user":{"login":"e2e"}},"comment":{"id":99999,"body":"failover test","user":{"login":"e2e"}},"repository":{"owner":{"login":"e2e"},"name":"test"}}'
+COMMENT_HDR=$(make_hook "$COMMENT_HOOK")
+
+info "sending comment webhook to survivor (port $SURVIVOR_PORT)"
+timeout 5 curl -sS -o /dev/null -X POST "http://127.0.0.1:$SURVIVOR_PORT/webhook/gitea" \
+  -H "Content-Type: application/json" $COMMENT_HDR -d "$COMMENT_HOOK" 2>/dev/null || true
+sleep 3
+
+SURVIVOR_CLAIMED=$(grep -c "observer started.*888\|session.*created.*888\|claimed.*888\|absorb" "$SURVIVOR_LOG" 2>/dev/null | tail -1 || echo 0)
+SURVIVOR_CLAIMED_AFTER=$(grep "observer started.*888\|session.*created.*888" "$SURVIVOR_LOG" 2>/dev/null | wc -l || echo 0)
+info "survivor log shows $SURVIVOR_CLAIMED_AFTER session creation(s) for 888"
+[[ "$SURVIVOR_CLAIMED_AFTER" -ge 1 ]] \
+  || fail "failover failed: survivor did not claim issue 888"
+pass "failover: survivor claimed issue 888"
+
+info "cleanup: stop daemon B + restart main daemon"
+kill "$DAEMON2_PID" 2>/dev/null
+ework-aio start daemon --data-dir "$DATA_DIR" 2>&1 | tail -3
+sleep 2
+
+else
+  info "skipping Phase 7 (multi-daemon requires MySQL)"
+fi
+
 # Phase 6: uninstall
 # -----------------------------------------------------------------------------
 echo
