@@ -78,14 +78,16 @@ function buildEnvBlock(env: Map<string, string>, target: DeployTarget): string {
     if (v === undefined) continue;
     lines.push(`${k}=${v}`);
   }
-  lines.push(`WORK_DB_HOST=${target.mysqlHost}`);
+  const mysqlHost = String(target.mysqlHost).replace(/:\d+$/, "");
+  lines.push(`WORK_DB_HOST=${mysqlHost}`);
   lines.push(`DAEMON_PORT=${String(target.daemonPort ?? 3101)}`);
   lines.push(`DAEMON_HOST=0.0.0.0`);
   lines.push(`DAEMON_ENV=production`);
   return lines.join("\n");
 }
 
-function buildSetupScript(envBlock: string, daemonPort: number, mysqlHost: string, mysqlPort: string): string {
+function buildSetupScript(envBlock: string, daemonPort: number, mysqlHostRaw: string, mysqlPort: string): string {
+  const mysqlHost = mysqlHostRaw.replace(/:\d+$/, "");
   return [
     "set -e",
     `command -v npm >/dev/null 2>&1 || { curl -fsSL https://deb.nodesource.com/setup_22.x | sudo bash -; sudo apt-get install -y nodejs; }`,
