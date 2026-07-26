@@ -709,6 +709,54 @@ case "$DELIVERIES_CODE" in
     ;;
 esac
 
+# Phase 5.8: router integration (webhook routing layer)
+echo
+echo "====================================================="
+echo "Phase 5.8: router integration"
+echo "====================================================="
+
+ROUTER_PORT=3104
+info "router health: GET http://127.0.0.1:$ROUTER_PORT/api/health"
+ROUTIER_HEALTH_CODE=$(curl -sS -o /dev/null -w "%{http_code}" \
+  --max-time 5 "http://127.0.0.1:$ROUTER_PORT/api/health" 2>/dev/null || echo "000")
+case "$ROUTIER_HEALTH_CODE" in
+  200)
+    pass "router /api/health responds (200)"
+    ;;
+  000)
+    info "router not running (binary not installed in this env) — skipping router tests"
+    ;;
+  *)
+    info "router health returned HTTP $ROUTIER_HEALTH_CODE"
+    ;;
+esac
+
+if [[ "$ROUTIER_HEALTH_CODE" == "200" ]]; then
+  info "router strategy: GET /api/strategy"
+  STRATEGY_RESP=$(curl -sS --max-time 5 "http://127.0.0.1:$ROUTER_PORT/api/strategy" 2>/dev/null || echo "")
+  if echo "$STRATEGY_RESP" | grep -q "strategy"; then
+    pass "router strategy endpoint responds"
+  else
+    info "router strategy response: $STRATEGY_RESP"
+  fi
+
+  info "router forwards webhook to daemon (POST /webhook/gitea)"
+  ROUTER_FORWARD_CODE=$(curl -sS -o /dev/null -w "%{http_code}" \
+    --max-time 10 \
+    -X POST \
+    -H "Content-Type: application/json" \
+    -d '{"action":"opened","issue":{"number":99999,"title":"router-test","body":"e2e router forward test","state":"open","user":{"login":"e2e"}},"repository":{"owner":{"login":"e2e"},"name":"test"}}' \
+    "http://127.0.0.1:$ROUTER_PORT/webhook/gitea" 2>/dev/null || echo "000")
+  case "$ROUTER_FORWARD_CODE" in
+    200|204)
+      pass "router accepted webhook (HTTP $ROUTER_FORWARD_CODE)"
+      ;;
+    *)
+      info "router forward returned HTTP $ROUTER_FORWARD_CODE (daemon may not be reachable from router)"
+      ;;
+  esac
+fi
+
 # Phase 7: multi-daemon coordination (requires MySQL shared DB)
 # -----------------------------------------------------------------------------
 if grep -q 'WORK_DB_DRIVER=mysql' "$DATA_DIR/ework-daemon/.env" 2>/dev/null; then
