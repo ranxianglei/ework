@@ -57,6 +57,11 @@ export const configSchema = z.object({
     thresholdMs: z.coerce.number().positive(),
     maxNudges: z.coerce.number().int().nonnegative(),
   }).optional(),
+  file: z.object({
+    roots: z.array(z.string()).default([]),
+    maxLines: z.coerce.number().int().positive().default(2000),
+    maxBytes: z.coerce.number().int().positive().default(524288),
+  }).default({ roots: [], maxLines: 2000, maxBytes: 524288 }),
 });
 
 export type Config = z.infer<typeof configSchema>;
@@ -170,5 +175,12 @@ export function loadConfig(): Config {
       thresholdMs: Number(process.env.DAEMON_STUCK_THRESHOLD_MS) || 30 * 60 * 1000,
       maxNudges: Number(process.env.DAEMON_MAX_STUCK_NUDGES) || 1,
     } : undefined,
+    file: {
+      roots: (process.env.WORK_FILE_ROOTS ?? "").split(":").filter(Boolean).length > 0
+        ? (process.env.WORK_FILE_ROOTS ?? "").split(":").filter(Boolean)
+        : [process.env.OPENCODE_BASE_WORKDIR].filter(Boolean) as string[],
+      maxLines: Number(process.env.WORK_FILE_MAX_LINES) || 2000,
+      maxBytes: Number(process.env.WORK_FILE_MAX_BYTES) || 524288,
+    },
   });
 }

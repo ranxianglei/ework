@@ -3,6 +3,7 @@ import type { Store } from "./op";
 import type { Engine } from "./opencode";
 import type { IssueTracker, TrackerEvent } from "./trackers/types";
 import { OpencodeReader, OpencodeReaderError } from "./opencode-reader";
+import { listDir, readFile, readFileSince, FileApiError } from "./file-api";
 import { log, uptimeSeconds, version } from "./logger";
 
 type TrackerMap = Map<string, IssueTracker>;
@@ -48,6 +49,7 @@ export function createServer(
   }
 
   async function handleApi(req: Request, pathname: string): Promise<Response> {
+    const url = new URL(req.url);
     if (pathname === "/api/status") {
       const status = await engine.getStatus();
       return json({
@@ -121,7 +123,6 @@ export function createServer(
     }
 
     if (pathname === "/api/opencode/sessions") {
-      const url = new URL(req.url);
       const limit = Math.min(Math.max(Number(url.searchParams.get("limit") ?? "50"), 1), 500);
       const sessions = await reader.listSessions(limit);
       return json(sessions);
@@ -146,6 +147,39 @@ export function createServer(
       } catch (e) {
         if (e instanceof OpencodeReaderError) return json({ error: e.message }, e.status);
         return json({ error: "export failed" }, 502);
+      }
+    }
+
+    if (pathname === "/api/files/list") {
+      const filePath = url.searchParams.get("path") ?? "";
+      try {
+        return json(listDir(cfg, filePath));
+      } catch (e) {
+        if (e instanceof FileApiError) return json({ error: e.message }, e.status);
+        return json({ error: "list failed" }, 500);
+      }
+    }
+
+    if (pathname === "/api/files/read") {
+      const filePath = url.searchParams.get("path") ?? "";
+      const mode = (url.searchParams.get("mode") === "head" ? "head" : "tail") as "head" | "tail";
+      const order = (url.searchParams.get("order") === "asc" ? "asc" : "desc") as "asc" | "desc";
+      try {
+        return json(readFile(cfg, filePath, mode, order));
+      } catch (e) {
+        if (e instanceof FileApiError) return json({ error: e.message }, e.status);
+        return json({ error: "read failed" }, 500);
+      }
+    }
+
+    if (pathname === "/api/files/since") {
+      const filePath = url.searchParams.get("path") ?? "";
+      const after = Number(url.searchParams.get("after") ?? "0");
+      try {
+        return json(readFileSince(cfg, filePath, after));
+      } catch (e) {
+        if (e instanceof FileApiError) return json({ error: e.message }, e.status);
+        return json({ error: "read failed" }, 500);
       }
     }
 
