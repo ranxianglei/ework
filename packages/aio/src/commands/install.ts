@@ -178,8 +178,9 @@ export async function runInstall(
   // 5. Write (or forward-fill) web .env.
   const ctx: InstallContext = {
     paths,
-    workPort: opts.workPort,
-    daemonPort: opts.daemonPort,
+  workPort: opts.workPort,
+  daemonPort: opts.daemonPort,
+  routerPort: DEFAULTS.routerPort,
     botName: opts.botName,
     operatorLogin,
     opencodeBin,
@@ -460,6 +461,44 @@ export async function runInstall(
       });
       logger.ok(`ework-daemon started (pid ${pid}, log ${paths.daemonLogFile})`);
       daemonStarted = true;
+    }
+  }
+
+  // 12.5 Write router .env + start ework-router (webhook routing layer).
+  const routerEnvResult = await ensureEnvFile({ file: "router", filePath: paths.routerEnvFile, ctx });
+  if (routerEnvResult.created) {
+    logger.ok(`wrote ${paths.routerEnvFile}`);
+  } else if (routerEnvResult.added.length > 0) {
+    logger.ok(`forward-filled ${paths.routerEnvFile}: +${routerEnvResult.added.length} keys`);
+  }
+
+  let routerStarted = false;
+  if (opts.noStart) {
+    logger.warn(`--no-start: skipping ework-router startup`);
+  } else {
+    const routerPid = await readPidFile(paths.routerPidFile);
+    if (routerPid !== null && isProcessRunning(routerPid)) {
+      routerStarted = true;
+      logger.log(`ework-router already running (pid ${routerPid})`);
+    }
+    if (!routerStarted) {
+      const routerBin = resolveBundledBin("ework-router", "bin/ework-router.js");
+      if (routerBin) {
+        logger.log(`starting ework-router (PID-file mode)...`);
+        const env = await loadEnvIntoProcess(paths.routerEnvFile);
+        const { pid } = await startProcess({
+          cmd: "bun",
+          args: [routerBin],
+          cwd: paths.routerDataDir,
+          env,
+          logFile: paths.routerLogFile,
+          pidFile: paths.routerPidFile,
+        });
+        logger.ok(`ework-router started (pid ${pid}, log ${paths.routerLogFile})`);
+        routerStarted = true;
+      } else {
+        logger.warn(`ework-router binary not found — router skipped (install with: npm install -g ework-router)`);
+      }
     }
   }
 

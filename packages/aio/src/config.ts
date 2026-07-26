@@ -17,12 +17,13 @@
 import { randomBytes } from "node:crypto";
 import type { PathConfig } from "./paths.ts";
 
-export type EnvFile = "web" | "daemon";
+export type EnvFile = "web" | "daemon" | "router";
 
 export interface InstallContext {
   paths: PathConfig;
   workPort: number;
   daemonPort: number;
+  routerPort: number;
   botName: string;
   operatorLogin: string;
   // opencode binary path (looked up via preflight)
@@ -73,7 +74,7 @@ export const WEB_ENV_KEYS: readonly EnvKeySpec[] = [
   // user can't append → "EACCES: permission denied" on every request.
   { envVar: "WORK_ACCESS_LOG",             file: "web", generate: (c) => `${c.paths.runDir}/web-access.log` },
   { envVar: "WORK_DAEMON_BOT_LOGIN",       file: "web", generate: (c) => c.botName },
-  { envVar: "WORK_DAEMON_WEBHOOK_URL",     file: "web", generate: (c) => `http://127.0.0.1:${c.daemonPort}` },
+  { envVar: "WORK_DAEMON_WEBHOOK_URL",     file: "web", generate: (c) => `http://127.0.0.1:${c.routerPort}` },
   { envVar: "WORK_DAEMON_WEBHOOK_SECRET",  file: "web", secret: true, generate: sharedWebhookSecret },
 ] as const;
 
@@ -94,20 +95,34 @@ export const DAEMON_ENV_KEYS: readonly EnvKeySpec[] = [
   { envVar: "OPENCODE_BASE_WORKDIR",  file: "daemon", generate: (c) => c.paths.opencodeWorkdir },
 ] as const;
 
+export const ROUTER_ENV_KEYS: readonly EnvKeySpec[] = [
+  { envVar: "ROUTER_ENV",           file: "router", generate: () => "production" },
+  { envVar: "ROUTER_PORT",          file: "router", generate: (c) => String(c.routerPort) },
+  { envVar: "ROUTER_HOST",          file: "router", generate: () => "127.0.0.1" },
+  { envVar: "ROUTER_STRATEGY",      file: "router", generate: () => "least-loaded" },
+  { envVar: "WORK_DB_DRIVER",       file: "router", generate: () => "sqlite" },
+  { envVar: "WORK_DB_PATH",         file: "router", generate: (c) => c.paths.webDbPath },
+  { envVar: "WORK_DB_PREFIX",       file: "router", generate: () => "" },
+  { envVar: "DAEMON_TABLE_PREFIX",  file: "router", generate: () => "d_" },
+] as const;
+
 export function keysForFile(file: EnvFile): readonly EnvKeySpec[] {
-  return file === "web" ? WEB_ENV_KEYS : DAEMON_ENV_KEYS;
+  if (file === "web") return WEB_ENV_KEYS;
+  if (file === "router") return ROUTER_ENV_KEYS;
+  return DAEMON_ENV_KEYS;
 }
 
-// Set of env vars that, if missing, would crash ework-web or ework-daemon
-// at startup (Zod schema rejects). Used by env.ts forward-fill to log
-// which keys were injected.
+// Set of env vars that, if missing, would crash ework-web, ework-daemon, or
+// ework-router at startup (Zod schema rejects). Used by env.ts forward-fill.
 export const REQUIRED_KEYS: ReadonlySet<string> = new Set([
   ...WEB_ENV_KEYS.map((k) => k.envVar),
   ...DAEMON_ENV_KEYS.map((k) => k.envVar),
+  ...ROUTER_ENV_KEYS.map((k) => k.envVar),
 ]);
 
 // Keys whose value should be redacted in `config list` output.
 export const SECRET_ENV_VARS: ReadonlySet<string> = new Set([
   ...WEB_ENV_KEYS.filter((k) => k.secret).map((k) => k.envVar),
   ...DAEMON_ENV_KEYS.filter((k) => k.secret).map((k) => k.envVar),
+  ...ROUTER_ENV_KEYS.filter((k) => k.secret).map((k) => k.envVar),
 ]);

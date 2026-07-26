@@ -130,9 +130,10 @@ export async function startFromSp(
     return false;
   }
   const env = await loadEnv(sp.envFile);
+  const useBun = binPath.endsWith(".js");
   const { pid } = await startProcess({
-    cmd: binPath,
-    args: [],
+    cmd: useBun ? "bun" : binPath,
+    args: useBun ? [binPath] : [],
     cwd: sp.dataDir,
     env,
     logFile: sp.logFile,
@@ -240,14 +241,6 @@ export async function runStart(
 ): Promise<void> {
   const paths = resolvePaths({ dataDir: opts.dataDir, scope: opts.scope, useSystemd: false });
   for (const { sp, label } of iterTargets(paths, target)) {
-    if (label === "router") {
-      try {
-        await startFromSp(sp, label, logger);
-      } catch (e) {
-        logger.log(`ework-router skipped (${(e as Error).message})`);
-      }
-      continue;
-    }
     await startFromSp(sp, label, logger);
   }
 }
@@ -271,14 +264,6 @@ export async function runRestart(
   const paths = resolvePaths({ dataDir: opts.dataDir, scope: opts.scope, useSystemd: false });
   for (const { sp, label } of iterTargets(paths, target)) {
     await stopFromSp(sp, label, logger);
-    if (label === "router") {
-      try {
-        await startFromSp(sp, label, logger);
-      } catch (e) {
-        logger.log(`ework-router skipped (${(e as Error).message})`);
-      }
-      continue;
-    }
     await startFromSp(sp, label, logger);
   }
 }

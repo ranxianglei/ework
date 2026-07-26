@@ -24,6 +24,7 @@ function makeCtx(overrides: Partial<InstallContext> = {}): InstallContext {
     paths,
     workPort: 3002,
     daemonPort: 3101,
+    routerPort: 3104,
     botName: "ework-daemon",
     operatorLogin: "testuser",
     opencodeBin: "/usr/local/bin/opencode",

@@ -31,6 +31,7 @@ export interface GlobalOptions {
 export const DEFAULTS = {
   workPort: 3002,
   daemonPort: 3101,
+  routerPort: 3104,
   botName: "ework-daemon",
   scope: "user" as Scope,
 } as const;
