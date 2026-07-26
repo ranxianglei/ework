@@ -7,6 +7,8 @@
   var resultEl = document.getElementById('daemon-result');
   var addBtn = document.getElementById('daemon-add');
   var portInput = document.getElementById('daemon-port');
+  var deployBtn = document.getElementById('daemon-deploy');
+  var deployResultEl = document.getElementById('deploy-result');
   var refreshTimer = null;
   var inFlight = false;
 
@@ -32,6 +34,18 @@
     return '<span class="pill ' + cls + '">' + esc(raw) + '</span>';
   }
 
+  function isLocalhostEndpoint(endpoint) {
+    var host = String(endpoint || '').replace(/^https?:\/\//, '').split(':')[0] || '';
+    return /^(127\.|localhost$|0\.0\.0\.0$|::1$|\[::1\]$)/.test(host);
+  }
+
+  function locationCell(endpoint) {
+    if (isLocalhostEndpoint(endpoint)) {
+      return '<span class="pill loc-local">本机</span>';
+    }
+    return '<span class="pill loc-remote">🌐 远程</span>';
+  }
+
   function render(daemons) {
     if (!Array.isArray(daemons) || daemons.length === 0) {
       listEl.innerHTML = '<div class="daemon-empty">暂无 daemon 注册。可在下方启动新实例。</div>';
@@ -43,6 +57,7 @@
         : '';
       return '<tr>' +
         '<td class="cap">' + d.id + '</td>' +
+        '<td class="loc">' + locationCell(d.endpoint) + '</td>' +
         '<td class="endpoint">' + esc(d.endpoint || '') + '</td>' +
         '<td class="cap">' + esc(d.capacity != null ? d.capacity : '') + '</td>' +
         '<td class="heartbeat">' + fmtTime(d.lastHeartbeat) + '</td>' +
@@ -53,7 +68,7 @@
     }).join('');
     listEl.innerHTML =
       '<table><thead><tr>' +
-      '<th>ID</th><th>Endpoint</th><th>容量</th><th>心跳</th><th>注册于</th><th>状态</th><th></th>' +
+      '<th>ID</th><th>位置</th><th>Endpoint</th><th>容量</th><th>心跳</th><th>注册于</th><th>状态</th><th></th>' +
       '</tr></thead><tbody>' + rows + '</tbody></table>';
     listEl.querySelectorAll('button.stop').forEach(function (b) {
       b.addEventListener('click', function () { stopDaemon(Number(b.getAttribute('data-id'))); });
@@ -130,7 +145,58 @@
     }
   }
 
+  function setDeployResult(text, kind) {
+    if (!deployResultEl) return;
+    deployResultEl.className = 'db-result db-' + (kind === 'ok' ? 'ok' : kind === 'err' ? 'err' : 'loading');
+    deployResultEl.textContent = text;
+  }
+
+  function val(id) {
+    var el = document.getElementById(id);
+    return el && el.value != null ? el.value.trim() : '';
+  }
+
+  async function deployRemote() {
+    if (deployBtn) deployBtn.disabled = true;
+    setDeployResult('正在通过 SSH 部署（最长 60s）…', 'loading');
+    var body = {
+      sshHost: val('deploy-host'),
+      sshUser: val('deploy-user'),
+      mysqlHost: val('deploy-mysql-host')
+    };
+    var sshPort = Number(val('deploy-ssh-port'));
+    if (Number.isFinite(sshPort) && sshPort > 0) body.sshPort = sshPort;
+    var dPort = Number(val('deploy-daemon-port'));
+    if (Number.isFinite(dPort) && dPort > 0) body.daemonPort = dPort;
+    var keyFile = val('deploy-key');
+    if (keyFile) body.sshKeyFile = keyFile;
+    if (!body.sshHost || !body.sshUser || !body.mysqlHost) {
+      setDeployResult('✗ SSH 主机、SSH 用户、MySQL 主机 必填', 'err');
+      if (deployBtn) deployBtn.disabled = false;
+      return;
+    }
+    try {
+      var res = await fetch('/api/daemons/deploy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      var data = await res.json();
+      if (data.ok) {
+        setDeployResult('✓ 部署成功' + (data.output ? '\n' + data.output : ''), 'ok');
+        await loadDaemons();
+      } else {
+        setDeployResult('✗ ' + (data.error || '未知错误') + (data.output ? '\n' + data.output : ''), 'err');
+      }
+    } catch (e) {
+      setDeployResult('✗ ' + (e.message || String(e)), 'err');
+    } finally {
+      if (deployBtn) deployBtn.disabled = false;
+    }
+  }
+
   if (addBtn) addBtn.addEventListener('click', addDaemon);
+  if (deployBtn) deployBtn.addEventListener('click', deployRemote);
   document.addEventListener('visibilitychange', function () {
     if (document.hidden) {
       if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }

@@ -78,6 +78,19 @@ function buildDaemonSection(viewer: UserRow): string {
 <button type="button" id="daemon-add">添加 Daemon</button>
 </div>
 <div id="daemon-result" class="db-result"></div>
+<details style="margin-top:.7rem">
+<summary style="cursor:pointer;font-size:13px;color:var(--text-muted)">📡 SSH 远程部署</summary>
+<div style="margin-top:.5rem">
+<label class="sf"><span>SSH 主机</span><input type="text" id="deploy-host" placeholder="192.168.1.100" autocomplete="off"></label>
+<label class="sf"><span>SSH 用户</span><input type="text" id="deploy-user" placeholder="root" value="root" autocomplete="off"></label>
+<label class="sf"><span>SSH 端口</span><input type="number" id="deploy-ssh-port" value="22" min="1" max="65535" autocomplete="off"></label>
+<label class="sf"><span>SSH 密钥</span><input type="text" id="deploy-key" placeholder="~/.ssh/id_rsa" autocomplete="off"></label>
+<label class="sf"><span>Daemon 端口</span><input type="number" id="deploy-daemon-port" placeholder="3101" min="1" max="65535" autocomplete="off"></label>
+<label class="sf"><span>MySQL 主机（远程可见）</span><input type="text" id="deploy-mysql-host" placeholder="192.168.1.1" autocomplete="off"></label>
+<div class="db-controls"><button type="button" id="daemon-deploy">部署到远程</button></div>
+</div>
+</details>
+<div id="deploy-result" class="db-result"></div>
 <script src="/static/daemon-mgr.js"></script>
 </section>`;
 }
@@ -135,6 +148,9 @@ button.secondary{background:transparent;color:var(--text-muted);border:1px solid
 .daemon-list .pill.active{background:rgba(40,167,69,.18);color:#5eb88a}
 .daemon-list .pill.drained{background:rgba(255,193,7,.18);color:#d4a942}
 .daemon-list .pill.dead,.daemon-list .pill.unknown{background:rgba(220,53,69,.18);color:#e87c7c}
+.daemon-list .pill.loc-local{background:rgba(40,167,69,.18);color:#5eb88a}
+.daemon-list .pill.loc-remote{background:rgba(13,110,253,.18);color:#6ea8fe}
+.daemon-list td.loc{white-space:nowrap}
 .daemon-list button.stop{padding:.25rem .6rem;font-size:11px;background:transparent;color:#e87c7c;border:1px solid rgba(220,53,69,.4)}
 .daemon-list button.stop:hover{background:rgba(220,53,69,.12)}
 .daemon-empty{color:var(--text-muted);font-size:13px;padding:.5rem 0}
@@ -145,9 +161,9 @@ button.secondary{background:transparent;color:var(--text-muted);border:1px solid
 <p class="hint">改完保存立即生效，无需重启。密钥/启动项（token、端口等）仍在 <code>.env</code>，不在此处。</p>
 ${banner}
 <form method="POST" action="/settings">${groups}
+${modelRefreshForm}
 <div class="bar"><button type="submit">保存</button><a class="a-back" href="/">返回</a></div>
 </form>
-${modelRefreshForm}
 ${ttsLink}
 ${buildDbSection(viewer)}
 ${buildDaemonSection(viewer)}

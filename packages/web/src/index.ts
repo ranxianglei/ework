@@ -93,6 +93,7 @@ import { buildProjectMembersPage } from "./views/projectMembers";
 import { buildProjectUpstreamsPage, trySetUpstreamUrls } from "./views/projectUpstreams";
 import { buildProjectModelPage } from "./views/projectModel";
 import { handleGiteaApi } from "./giteaApi";
+import { deployRemoteDaemon } from "./daemon-deploy";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const STATIC_DIR = join(__dirname, "static");
@@ -897,6 +898,29 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
       return json({ ok: false, error: errMsg(e) });
     }
     return json({ ok: true });
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/daemons/deploy") {
+    if (!ctx.user || ctx.user.is_admin !== 1) return json({ error: "admin required" }, 403);
+    if (!rateLimit(`daemons-deploy:${ip}`, 3, 3 / 3600)) return json({ error: "rate limited" }, 429);
+    const payload = await req.json().catch(() => ({} as unknown));
+    if (!payload || typeof payload !== "object") return json({ ok: false, error: "invalid body" }, 400);
+    const obj = payload as Record<string, unknown>;
+    const sshHost = typeof obj.sshHost === "string" ? obj.sshHost.trim() : "";
+    const sshUser = typeof obj.sshUser === "string" ? obj.sshUser.trim() : "";
+    const mysqlHost = typeof obj.mysqlHost === "string" ? obj.mysqlHost.trim() : "";
+    if (!sshHost || !sshUser || !mysqlHost) {
+      return json({ ok: false, error: "sshHost, sshUser, mysqlHost 必填" }, 400);
+    }
+    const sshPort = typeof obj.sshPort === "number" && Number.isFinite(obj.sshPort) && obj.sshPort > 0 && obj.sshPort < 65536
+      ? Math.trunc(obj.sshPort)
+      : 22;
+    const sshKeyFile = typeof obj.sshKeyFile === "string" && obj.sshKeyFile.trim() ? obj.sshKeyFile.trim() : undefined;
+    const daemonPort = typeof obj.daemonPort === "number" && Number.isFinite(obj.daemonPort) && obj.daemonPort > 0 && obj.daemonPort < 65536
+      ? Math.trunc(obj.daemonPort)
+      : undefined;
+    const result = await deployRemoteDaemon({ sshHost, sshUser, sshPort, sshKeyFile, daemonPort, mysqlHost });
+    return json(result, result.ok ? 200 : 422);
   }
 
   if (url.pathname === "/settings") {
