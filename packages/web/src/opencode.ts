@@ -261,7 +261,8 @@ export class RemoteOpencodeClient implements OpencodeClientInterface {
   private readonly base: string;
 
   constructor(endpoint: string) {
-    this.base = endpoint.replace(/\/$/, "");
+    const trimmed = endpoint.replace(/\/$/, "");
+    this.base = /^https?:\/\//.test(trimmed) ? trimmed : `http://${trimmed}`;
   }
 
   async listSessions(limit: number): Promise<SessionListItem[]> {
