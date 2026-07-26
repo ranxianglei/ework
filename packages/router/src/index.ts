@@ -33,15 +33,21 @@ function parseWebhookEvent(body: unknown): RouteContext {
   };
 }
 
-async function forwardToDaemon(endpoint: string, payload: unknown, timeoutMs: number): Promise<{ ok: boolean; status: number; body: string }> {
+async function forwardToDaemon(
+  endpoint: string,
+  payload: unknown,
+  timeoutMs: number,
+  headers?: Record<string, string>,
+): Promise<{ ok: boolean; status: number; body: string }> {
   const url = endpoint.replace(/\/$/, "") + "/webhook/gitea";
   try {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    const fwdHeaders: Record<string, string> = { "Content-Type": "application/json", ...headers };
     const res = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
+      headers: fwdHeaders,
+      body: typeof payload === "string" ? payload : JSON.stringify(payload),
       signal: ctrl.signal,
     });
     clearTimeout(timer);
@@ -53,15 +59,20 @@ async function forwardToDaemon(endpoint: string, payload: unknown, timeoutMs: nu
 }
 
 async function handleWebhook(req: Request, cfg: Config): Promise<Response> {
+  const rawBody = await req.text();
   let body: unknown;
   try {
-    body = await req.json();
+    body = JSON.parse(rawBody);
   } catch {
     return new Response(JSON.stringify({ ok: false, error: "invalid JSON" }), {
       status: 400,
       headers: { "Content-Type": "application/json" },
     });
   }
+
+  const sig = req.headers.get("x-gitea-signature") ?? "";
+  const fwdHeaders: Record<string, string> = { "Content-Type": "application/json" };
+  if (sig) fwdHeaders["x-gitea-signature"] = sig;
 
   const ctx = parseWebhookEvent(body);
   log("info", "webhook received", { action: ctx.eventType, repo: ctx.repository, issue: ctx.issue?.number });
@@ -70,7 +81,7 @@ async function handleWebhook(req: Request, cfg: Config): Promise<Response> {
   if (daemons.length === 0) {
     if (cfg.ROUTER_FALLBACK_ENDPOINT) {
       log("info", "no active daemons, using fallback", { fallback: cfg.ROUTER_FALLBACK_ENDPOINT });
-      const result = await forwardToDaemon(cfg.ROUTER_FALLBACK_ENDPOINT, body, cfg.ROUTER_FORWARD_TIMEOUT_MS);
+      const result = await forwardToDaemon(cfg.ROUTER_FALLBACK_ENDPOINT, rawBody, cfg.ROUTER_FORWARD_TIMEOUT_MS, fwdHeaders);
       return new Response(JSON.stringify({
         ok: result.ok,
         routed: true,
@@ -106,7 +117,7 @@ async function handleWebhook(req: Request, cfg: Config): Promise<Response> {
     load: `${decision.daemon.activeSessions}/${decision.daemon.capacity}`,
   });
 
-  const result = await forwardToDaemon(decision.daemon.endpoint, body, cfg.ROUTER_FORWARD_TIMEOUT_MS);
+  const result = await forwardToDaemon(decision.daemon.endpoint, rawBody, cfg.ROUTER_FORWARD_TIMEOUT_MS, fwdHeaders);
   log(result.ok ? "info" : "warn", "forward result", {
     daemon: decision.daemon.id,
     status: result.status,

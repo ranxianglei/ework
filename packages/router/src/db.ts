@@ -84,15 +84,19 @@ export async function getActiveDaemons(cfg: Config): Promise<DaemonInfo[]> {
   try {
     rows = await query<Row>(sql, [staleThreshold]);
   } catch {
-    const fallbackSql = `
-      SELECT d.id, d.display_name, d.internal_endpoint, d.capacity,
-             d.last_heartbeat, d.status, 0 AS active_sessions
-      FROM {{${daemonPrefix}daemons}} d
-      WHERE d.status = 'active'
-        AND d.last_heartbeat > ?
-      ORDER BY d.id
-    `;
-    rows = await query<Row>(fallbackSql, [staleThreshold]);
+    try {
+      const fallbackSql = `
+        SELECT d.id, d.display_name, d.internal_endpoint, d.capacity,
+               d.last_heartbeat, d.status, 0 AS active_sessions
+        FROM {{${daemonPrefix}daemons}} d
+        WHERE d.status = 'active'
+          AND d.last_heartbeat > ?
+        ORDER BY d.id
+      `;
+      rows = await query<Row>(fallbackSql, [staleThreshold]);
+    } catch {
+      return [];
+    }
   }
 
   return rows.map((r) => ({
