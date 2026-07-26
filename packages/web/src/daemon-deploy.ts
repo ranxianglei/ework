@@ -85,7 +85,7 @@ function buildEnvBlock(env: Map<string, string>, target: DeployTarget): string {
   return lines.join("\n");
 }
 
-function buildSetupScript(envBlock: string): string {
+function buildSetupScript(envBlock: string, daemonPort: number): string {
   return [
     "set -e",
     `command -v npm >/dev/null 2>&1 || { curl -fsSL https://deb.nodesource.com/setup_22.x | sudo bash -; sudo apt-get install -y nodejs; }`,
@@ -104,7 +104,9 @@ function buildSetupScript(envBlock: string): string {
     `EWORK_DAEMON_ENV_EOF`,
     `echo "[3/4] starting daemon..."`,
     `ework-aio start daemon`,
-    `echo "[4/4] done"`,
+    `echo "[4/4] verifying daemon is alive..."`,
+    `sleep 2`,
+    `curl -sf --max-time 3 http://127.0.0.1:${String(daemonPort)}/api/status >/dev/null 2>&1 && echo "DAEMON_ALIVE" || echo "DAEMON_WARNING: status check failed (may need a moment to boot)"`,
     `echo DAEMON_STARTED`,
   ].join("\n");
 }
@@ -126,7 +128,7 @@ export async function deployRemoteDaemon(opts: DeployOpts): Promise<DeployResult
   }
   const env = parseEnvFile(envContent);
   const envBlock = buildEnvBlock(env, opts);
-  const script = buildSetupScript(envBlock);
+  const script = buildSetupScript(envBlock, opts.daemonPort ?? 3101);
 
   const args = [
     "ssh",

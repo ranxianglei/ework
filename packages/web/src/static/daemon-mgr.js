@@ -52,9 +52,14 @@
       return;
     }
     var rows = daemons.map(function (d) {
-      var stopBtn = String(d.status || '').toLowerCase() === 'active'
-        ? '<button type="button" class="stop" data-id="' + d.id + '">停止</button>'
-        : '';
+      var stRaw = String(d.status || 'unknown').toLowerCase();
+      var actions = '';
+      if (stRaw === 'active') {
+        actions = '<button type="button" class="stop" data-id="' + d.id + '">停止</button>';
+      } else {
+        actions = '<button type="button" class="restart" data-id="' + d.id + '">重启</button>' +
+          '<button type="button" class="remove" data-id="' + d.id + '">删除</button>';
+      }
       return '<tr>' +
         '<td class="cap">' + d.id + '</td>' +
         '<td class="loc">' + locationCell(d.endpoint) + '</td>' +
@@ -63,16 +68,21 @@
         '<td class="heartbeat">' + fmtTime(d.lastHeartbeat) + '</td>' +
         '<td class="registered">' + fmtTime(d.registeredAt) + '</td>' +
         '<td>' + statusPill(d.status) + '</td>' +
-        '<td>' + stopBtn + '</td>' +
+        '<td>' + actions + '</td>' +
         '</tr>';
     }).join('');
     listEl.innerHTML =
       '<table><thead><tr>' +
-      '<th>ID</th><th>位置</th><th>Endpoint</th><th>容量</th><th>心跳</th><th>注册于</th><th>状态</th><th></th>' +
+      '<th>ID</th><th>位置</th><th>Endpoint</th><th>容量</th><th>心跳</th><th>注册于</th><th>状态</th><th>操作</th>' +
       '</tr></thead><tbody>' + rows + '</tbody></table>';
-    listEl.querySelectorAll('button.stop').forEach(function (b) {
-      b.addEventListener('click', function () { stopDaemon(Number(b.getAttribute('data-id'))); });
-    });
+    var bindBtn = function (selector, fn) {
+      listEl.querySelectorAll(selector).forEach(function (b) {
+        b.addEventListener('click', function () { fn(Number(b.getAttribute('data-id'))); });
+      });
+    };
+    bindBtn('button.stop', stopDaemon);
+    bindBtn('button.restart', restartDaemon);
+    bindBtn('button.remove', removeDaemon);
   }
 
   function setResult(text, kind) {
@@ -136,6 +146,39 @@
       var data = await res.json();
       if (data.ok) {
         setResult('✓ daemon #' + id + ' 已标记为 drained', 'ok');
+        await loadDaemons();
+      } else {
+        setResult('✗ ' + (data.error || '未知错误'), 'err');
+      }
+    } catch (e) {
+      setResult('✗ ' + (e.message || String(e)), 'err');
+    }
+  }
+
+  async function restartDaemon(id) {
+    setResult('正在重启 daemon #' + id + '…', 'loading');
+    try {
+      var res = await fetch('/api/daemons/' + id + '/restart', { method: 'POST' });
+      var data = await res.json();
+      if (data.ok) {
+        setResult('✓ daemon #' + id + ' 已重新激活', 'ok');
+        await loadDaemons();
+      } else {
+        setResult('✗ ' + (data.error || '未知错误'), 'err');
+      }
+    } catch (e) {
+      setResult('✗ ' + (e.message || String(e)), 'err');
+    }
+  }
+
+  async function removeDaemon(id) {
+    if (!confirm('确认删除 daemon #' + id + '？\n这会从数据库永久移除该记录。')) return;
+    setResult('正在删除 daemon #' + id + '…', 'loading');
+    try {
+      var res = await fetch('/api/daemons/' + id + '/remove', { method: 'DELETE' });
+      var data = await res.json();
+      if (data.ok) {
+        setResult('✓ daemon #' + id + ' 已删除', 'ok');
         await loadDaemons();
       } else {
         setResult('✗ ' + (data.error || '未知错误'), 'err');

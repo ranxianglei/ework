@@ -153,6 +153,9 @@ button.secondary{background:transparent;color:var(--text-muted);border:1px solid
 .daemon-list td.loc{white-space:nowrap}
 .daemon-list button.stop{padding:.25rem .6rem;font-size:11px;background:transparent;color:#e87c7c;border:1px solid rgba(220,53,69,.4)}
 .daemon-list button.stop:hover{background:rgba(220,53,69,.12)}
+.daemon-list button.restart{padding:.25rem .6rem;font-size:11px;background:transparent;color:#5eb88a;border:1px solid rgba(40,167,69,.4);margin-right:.3rem}
+.daemon-list button.restart:hover{background:rgba(40,167,69,.12)}
+.daemon-list button.remove{padding:.25rem .6rem;font-size:11px;background:transparent;color:var(--text-muted);border:1px solid var(--border)}
 .daemon-empty{color:var(--text-muted);font-size:13px;padding:.5rem 0}
 </style></head><body>
 <header class="nav"><a href="/" style="color:var(--header-text)">🏠 ework-web</a><span style="opacity:.8"> · 设置</span></header>

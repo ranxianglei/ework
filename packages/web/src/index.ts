@@ -887,6 +887,35 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
   }
 
   const daemonIdRe = /^\/api\/daemons\/(\d+)$/;
+  const daemonRestartRe = /^\/api\/daemons\/(\d+)\/restart$/;
+  const daemonRemoveRe = /^\/api\/daemons\/(\d+)\/remove$/;
+
+  if (req.method === "POST" && daemonRestartRe.test(url.pathname)) {
+    if (!ctx.user || ctx.user.is_admin !== 1) return json({ error: "admin required" }, 403);
+    const match = url.pathname.match(daemonRestartRe);
+    const id = match ? Number(match[1]) : NaN;
+    if (!Number.isFinite(id)) return json({ error: "invalid id" }, 400);
+    const rows = await getDB().all<{ endpoint: string; status: string }>(
+      `SELECT internal_endpoint AS endpoint, status FROM {{d_daemons}} WHERE id = ?`, [id]
+    );
+    if (rows.length === 0) return json({ ok: false, error: "daemon not found" }, 404);
+    await getDB().run(`UPDATE {{d_daemons}} SET status = 'active', last_heartbeat = datetime('now') WHERE id = ?`, [id]);
+    return json({ ok: true, note: "reactivated — daemon process will re-register via heartbeat" });
+  }
+
+  if (req.method === "DELETE" && daemonRemoveRe.test(url.pathname)) {
+    if (!ctx.user || ctx.user.is_admin !== 1) return json({ error: "admin required" }, 403);
+    const match = url.pathname.match(daemonRemoveRe);
+    const id = match ? Number(match[1]) : NaN;
+    if (!Number.isFinite(id)) return json({ error: "invalid id" }, 400);
+    const rows = await getDB().all<{ status: string }>(`SELECT status FROM {{d_daemons}} WHERE id = ?`, [id]);
+    if (rows.length === 0) return json({ ok: false, error: "daemon not found" }, 404);
+    const st = String(rows[0]?.status ?? "").toLowerCase();
+    if (st === "active") return json({ ok: false, error: "stop (drain) the daemon first before removing" }, 400);
+    await getDB().run(`DELETE FROM {{d_daemons}} WHERE id = ?`, [id]);
+    return json({ ok: true });
+  }
+
   if (req.method === "DELETE" && daemonIdRe.test(url.pathname)) {
     if (!ctx.user || ctx.user.is_admin !== 1) return json({ error: "admin required" }, 403);
     const match = url.pathname.match(daemonIdRe);
