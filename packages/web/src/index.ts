@@ -849,6 +849,10 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
       ? (payload as { port?: unknown }).port
       : undefined);
     const args = ["add-daemon"];
+    const dataDir = process.env.WORK_DATA_DIR ?? process.env.AWORK_DATA_DIR;
+    if (dataDir) {
+      args.push("--data-dir", dataDir);
+    }
     if (typeof port === "number" && Number.isFinite(port) && port > 0 && port < 65536) {
       args.push(String(Math.trunc(port)));
     } else if (port !== undefined && port !== null) {
