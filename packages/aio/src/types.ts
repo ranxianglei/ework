@@ -69,7 +69,7 @@ export const SETTABLE_KEYS: readonly SettableKeySpec[] = [
   { key: "WORK_COMMENT_SORT",     service: "web",    description: "comment sort order: desc|asc" },
   { key: "DAEMON_PORT",           service: "daemon", description: "ework-daemon listen port (default 3101)",
     propagate: { targetService: "web", targetKey: "WORK_DAEMON_WEBHOOK_URL", template: (v) => `http://127.0.0.1:${v}` } },
-  { key: "DAEMON_HOST",           service: "daemon", description: "ework-daemon bind address (default 127.0.0.1)" },
+  { key: "DAEMON_HOST",           service: "daemon", description: "ework-daemon bind address (default 0.0.0.0 for multi-machine)" },
   { key: "OPENCODE_BINARY",       service: "daemon", description: "opencode binary path" },
   { key: "OPENCODE_BASE_WORKDIR", service: "daemon", description: "opencode working directory base" },
   { key: "COMPLETION_CHECK_API_KEY",  service: "daemon", description: "completion-check API key" },
