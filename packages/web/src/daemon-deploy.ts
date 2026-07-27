@@ -77,6 +77,7 @@ function buildEnvBlock(env: Map<string, string>, target: DeployTarget): string {
   for (const k of FORWARD_KEYS) {
     const v = env.get(k);
     if (v === undefined) continue;
+    if (k === "OPENCODE_BINARY") continue;
     lines.push(`${k}=${v}`);
   }
   const mysqlHost = String(target.mysqlHost).replace(/:\d+$/, "");
@@ -102,6 +103,9 @@ function buildSetupScript(envBlock: string, daemonPort: number, mysqlHostRaw: st
     `timeout 5 bash -c "echo > /dev/tcp/${mysqlHost}/${mysqlPort}" 2>/dev/null && echo "MySQL port reachable" || { echo "MySQL UNREACHABLE at ${mysqlHost}:${mysqlPort} — daemon will fail to connect"; exit 1; }`,
     `echo "[2/5] installing ework-aio..."`,
     `npm install -g ework-aio`,
+    `echo "[2.5/5] ensuring opencode is available..."`,
+    `command -v opencode >/dev/null 2>&1 || { echo "installing opencode..."; curl -fsSL https://opencode.ai/install | bash; }`,
+    `mkdir -p ~/.local/share/ework-aio/opencode-workdir`,
     `echo "[3/5] writing daemon config..."`,
     `mkdir -p ~/.local/share/ework-aio/ework-daemon`,
     `REMOTE_IP=$(hostname -I 2>/dev/null | awk '{print $1}')`,
