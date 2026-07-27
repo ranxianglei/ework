@@ -61,6 +61,13 @@ import {
   setProjectModel,
   listCachedModels,
   replaceCachedModels,
+  listLabels,
+  listLabelsForIssue,
+  createLabel,
+  updateLabel,
+  archiveLabel,
+  deleteLabel,
+  setIssueLabels,
   type ProjectRole,
   type UserRow,
 } from "./store";
@@ -91,6 +98,7 @@ import { buildWebhookDeliveriesPage } from "./views/webhookDeliveries";
 import { browseRemoteFile, proxyFileSince, RemoteFileError } from "./remote-file";
 import { buildProjectMembersPage } from "./views/projectMembers";
 import { buildProjectUpstreamsPage, trySetUpstreamUrls } from "./views/projectUpstreams";
+import { buildProjectLabelsPage } from "./views/projectLabels";
 import { buildProjectModelPage } from "./views/projectModel";
 import { handleGiteaApi } from "./giteaApi";
 import { deployRemoteDaemon, deployBatch, type DeployTarget } from "./daemon-deploy";
@@ -331,6 +339,10 @@ const REPO_MEMBER_ACTION_RE = /^\/([^/]+)\/([^/]+)\/settings\/members\/([^/]+)\/
 const REPO_MEMBER_ADD_RE = /^\/([^/]+)\/([^/]+)\/settings\/members\/add$/;
 const REPO_UPSTREAMS_RE = /^\/([^/]+)\/([^/]+)\/settings\/upstreams$/;
 const REPO_MODEL_RE = /^\/([^/]+)\/([^/]+)\/settings\/model$/;
+const REPO_LABELS_RE = /^\/([^/]+)\/([^/]+)\/settings\/labels$/;
+const REPO_LABEL_ADD_RE = /^\/([^/]+)\/([^/]+)\/settings\/labels\/add$/;
+const REPO_LABEL_ACTION_RE = /^\/([^/]+)\/([^/]+)\/settings\/labels\/(\d+)\/(update|archive|unarchive|delete)$/;
+const API_ISSUE_LABELS_RE = /^\/api\/([^/]+)\/([^/]+)\/issues\/(\d+)\/labels$/;
 const WH_ACTION_RE = /^\/__wh\/(\d+)\/(delete|toggle|test)$/;
 const SESSIONS_RE = /^\/sessions$/;
 const SESSION_VIEW_RE = /^\/sessions\/([A-Za-z0-9_-]+)$/;
@@ -1663,6 +1675,61 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
       }
     }
 
+    const labelAdd = url.pathname.match(REPO_LABEL_ADD_RE);
+    if (labelAdd) {
+      const [, owner, repo] = labelAdd;
+      if (!(owner && repo)) return html(errorPage("bad path", ""), 400);
+      const project = await getProject(owner, repo);
+      if (!project) return html(errorPage("项目不存在", ""), 404);
+      const back = `${url.origin}/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/settings/labels`;
+      if (!(await canAdminProject(project.id, ctx.user))) {
+        return Response.redirect(`${back}?err=${encodeURIComponent("无权限")}`, 303);
+      }
+      const form = await req.formData().catch(() => new FormData());
+      try {
+        await createLabel(project.id, {
+          name: String(form.get("name") ?? ""),
+          color: String(form.get("color") ?? "#888888"),
+          description: String(form.get("description") ?? ""),
+          exclusive: form.get("exclusive") === "1",
+        });
+        return Response.redirect(`${back}?ok=1&ok_msg=${encodeURIComponent("标签已创建")}`, 303);
+      } catch (e) {
+        return Response.redirect(`${back}?err=${encodeURIComponent(errMsg(e))}`, 303);
+      }
+    }
+
+    const labelAction = url.pathname.match(REPO_LABEL_ACTION_RE);
+    if (labelAction) {
+      const [, owner, repo, lidStr, action] = labelAction;
+      if (!(owner && repo && lidStr && action)) return html(errorPage("bad path", ""), 400);
+      const project = await getProject(owner, repo);
+      if (!project) return html(errorPage("项目不存在", ""), 404);
+      const back = `${url.origin}/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/settings/labels`;
+      if (!(await canAdminProject(project.id, ctx.user))) {
+        return Response.redirect(`${back}?err=${encodeURIComponent("无权限")}`, 303);
+      }
+      const lid = Number(lidStr);
+      const form = await req.formData().catch(() => new FormData());
+      try {
+        if (action === "update") {
+          await updateLabel(project.id, lid, {
+            name: String(form.get("name") ?? ""),
+            color: String(form.get("color") ?? "#888888"),
+            description: String(form.get("description") ?? ""),
+            exclusive: form.get("exclusive") === "1",
+          });
+        } else if (action === "archive" || action === "unarchive") {
+          await archiveLabel(project.id, lid, action === "archive");
+        } else if (action === "delete") {
+          await deleteLabel(project.id, lid);
+        }
+        return Response.redirect(`${back}?ok=1`, 303);
+      } catch (e) {
+        return Response.redirect(`${back}?err=${encodeURIComponent(errMsg(e))}`, 303);
+      }
+    }
+
     return json({ error: "not found" }, 404);
   }
 
@@ -1694,6 +1761,38 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     } catch (e) {
       return json({ error: errMsg(e) }, e instanceof StoreError ? e.status : 500);
     }
+  }
+
+  const issueLabelsApi = url.pathname.match(API_ISSUE_LABELS_RE);
+  if (issueLabelsApi) {
+    const [, owner, repo, numStr] = issueLabelsApi;
+    if (!(owner && repo && numStr)) return html(errorPage("404", "bad path"), 404);
+    const project = await getProject(owner, repo);
+    if (!project) return json({ error: "project not found" }, 404);
+    const issue = await getIssueWithMeta(project.id, Number(numStr));
+    if (!issue) return json({ error: "issue not found" }, 404);
+    if (req.method === "GET") {
+      const [current, available] = await Promise.all([
+        listLabelsForIssue(issue.id),
+        listLabels(project.id),
+      ]);
+      return json({ current, available });
+    }
+    if (req.method === "POST") {
+      if (!ctx.user || !(await canWriteProject(project.id, ctx.user))) {
+        return json({ error: "forbidden: needs writer role on project" }, 403);
+      }
+      const body = await req.json().catch(() => ({}));
+      const labelIds = Array.isArray(body.labelIds) ? body.labelIds.map((n: unknown) => Number(n)).filter((n: number) => Number.isInteger(n) && n > 0) : [];
+      try {
+        await setIssueLabels(issue.id, labelIds);
+        const current = await listLabelsForIssue(issue.id);
+        return json({ current });
+      } catch (e) {
+        return json({ error: errMsg(e) }, e instanceof StoreError ? e.status : 500);
+      }
+    }
+    return json({ error: "method not allowed" }, 405);
   }
 
   const isNew = url.pathname.match(REPO_NEW_RE);
@@ -1777,6 +1876,22 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     const flashMsg = flashKind === "ok" ? (url.searchParams.get("ok_msg") ?? "") : (url.searchParams.get("err") ?? "");
     const flash = flashKind ? { kind: flashKind as "ok" | "err", msg: flashMsg } : null;
     return html(buildProjectUpstreamsPage(ctx.user!, project, flash));
+  }
+
+  const labelsPage = url.pathname.match(REPO_LABELS_RE);
+  if (labelsPage) {
+    const [, owner, repo] = labelsPage;
+    if (!(owner && repo)) return html(errorPage("404", "bad path"), 404);
+    const project = await getProject(owner, repo);
+    if (!project) return html(errorPage("项目不存在", "项目未创建"), 404);
+    if (ctx.user!.is_admin === 1) await ensureProjectBootstrapAdmin(project.id, ctx.user!.login);
+    if (!(await canAdminProject(project.id, ctx.user))) {
+      return html(errorPage("无权限", "需要该项目 admin 角色才能管理标签"), 403);
+    }
+    const flashKind = url.searchParams.get("ok") === "1" ? "ok" : url.searchParams.get("err") ? "err" : null;
+    const flashMsg = flashKind === "ok" ? (url.searchParams.get("ok_msg") ?? "") : (url.searchParams.get("err") ?? "");
+    const flash = flashKind ? { kind: flashKind as "ok" | "err", msg: flashMsg } : null;
+    return html(await buildProjectLabelsPage(ctx.user!, project, flash));
   }
 
   const modelPage = url.pathname.match(REPO_MODEL_RE);
