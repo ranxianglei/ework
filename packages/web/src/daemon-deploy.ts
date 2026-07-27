@@ -74,11 +74,16 @@ function parseEnvFile(content: string): Map<string, string> {
 
 function buildEnvBlock(env: Map<string, string>, target: DeployTarget): string {
   const lines: string[] = [];
+  const localIP = detectLocalIP();
   for (const k of FORWARD_KEYS) {
     const v = env.get(k);
     if (v === undefined) continue;
     if (k === "OPENCODE_BINARY") continue;
-    lines.push(`${k}=${v}`);
+    let val = v;
+    if (k === "GITEA_URL" && localIP && (val.includes("127.0.0.1") || val.includes("localhost"))) {
+      val = val.replace(/127\.0\.0\.1|localhost/g, localIP);
+    }
+    lines.push(`${k}=${val}`);
   }
   const mysqlHost = String(target.mysqlHost).replace(/:\d+$/, "");
   lines.push(`WORK_DB_HOST=${mysqlHost}`);
@@ -86,6 +91,23 @@ function buildEnvBlock(env: Map<string, string>, target: DeployTarget): string {
   lines.push(`DAEMON_HOST=0.0.0.0`);
   lines.push(`DAEMON_ENV=production`);
   return lines.join("\n");
+}
+
+function detectLocalIP(): string | null {
+  try {
+    const { networkInterfaces } = require("node:os");
+    const nets = networkInterfaces();
+    for (const name of Object.keys(nets)) {
+      for (const net of nets[name] ?? []) {
+        if (net.family === "IPv4" && !net.internal) {
+          return net.address;
+        }
+      }
+    }
+  } catch {
+    // Network detection best-effort
+  }
+  return null;
 }
 
 function buildSetupScript(envBlock: string, daemonPort: number, mysqlHostRaw: string, mysqlPort: string): string {
