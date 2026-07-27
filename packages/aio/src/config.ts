@@ -61,7 +61,7 @@ function sharedWebhookSecret(): string {
 
 export const WEB_ENV_KEYS: readonly EnvKeySpec[] = [
   { envVar: "WORK_PORT",                   file: "web", generate: (c) => String(c.workPort) },
-  { envVar: "WORK_HOST",                   file: "web", generate: () => "127.0.0.1" },
+  { envVar: "WORK_HOST",                   file: "web", generate: () => "0.0.0.0" },
   { envVar: "WORK_TOKEN",                  file: "web", secret: true, generate: () => hex(20) },
   { envVar: "WORK_COOKIE_SECRET",          file: "web", secret: true, generate: () => hex(24) },
   { envVar: "WORK_OPERATOR_LOGIN",         file: "web", generate: (c) => c.operatorLogin },

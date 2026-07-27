@@ -310,6 +310,23 @@ if grep -q "invalid signature" "$DATA_DIR/run/daemon.log" 2>/dev/null; then
 fi
 pass "no invalid signature yet"
 
+info "multi-machine regression: web reachable on LAN IP (not just 127.0.0.1)"
+LAN_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+if [[ -n "$LAN_IP" ]]; then
+  curl -sf --max-time 3 "http://$LAN_IP:$WORK_PORT/login" >/dev/null 2>&1 \
+    || fail "web NOT reachable on LAN IP $LAN_IP — WORK_HOST likely 127.0.0.1 (breaks multi-machine)"
+  pass "web reachable on LAN IP $LAN_IP (WORK_HOST not loopback-only)"
+else
+  fail "hostname -I returned no IP — cannot verify LAN reachability"
+fi
+
+info "multi-machine regression: daemon reachable on LAN IP"
+if [[ -n "$LAN_IP" ]]; then
+  curl -sf --max-time 3 "http://$LAN_IP:$DAEMON_PORT/api/status" >/dev/null 2>&1 \
+    || fail "daemon NOT reachable on LAN IP $LAN_IP — DAEMON_HOST likely 127.0.0.1 (breaks multi-machine)"
+  pass "daemon reachable on LAN IP $LAN_IP"
+fi
+
 # -----------------------------------------------------------------------------
 # Phase 3: subcommand smoke tests
 # -----------------------------------------------------------------------------
@@ -656,11 +673,8 @@ case "$SESSIONS_CODE" in
       info "daemon session API responds (200), no sessions yet — OpenCode may not have run"
     fi
     ;;
-  000)
-    info "daemon session API not reachable — skipping (older daemon?)"
-    ;;
   *)
-    info "daemon session API returned HTTP $SESSIONS_CODE — older daemon without session endpoints?"
+    fail "daemon session API returned HTTP $SESSIONS_CODE — endpoint should exist in current version"
     ;;
 esac
 
@@ -676,7 +690,7 @@ case "$WEB_SESSIONS_CODE" in
     pass "web session page redirect (302) — post-migration re-auth likely"
     ;;
   *)
-    info "web session page returned HTTP $WEB_SESSIONS_CODE"
+    fail "web session page returned HTTP $WEB_SESSIONS_CODE — should render or redirect"
     ;;
 esac
 
@@ -701,11 +715,8 @@ case "$DELIVERIES_CODE" in
       info "webhook delivery history page renders (200), no deliveries yet"
     fi
     ;;
-  000)
-    info "webhook delivery history page not reachable — skipping"
-    ;;
   *)
-    info "webhook delivery history page returned HTTP $DELIVERIES_CODE"
+    fail "webhook delivery history page returned HTTP $DELIVERIES_CODE — should render"
     ;;
 esac
 
@@ -723,11 +734,8 @@ case "$ROUTIER_HEALTH_CODE" in
   200)
     pass "router /api/health responds (200)"
     ;;
-  000)
-    info "router not running (binary not installed in this env) — skipping router tests"
-    ;;
   *)
-    info "router health returned HTTP $ROUTIER_HEALTH_CODE"
+    fail "router /api/health returned HTTP $ROUTIER_HEALTH_CODE — router should be running after install"
     ;;
 esac
 
@@ -752,7 +760,7 @@ if [[ "$ROUTIER_HEALTH_CODE" == "200" ]]; then
       pass "router accepted webhook (HTTP $ROUTER_FORWARD_CODE)"
       ;;
     *)
-      info "router forward returned HTTP $ROUTER_FORWARD_CODE (daemon may not be reachable from router)"
+      fail "router forward returned HTTP $ROUTER_FORWARD_CODE — daemon should be reachable from router"
       ;;
   esac
 fi
@@ -834,11 +842,10 @@ info "daemon A spawned=$A_SPAWNED  daemon B spawned=$B_SPAWNED  total=$TOTAL"
 if [[ "$TOTAL" -eq 2 ]]; then
   pass "no-double-spawn: exactly 1 daemon spawned for issue 888"
 elif [[ "$TOTAL" -eq 0 ]]; then
-  info "no-double-spawn: webhooks may not have been delivered (timing) — skipping"
+  fail "no-double-spawn: no daemon spawned for issue 888 — webhooks not delivered or coordination broken"
 else
-  info "no-double-spawn: got $TOTAL spawn lines (expected 2=1 spawn) — checking logs"
+  fail "no-double-spawn: expected 2 spawn lines (1 daemon), got $TOTAL — possible double-spawn"
 fi
-pass "no-double-spawn: exactly 1 daemon spawned for issue 888"
 
 info "test 2: failover — kill owner, verify survivor takes over"
 if [[ "$A_SPAWNED" -eq 1 ]]; then
@@ -872,7 +879,7 @@ info "survivor log shows $SURVIVOR_CLAIMED_AFTER session creation(s) for 888"
 if [[ "$SURVIVOR_CLAIMED_AFTER" -ge 1 ]]; then
   pass "failover: survivor claimed issue 888"
 else
-  info "failover: no session creation in survivor log — may need longer wait"
+  fail "failover: survivor did not claim issue 888 — coordination lease/failover broken"
 fi
 
 info "cleanup: stop daemon B + restart main daemon"
@@ -892,7 +899,7 @@ info "current daemon count: $DAEMONS_COUNT"
 if [[ "$DAEMONS_COUNT" -ge 1 ]]; then
   pass "daemon management API returns $DAEMONS_COUNT daemon(s)"
 else
-  info "daemon API returned 0 — endpoint may not exist in this version"
+  fail "daemon management API returned 0 daemons — endpoint broken or no daemons registered"
 fi
 
 DAEMON3_PORT=$((DAEMON_PORT + 2))
@@ -921,10 +928,10 @@ if [[ "$ADD_OK" == "true" ]]; then
     info "daemon $FIRST_ID status: $DRAINED_STATUS"
     [[ "$DRAINED_STATUS" == "drained" ]] \
       && pass "daemon drain API works" \
-      || info "drain may not have taken effect (status=$DRAINED_STATUS)"
+      || fail "daemon drain did not take effect (status=$DRAINED_STATUS)"
   fi
 else
-  info "daemon add API failed — may need newer ework-web version"
+  fail "daemon add API failed (ok=$ADD_OK) — add endpoint broken"
 fi
 
 info "cleanup: stop extra daemon instances"

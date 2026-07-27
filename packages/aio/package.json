@@ -47,8 +47,8 @@
   },
   "dependencies": {
     "ework-daemon": "^0.4.1",
-    "ework-router": "^0.1.4",
-    "ework-web": "^0.10.1",
+    "ework-router": "^0.1.5",
+    "ework-web": "^0.10.14",
     "opencode-ework": "^0.1.0",
     "zod": "^3.23.0"
   },

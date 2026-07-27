@@ -60,7 +60,7 @@ export interface SettableKeySpec {
 export const SETTABLE_KEYS: readonly SettableKeySpec[] = [
   { key: "WORK_PORT",             service: "web",    description: "ework-web listen port (default 3002)",
     propagate: { targetService: "daemon", targetKey: "GITEA_URL", template: (v) => `http://127.0.0.1:${v}` } },
-  { key: "WORK_HOST",             service: "web",    description: "ework-web bind address (default 127.0.0.1; 0.0.0.0 for LAN)" },
+  { key: "WORK_HOST",             service: "web",    description: "ework-web bind address (default 0.0.0.0 for multi-machine; 127.0.0.1 for single-machine)" },
   { key: "WORK_OPERATOR_LOGIN",   service: "web",    description: "login auto-promoted to admin" },
   { key: "WORK_TRANSLATE_URL",    service: "web",    description: "OpenAI-compat /v1/chat/completions endpoint for translate" },
   { key: "WORK_TRANSLATE_MODEL",  service: "web",    description: "translate model name" },
