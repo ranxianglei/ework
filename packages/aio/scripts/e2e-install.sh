@@ -749,11 +749,19 @@ if [[ "$ROUTIER_HEALTH_CODE" == "200" ]]; then
   fi
 
   info "router forwards webhook to daemon (POST /webhook/gitea)"
+  ROUTER_HOOK_PAYLOAD='{"action":"opened","issue":{"number":99999,"title":"router-test","body":"e2e router forward test","state":"open","user":{"login":"e2e"}},"repository":{"owner":{"login":"e2e"},"name":"test"}}'
+  ROUTER_HOOK_SECRET=$(env_val GITEA_WEBHOOK_SECRET "$DATA_DIR/ework-daemon/.env")
+  ROUTER_HOOK_HDR=""
+  if [[ -n "$ROUTER_HOOK_SECRET" ]]; then
+    ROUTER_HOOK_SIG=$(printf '%s' "$ROUTER_HOOK_PAYLOAD" | openssl dgst -sha256 -hmac "$ROUTER_HOOK_SECRET" -hex | awk '{print $NF}')
+    ROUTER_HOOK_HDR="-H x-gitea-signature:$ROUTER_HOOK_SIG"
+  fi
   ROUTER_FORWARD_CODE=$(curl -sS -o /dev/null -w "%{http_code}" \
     --max-time 10 \
     -X POST \
     -H "Content-Type: application/json" \
-    -d '{"action":"opened","issue":{"number":99999,"title":"router-test","body":"e2e router forward test","state":"open","user":{"login":"e2e"}},"repository":{"owner":{"login":"e2e"},"name":"test"}}' \
+    $ROUTER_HOOK_HDR \
+    -d "$ROUTER_HOOK_PAYLOAD" \
     "http://127.0.0.1:$ROUTER_PORT/webhook/gitea" 2>/dev/null || echo "000")
   case "$ROUTER_FORWARD_CODE" in
     200|204)
