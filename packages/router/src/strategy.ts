@@ -1,5 +1,7 @@
 import type { Config } from "./config.ts";
 import type { DaemonInfo, RouteContext, RouteDecision } from "./types.ts";
+import * as fs from "node:fs";
+import * as path from "node:path";
 
 export interface RouteStrategy {
   name: string;
@@ -13,12 +15,34 @@ export interface RouteStrategyConfig {
   weights?: Record<number, number>;
 }
 
-let strategyConfig: RouteStrategyConfig = { strategy: "least-loaded" };
+const CONFIG_FILE = process.env.ROUTER_CONFIG_FILE
+  ?? path.join(process.env.HOME ?? "/tmp", ".local", "share", "ework-router", "strategy.json");
+
+let strategyConfig: RouteStrategyConfig = loadStrategyConfig();
 let roundRobinIndex = 0;
+
+function loadStrategyConfig(): RouteStrategyConfig {
+  try {
+    const raw = fs.readFileSync(CONFIG_FILE, "utf8");
+    return JSON.parse(raw) as RouteStrategyConfig;
+  } catch {
+    return { strategy: "least-loaded" };
+  }
+}
+
+function persistStrategyConfig(): void {
+  try {
+    fs.mkdirSync(path.dirname(CONFIG_FILE), { recursive: true });
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify(strategyConfig, null, 2));
+  } catch {
+    // Config persistence is best-effort — in-memory config still works
+  }
+}
 
 export function setStrategyConfig(cfg: RouteStrategyConfig): void {
   strategyConfig = cfg;
   roundRobinIndex = 0;
+  persistStrategyConfig();
 }
 
 export function getStrategyConfig(): RouteStrategyConfig {

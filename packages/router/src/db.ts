@@ -51,6 +51,7 @@ async function query<T>(sql: string, params: unknown[] = []): Promise<T[]> {
 export async function getActiveDaemons(cfg: Config): Promise<DaemonInfo[]> {
   const staleThreshold = new Date(Date.now() - cfg.ROUTER_STALE_THRESHOLD_MS)
     .toISOString().slice(0, 19).replace("T", " ");
+
   const daemonPrefix = cfg.DAEMON_TABLE_PREFIX;
 
   const sql = `
@@ -108,4 +109,82 @@ export async function getActiveDaemons(cfg: Config): Promise<DaemonInfo[]> {
     status: r.status,
     activeSessions: Number(r.active_sessions) || 0,
   }));
+}
+
+export async function getAllDaemons(cfg: Config): Promise<DaemonInfo[]> {
+  const daemonPrefix = cfg.DAEMON_TABLE_PREFIX;
+  interface DaemonRow {
+    id: number;
+    display_name: string;
+    internal_endpoint: string;
+    capacity: number;
+    last_heartbeat: string;
+    status: string;
+  }
+  try {
+    const rows = await query<DaemonRow>(
+      `SELECT id, display_name, internal_endpoint, capacity, last_heartbeat, status
+       FROM {{${daemonPrefix}daemons}} ORDER BY id`,
+    );
+    return rows.map((r) => ({
+      id: r.id,
+      displayName: r.display_name,
+      endpoint: r.internal_endpoint,
+      capacity: r.capacity,
+      lastHeartbeat: r.last_heartbeat,
+      status: r.status,
+      activeSessions: 0,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+export async function markStaleDaemonsDead(cfg: Config): Promise<number> {
+  const daemonPrefix = cfg.DAEMON_TABLE_PREFIX;
+  const staleThreshold = new Date(Date.now() - cfg.ROUTER_STALE_THRESHOLD_MS)
+    .toISOString().slice(0, 19).replace("T", " ");
+  try {
+    if (pool) {
+      const [result] = await pool.query(
+        `UPDATE {{${daemonPrefix}daemons}} SET status = 'dead' WHERE status = 'active' AND last_heartbeat < ?`,
+        [staleThreshold],
+      );
+      return (result as { affectedRows: number }).affectedRows || 0;
+    }
+    if (sqliteDb) {
+      const r = sqliteDb.prepare(
+        applyPrefix(`UPDATE {{${daemonPrefix}daemons}} SET status = 'dead' WHERE status = 'active' AND last_heartbeat < ?`, process.env.WORK_DB_PREFIX ?? ""),
+      ).run(staleThreshold as never);
+      return Number(r.changes) || 0;
+    }
+  } catch {
+    // Table might not exist in SQLite mode
+  }
+  return 0;
+}
+
+export async function releaseOrphanedSessions(cfg: Config): Promise<number> {
+  const daemonPrefix = cfg.DAEMON_TABLE_PREFIX;
+  try {
+    if (pool) {
+      const [result] = await pool.query(
+        `UPDATE {{${daemonPrefix}op_sessions}} SET owner_daemon_id = NULL, state = 'pending'
+         WHERE owner_daemon_id IN (SELECT id FROM {{${daemonPrefix}daemons}} WHERE status = 'dead')
+         AND state = 'running'`,
+      );
+      return (result as { affectedRows: number }).affectedRows || 0;
+    }
+    if (sqliteDb) {
+      const r = sqliteDb.prepare(
+        applyPrefix(`UPDATE {{${daemonPrefix}op_sessions}} SET owner_daemon_id = NULL, state = 'pending'
+         WHERE owner_daemon_id IN (SELECT id FROM {{${daemonPrefix}daemons}} WHERE status = 'dead')
+         AND state = 'running'`, process.env.WORK_DB_PREFIX ?? ""),
+      ).run();
+      return Number(r.changes) || 0;
+    }
+  } catch {
+    // Tables might not exist
+  }
+  return 0;
 }

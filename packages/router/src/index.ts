@@ -1,5 +1,5 @@
 import { loadConfig, type Config } from "./config.ts";
-import { initDB, closeDB, getActiveDaemons } from "./db.ts";
+import { initDB, closeDB, getActiveDaemons, getAllDaemons, markStaleDaemonsDead, releaseOrphanedSessions } from "./db.ts";
 import { route, setStrategyConfig, getStrategyConfig } from "./strategy.ts";
 import type { RouteContext, RouteDecision } from "./types.ts";
 
@@ -250,6 +250,12 @@ export async function runServer(): Promise<void> {
       if (url.pathname === "/api/strategy") {
         return handleStrategy(req);
       }
+      if (url.pathname === "/api/daemons") {
+        const daemons = await getAllDaemons(cfg);
+        return new Response(JSON.stringify({ daemons }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      }
       if (url.pathname === "/api/health") {
         return handleHealth();
       }
@@ -260,13 +266,23 @@ export async function runServer(): Promise<void> {
 
   log("info", "ework-router listening", { host: server.hostname, port: server.port });
 
+  const cleanupTimer = setInterval(async () => {
+    const dead = await markStaleDaemonsDead(cfg);
+    if (dead > 0) {
+      const released = await releaseOrphanedSessions(cfg);
+      log("warn", "cleanup: stale daemons removed", { count: dead, sessionsReleased: released });
+    }
+  }, 30_000);
+
   process.on("SIGINT", async () => {
+    clearInterval(cleanupTimer);
     log("info", "shutting down...");
     await closeDB();
     server.stop();
     process.exit(0);
   });
   process.on("SIGTERM", async () => {
+    clearInterval(cleanupTimer);
     await closeDB();
     server.stop();
     process.exit(0);
