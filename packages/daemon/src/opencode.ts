@@ -34,6 +34,48 @@ export interface GroupConfig {
   envInitScript?: string;
 }
 
+/** Substitute {owner}/{repo}/{issue}/{session} in a workdir template. */
+export function resolveTemplatedWorkdir(
+  template: string,
+  issue: { trackerScopeKey: string; trackerScope: Record<string, unknown>; trackerIssueId: string | number },
+  session: { name: string },
+): string {
+  const parts = issue.trackerScopeKey.split("/");
+  const owner = (issue.trackerScope["owner"] as string) || parts[0] || "default";
+  const repo = (issue.trackerScope["repo"] as string) || parts[parts.length - 1] || "default";
+  const dir = template
+    .replace(/\{owner\}/g, String(owner))
+    .replace(/\{repo\}/g, String(repo))
+    .replace(/\{issue\}/g, String(issue.trackerIssueId))
+    .replace(/\{session\}/g, session.name);
+  return dir.startsWith("~") ? join(homedir(), dir.slice(1)) : dir;
+}
+
+/** Run a lifecycle script via `bash -c` with cwd=workdir. Failures are logged
+ *  and swallowed — never throws — so a broken init/destroy never blocks the
+ *  opencode task flow. */
+export async function runHookScript(script: string | undefined, workdir: string, label: string): Promise<void> {
+  if (!script || !script.trim()) return;
+  try {
+    mkdirSync(workdir, { recursive: true });
+    const result = Bun.spawnSync({
+      cmd: ["bash", "-c", script],
+      cwd: workdir,
+      stdout: "pipe",
+      stderr: "pipe",
+      env: process.env,
+    });
+    const stderr = result.stderr?.toString() ?? "";
+    if (result.exitCode !== 0) {
+      log.warn(`engine: ${label} exited ${result.exitCode}: ${stderr.slice(0, 500)}`);
+    } else if (stderr) {
+      log.info(`engine: ${label} stderr: ${stderr.slice(0, 300)}`);
+    }
+  } catch (e) {
+    log.warn(`engine: ${label} failed: ${(e as Error).message}`);
+  }
+}
+
 /**
  * Default TakeoverStrategy: deterministic per-issue workdir under
  * `<baseWorkdir>/<owner>--<repo>/<issueId>/<sessionName>`, with a best-effort
@@ -245,7 +287,7 @@ export class Engine {
   private async resolveWorkdir(session: OpSession, issue: Issue): Promise<string> {
     const gc = this.groupConfigFor(issue);
     if (gc?.workdirTemplate && !session.workdir) {
-      const dir = this.resolveTemplatedWorkdir(gc.workdirTemplate, issue, session);
+      const dir = resolveTemplatedWorkdir(gc.workdirTemplate, issue, session);
       mkdirSync(dir, { recursive: true });
       return dir;
     }
@@ -352,38 +394,8 @@ export class Engine {
     return this.groupConfigs.get(`${issue.trackerType}:${issue.trackerScopeKey}#${issue.trackerIssueId}`);
   }
 
-  private resolveTemplatedWorkdir(template: string, issue: Issue, session: OpSession): string {
-    const parts = issue.trackerScopeKey.split("/");
-    const owner = issue.trackerScope["owner"] ?? parts[0] ?? "default";
-    const repo = issue.trackerScope["repo"] ?? parts[parts.length - 1] ?? "default";
-    const dir = template
-      .replace(/\{owner\}/g, String(owner))
-      .replace(/\{repo\}/g, String(repo))
-      .replace(/\{issue\}/g, String(issue.trackerIssueId))
-      .replace(/\{session\}/g, session.name);
-    return dir.startsWith("~") ? join(homedir(), dir.slice(1)) : dir;
-  }
-
   private async runHookScript(script: string | undefined, workdir: string, label: string): Promise<void> {
-    if (!script || !script.trim()) return;
-    try {
-      mkdirSync(workdir, { recursive: true });
-      const result = Bun.spawnSync({
-        cmd: ["bash", "-c", script],
-        cwd: workdir,
-        stdout: "pipe",
-        stderr: "pipe",
-        env: process.env,
-      });
-      const stderr = result.stderr?.toString() ?? "";
-      if (result.exitCode !== 0) {
-        log.warn(`engine: ${label} exited ${result.exitCode}: ${stderr.slice(0, 500)}`);
-      } else if (stderr) {
-        log.info(`engine: ${label} stderr: ${stderr.slice(0, 300)}`);
-      }
-    } catch (e) {
-      log.warn(`engine: ${label} failed: ${(e as Error).message}`);
-    }
+    return runHookScript(script, workdir, label);
   }
 
   private async handleOpened(

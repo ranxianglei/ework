@@ -9,7 +9,7 @@ import { log, uptimeSeconds, version } from "./logger";
 
 type TrackerMap = Map<string, IssueTracker>;
 
-function parseGroupConfigHeader(raw: string | null): GroupConfig | undefined {
+export function parseGroupConfigHeader(raw: string | null): GroupConfig | undefined {
   if (!raw) return undefined;
   try {
     const decoded = Buffer.from(raw, "base64").toString("utf8");
