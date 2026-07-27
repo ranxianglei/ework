@@ -575,6 +575,75 @@ const DAEMON_DDL: Record<string, string> = {
     ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
 };
 
+export interface DdlResult {
+  ok: true;
+  sql: string;
+  database: string;
+  webPrefix: string;
+  daemonPrefix: string;
+}
+
+/** Generate a runnable MySQL script for accounts whose DB user lacks CREATE
+ *  (the wizard's auto-CREATE-DATABASE path is blocked). Reuses migrate()'s
+ *  exact DDL so manual + auto paths stay in sync. Idempotent. */
+export function generateMysqlDDL(
+  opts: MysqlTargetOpts,
+  daemonPrefixRaw: string,
+): DdlResult {
+  const webPrefix = validatePrefix(opts.prefix ?? "");
+  const daemonPrefix = validatePrefix(daemonPrefixRaw);
+  const lines: string[] = [];
+
+  lines.push(`-- ework-web + ework-daemon MySQL schema`);
+  lines.push(`-- Generated for restricted-privilege accounts (no CREATE).`);
+  lines.push(`-- Database: ${opts.database} | web prefix: "${webPrefix}" | daemon prefix: "${daemonPrefix}"`);
+  lines.push(`-- Idempotent — safe to re-run.`);
+  lines.push(``);
+  lines.push(`CREATE DATABASE IF NOT EXISTS ${ident(opts.database)} CHARACTER SET utf8mb4;`);
+  lines.push(`USE ${ident(opts.database)};`);
+  lines.push(``);
+  lines.push(`-- ─── ework-web tables (${webPrefix ? `prefix "${webPrefix}"` : "no prefix"}) ───`);
+
+  for (const stmt of readSchemaMysqlStatements(webPrefix)) {
+    lines.push(stmt + ";");
+  }
+
+  // config table — created in db.ts:SqliteDriver.create at boot, missing from
+  // schema-mysql.sql. Same shape as migrateSqliteToMysql L257-266. `key` is a
+  // MySQL reserved word → backticked.
+  lines.push(
+    applyTargetPrefix(
+      "CREATE TABLE IF NOT EXISTS {{config}} (" +
+        "`key` VARCHAR(255) PRIMARY KEY," +
+        "value TEXT NOT NULL," +
+        "updated_at VARCHAR(40) NOT NULL" +
+        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;",
+      webPrefix
+    )
+  );
+
+  lines.push(``);
+  lines.push(`-- ─── ework-daemon tables (${daemonPrefix ? `prefix "${daemonPrefix}"` : "no prefix"}) ───`);
+  lines.push(`-- Daemon columns match its SQLite schema; coordination columns`);
+  lines.push(`-- (owner_daemon_id etc.) are added by the daemon's ALTER TABLE on boot.`);
+  for (const table of DAEMON_TABLES) {
+    const ddl = applyTargetPrefix(
+      DAEMON_DDL[table]!.replace(/{{t}}/g, `{{${table}}}`),
+      daemonPrefix
+    );
+    lines.push(ddl + ";");
+  }
+
+  lines.push(``);
+  return {
+    ok: true,
+    sql: lines.join("\n"),
+    database: opts.database,
+    webPrefix,
+    daemonPrefix,
+  };
+}
+
 export async function migrateDaemonSqliteToMysql(
   sqlitePath: string,
   opts: MysqlTargetOpts,

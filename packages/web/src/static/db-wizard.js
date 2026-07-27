@@ -12,7 +12,8 @@
       user: get('db-user').trim(),
       password: get('db-password'),
       database: get('db-database').trim(),
-      prefix: get('db-prefix').trim()
+      prefix: get('db-prefix').trim(),
+      daemonPrefix: get('db-daemon-prefix').trim()
     });
   }
   function setBtns(d) {
@@ -73,6 +74,58 @@
   document.getElementById('db-migrate').onclick = function () { act('migrate'); };
   document.getElementById('db-daemon').onclick = function () { act('daemon-config'); };
   document.getElementById('db-enable').onclick = function () { act('enable'); };
+
+  var ddlBtn = document.getElementById('db-ddl');
+  if (ddlBtn) {
+    ddlBtn.onclick = async function () {
+      setBtns(true);
+      R.className = 'db-result db-loading';
+      R.textContent = '生成建表 SQL…';
+      try {
+        var res = await fetch('/api/db/ddl', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: gather()
+        });
+        var data = await res.json();
+        if (data.ok) {
+          R.className = 'db-result db-ok';
+          R.textContent = '✓ SQL 已生成（' + data.database + ' · web 前缀 "' + (data.webPrefix || '(无)') + '" · daemon 前缀 "' + (data.daemonPrefix || '(无)') + '"）。复制下方 SQL，用有 CREATE 权限的账号在 MySQL 里跑一遍，再回来点 ② 迁移。';
+          var out = document.getElementById('db-ddl-out');
+          var ta = document.getElementById('db-ddl-text');
+          var meta = document.getElementById('db-ddl-meta');
+          ta.value = data.sql;
+          meta.textContent = data.sql.length + ' 字符';
+          out.style.display = '';
+        } else {
+          R.className = 'db-result db-err';
+          R.textContent = '✗ ' + (data.error || '未知错误');
+        }
+      } catch (e) {
+        R.className = 'db-result db-err';
+        R.textContent = '✗ ' + (e.message || String(e));
+      } finally {
+        setBtns(false);
+      }
+    };
+  }
+
+  var ddlCopy = document.getElementById('db-ddl-copy');
+  if (ddlCopy) {
+    ddlCopy.onclick = async function () {
+      var ta = document.getElementById('db-ddl-text');
+      try {
+        await navigator.clipboard.writeText(ta.value);
+        ddlCopy.textContent = '✓ 已复制';
+        setTimeout(function () { ddlCopy.textContent = '📋 复制 SQL'; }, 1500);
+      } catch (e) {
+        ta.select();
+        document.execCommand('copy');
+        ddlCopy.textContent = '✓ 已复制';
+        setTimeout(function () { ddlCopy.textContent = '📋 复制 SQL'; }, 1500);
+      }
+    };
+  }
 
   var revertBtn = document.getElementById('db-revert');
   if (revertBtn) {
