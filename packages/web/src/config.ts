@@ -107,7 +107,7 @@ export const SETTINGS_GROUPS: SettingGroup[] = [
   {
     title: "AI 模型",
     fields: [
-      { key: "defaultModel", label: "默认模型（空 = 用 opencode.json；注意环境变量可能污染，建议点下方刷新自动选一个）", type: "model" },
+      { key: "defaultModel", label: "默认模型（点下方「刷新 opencode 模型列表」更新）", type: "model" },
     ],
   },
   {
