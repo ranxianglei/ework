@@ -41,6 +41,13 @@ export function resolveCommand(cmd: string): string | null {
 // the user to "install ework-web first" even though it was already bundled
 // (B-1). Returns the absolute bin path, or null if not bundled.
 export function resolveBundledBin(pkgName: string, binRelPath: string): string | null {
+  // Explicit override wins everywhere (tests + non-standard install prefix).
+  // Without this, the dev-repo branch below would ignore AIO_PACKAGE_ROOT and
+  // the "empty dir → null" contract couldn't be exercised from a git checkout.
+  if (process.env.AIO_PACKAGE_ROOT) {
+    const candidate = path.join(process.env.AIO_PACKAGE_ROOT, "node_modules", pkgName, binRelPath);
+    return fs.existsSync(candidate) ? candidate : null;
+  }
   if (isDevRepo()) {
     const r = spawnSync("npm", ["root", "-g"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], env: process.env });
     const npmRoot = (r.stdout ?? "").trim();
@@ -50,8 +57,7 @@ export function resolveBundledBin(pkgName: string, binRelPath: string): string |
     }
     return null;
   }
-  const root = process.env.AIO_PACKAGE_ROOT || DEFAULT_PACKAGE_ROOT;
-  const candidate = path.join(root, "node_modules", pkgName, binRelPath);
+  const candidate = path.join(DEFAULT_PACKAGE_ROOT, "node_modules", pkgName, binRelPath);
   return fs.existsSync(candidate) ? candidate : null;
 }
 

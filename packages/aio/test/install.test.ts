@@ -382,7 +382,14 @@ WORK_DAEMON_WEBHOOK_SECRET=somesecret
     // Keep bun/npm/opencode on PATH (so preflight passes) but drop the
     // stub dir so resolveCommand("ework-web") returns null. AIO_PACKAGE_ROOT
     // is pointed at tmpDir in beforeEach, so bundled resolution also fails.
-    process.env.PATH = `/home/dog/.local/bin:/usr/local/bin:/usr/bin:/bin`;
+    // Filter the stub dir out of PATH rather than replacing it — bun lives
+    // at different paths in dev vs CI (setup-bun), so a hardcoded PATH
+    // breaks one or the other.
+    const stubSegment = path.join(tmpDir, "stubs");
+    process.env.PATH = process.env.PATH
+      .split(":")
+      .filter(p => !p.includes(stubSegment))
+      .join(":");
     await expect(runInstall(opts, silentLogger(), { fetchImpl: makeMockFetch(state) }))
       .rejects.toThrow(/ework-web not found/);
   });

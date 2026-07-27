@@ -18,7 +18,10 @@ describe("resolveBundledBin (B-1)", () => {
   });
 
   test("finds bundled ework-web / ework-daemon from the real package node_modules", () => {
-    delete process.env.AIO_PACKAGE_ROOT;
+    // Point at this checkout's node_modules (populated by `bun install`).
+    // Don't rely on the dev-repo npm-root-g fallback — it needs a global
+    // ework-aio install that CI doesn't have.
+    process.env.AIO_PACKAGE_ROOT = path.resolve(import.meta.dir, "..");
     const web = resolveBundledBin("ework-web", "bin/ework-web.js");
     expect(web).not.toBeNull();
     expect(web).toContain("node_modules");

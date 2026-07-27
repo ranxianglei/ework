@@ -8,7 +8,7 @@ on:
 
 jobs:
   check:
-    name: Type-check + install smoke test
+    name: Type-check + unit tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,12 +21,51 @@ jobs:
       - name: Install deps
         run: bun install --frozen-lockfile
 
+      # install.test.ts runs the real install flow → preflight requires
+      # opencode on PATH. The runner has none.
+      - name: Install opencode
+        run: |
+          set -euo pipefail
+          curl -fsSL https://github.com/sst/opencode/releases/latest/download/opencode-linux-x64.tar.gz -o /tmp/opencode.tgz
+          mkdir -p /tmp/opencode-extract
+          tar xzf /tmp/opencode.tgz -C /tmp/opencode-extract
+          BIN="$(find /tmp/opencode-extract -name opencode -type f | head -1)"
+          [[ -n "$BIN" ]] || { echo "opencode binary not found in tarball"; ls -R /tmp/opencode-extract; exit 1; }
+          sudo install "$BIN" /usr/local/bin/opencode
+          opencode --version
+
       - name: TypeScript type-check
         run: bun run check
 
       - name: Run tests
         run: bun test
-        continue-on-error: true
 
       - name: Verify CLI entry
-        run: bun run bin/ework-aio.js --help || true
+        run: bun run bin/ework-aio --help
+
+  e2e:
+    name: Docker E2E (install + lifecycle + migration)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # e2e-install.sh mounts the host's opencode binary into the test
+      # container (preflight requires it). The runner has none, so install
+      # from the sst/opencode GitHub release — the same source README points
+      # users at (https://opencode.ai).
+      - name: Install opencode
+        run: |
+          set -euo pipefail
+          curl -fsSL https://github.com/sst/opencode/releases/latest/download/opencode-linux-x64.tar.gz -o /tmp/opencode.tgz
+          mkdir -p /tmp/opencode-extract
+          tar xzf /tmp/opencode.tgz -C /tmp/opencode-extract
+          BIN="$(find /tmp/opencode-extract -name opencode -type f | head -1)"
+          [[ -n "$BIN" ]] || { echo "opencode binary not found in tarball"; ls -R /tmp/opencode-extract; exit 1; }
+          sudo install "$BIN" /usr/local/bin/opencode
+          opencode --version
+
+      - name: Run E2E install test
+        run: ./scripts/e2e-install.sh docker latest
+        env:
+          OPENCODE_HOST_BIN: /usr/local/bin/opencode
