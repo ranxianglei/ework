@@ -121,7 +121,7 @@ function buildSetupScript(envBlock: string, daemonPort: number, mysqlHostRaw: st
     `sleep 3`,
     `STATUS=$(curl -sf --max-time 5 http://127.0.0.1:${String(daemonPort)}/api/status 2>/dev/null) || { echo "DAEMON_FAILED: status check failed"; echo "=== daemon log (last 20 lines) ==="; tail -20 ~/.local/share/ework-aio/run/daemon.log 2>/dev/null || echo "(no log)"; exit 1; }`,
     `echo "$STATUS"`,
-    `echo "$STATUS" | grep -q '"driver":"mysql"' || { echo "DAEMON_FAILED: daemon is NOT on MySQL (still SQLite?)"; tail -20 ~/.local/share/ework-aio/run/daemon.log 2>/dev/null; exit 1; }`,
+    `echo "$STATUS" | grep -Eq '"driver" *: *"mysql"' || { echo "DAEMON_FAILED: daemon is NOT on MySQL (still SQLite?)"; tail -20 ~/.local/share/ework-aio/run/daemon.log 2>/dev/null; exit 1; }`,
     `echo "=== hostname: $(hostname) ==="`,
     `echo DAEMON_STARTED`,
   ].join("\n");
