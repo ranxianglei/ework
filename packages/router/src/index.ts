@@ -39,7 +39,8 @@ async function forwardToDaemon(
   timeoutMs: number,
   headers?: Record<string, string>,
 ): Promise<{ ok: boolean; status: number; body: string }> {
-  const url = endpoint.replace(/\/$/, "") + "/webhook/gitea";
+  const normalizedEndpoint = endpoint.startsWith("http") ? endpoint : `http://${endpoint}`;
+  const url = normalizedEndpoint.replace(/\/$/, "") + "/webhook/gitea";
   try {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -173,7 +174,8 @@ async function handleReply(req: Request, _cfg: Config): Promise<Response> {
   try {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 10_000);
-    const res = await fetch(targetEndpoint.replace(/\/$/, "") + "/api/router/reply", {
+    const normalizedTarget = targetEndpoint.startsWith("http") ? targetEndpoint : `http://${targetEndpoint}`;
+    const res = await fetch(normalizedTarget.replace(/\/$/, "") + "/api/router/reply", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
