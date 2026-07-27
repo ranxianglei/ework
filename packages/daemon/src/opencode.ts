@@ -1,5 +1,5 @@
 import { spawn, type Subprocess } from "bun";
-import { mkdirSync, writeFileSync, readdirSync } from "fs";
+import { mkdirSync, writeFileSync, readdirSync, existsSync } from "fs";
 import { join, resolve, isAbsolute } from "path";
 import { homedir } from "os";
 import { log } from "./logger";
@@ -39,37 +39,52 @@ export function resolveTemplatedWorkdir(
   template: string,
   issue: { trackerScopeKey: string; trackerScope: Record<string, unknown>; trackerIssueId: string | number },
   session: { name: string },
+  baseWorkdir?: string,
 ): string {
   const parts = issue.trackerScopeKey.split("/");
   const owner = (issue.trackerScope["owner"] as string) || parts[0] || "default";
   const repo = (issue.trackerScope["repo"] as string) || parts[parts.length - 1] || "default";
-  const dir = template
-    .replace(/\{owner\}/g, String(owner))
-    .replace(/\{repo\}/g, String(repo))
-    .replace(/\{issue\}/g, String(issue.trackerIssueId))
-    .replace(/\{session\}/g, session.name);
-  return dir.startsWith("~") ? join(homedir(), dir.slice(1)) : dir;
+  // Use replacer functions to avoid `$&`/`$1` interpretation in replacement strings.
+  let dir = template
+    .replace(/\{owner\}/g, () => String(owner))
+    .replace(/\{repo\}/g, () => String(repo))
+    .replace(/\{issue\}/g, () => String(issue.trackerIssueId))
+    .replace(/\{session\}/g, () => session.name);
+  if (dir.startsWith("~")) {
+    dir = join(homedir(), dir.slice(1));
+  } else if (!isAbsolute(dir) && baseWorkdir) {
+    dir = resolve(baseWorkdir, dir);
+  }
+  return dir;
 }
 
-/** Run a lifecycle script via `bash -c` with cwd=workdir. Failures are logged
- *  and swallowed — never throws — so a broken init/destroy never blocks the
- *  opencode task flow. */
-export async function runHookScript(script: string | undefined, workdir: string, label: string): Promise<void> {
+/** Run a lifecycle script via `bash -c` with cwd=workdir. Uses async Bun.spawn
+ *  (not spawnSync) so the event loop is not blocked. A 60s hard timeout kills
+ *  hung scripts. Failures are logged and swallowed — never throws — so a broken
+ *  init/destroy never blocks the opencode task flow. */
+const HOOK_SCRIPT_TIMEOUT_MS = 60_000;
+export async function runHookScript(script: string | undefined, workdir: string, label: string, env: Record<string, string> = {}): Promise<void> {
   if (!script || !script.trim()) return;
   try {
     mkdirSync(workdir, { recursive: true });
-    const result = Bun.spawnSync({
+    const proc = Bun.spawn({
       cmd: ["bash", "-c", script],
       cwd: workdir,
       stdout: "pipe",
       stderr: "pipe",
-      env: process.env,
+      env: { ...process.env, ...env },
     });
-    const stderr = result.stderr?.toString() ?? "";
-    if (result.exitCode !== 0) {
-      log.warn(`engine: ${label} exited ${result.exitCode}: ${stderr.slice(0, 500)}`);
-    } else if (stderr) {
-      log.info(`engine: ${label} stderr: ${stderr.slice(0, 300)}`);
+    const timer = setTimeout(() => { try { proc.kill("SIGKILL"); } catch { /* already dead */ } }, HOOK_SCRIPT_TIMEOUT_MS);
+    try {
+      const exitCode = await proc.exited;
+      const stderr = await new Response(proc.stderr).text().catch(() => "");
+      if (exitCode !== 0) {
+        log.warn(`engine: ${label} exited ${exitCode}: ${stderr.slice(0, 500)}`);
+      } else if (stderr) {
+        log.info(`engine: ${label} stderr: ${stderr.slice(0, 300)}`);
+      }
+    } finally {
+      clearTimeout(timer);
     }
   } catch (e) {
     log.warn(`engine: ${label} failed: ${(e as Error).message}`);
@@ -287,11 +302,40 @@ export class Engine {
   private async resolveWorkdir(session: OpSession, issue: Issue): Promise<string> {
     const gc = this.groupConfigFor(issue);
     if (gc?.workdirTemplate && !session.workdir) {
-      const dir = resolveTemplatedWorkdir(gc.workdirTemplate, issue, session);
+      const dir = resolveTemplatedWorkdir(gc.workdirTemplate, issue, session, this.cfg.opencode.baseWorkdir);
       mkdirSync(dir, { recursive: true });
       return dir;
     }
     return this.takeover.acquireWorkdir(session, issue);
+  }
+
+  private hookEnvFor(issue: Issue, session: OpSession, workdir: string): Record<string, string> {
+    const parts = issue.trackerScopeKey.split("/");
+    const owner = (issue.trackerScope["owner"] as string) || parts[0] || "";
+    const repo = (issue.trackerScope["repo"] as string) || parts[parts.length - 1] || "";
+    return {
+      EWORK_OWNER: String(owner),
+      EWORK_REPO: String(repo),
+      EWORK_ISSUE: String(issue.trackerIssueId),
+      EWORK_SESSION: session.name,
+      EWORK_WORKDIR: workdir,
+    };
+  }
+
+  private workdirPathFor(session: OpSession, issue: Issue): string {
+    if (session.workdir) {
+      let dir = session.workdir;
+      if (dir.startsWith("~")) dir = join(homedir(), dir.slice(1));
+      return isAbsolute(dir) ? dir : resolve(this.cfg.opencode.baseWorkdir, dir);
+    }
+    const gc = this.groupConfigFor(issue);
+    if (gc?.workdirTemplate) {
+      return resolveTemplatedWorkdir(gc.workdirTemplate, issue, session, this.cfg.opencode.baseWorkdir);
+    }
+    const parts = issue.trackerScopeKey.split("/");
+    const owner = (issue.trackerScope["owner"] as string) || parts[0] || "default";
+    const repo = (issue.trackerScope["repo"] as string) || parts[parts.length - 1] || "default";
+    return join(this.cfg.opencode.baseWorkdir, `${owner}--${repo}`, String(issue.trackerIssueId), session.name);
   }
 
   private async persistRuntimeState(sessionId: string) {
@@ -392,10 +436,6 @@ export class Engine {
 
   private groupConfigFor(issue: Issue): GroupConfig | undefined {
     return this.groupConfigs.get(`${issue.trackerType}:${issue.trackerScopeKey}#${issue.trackerIssueId}`);
-  }
-
-  private async runHookScript(script: string | undefined, workdir: string, label: string): Promise<void> {
-    return runHookScript(script, workdir, label);
   }
 
   private async handleOpened(
@@ -584,6 +624,7 @@ export class Engine {
   ) {
     const issue = await this.store.findIssue(ref.trackerType, scopeKey, ref.issueId);
     if (!issue) return;
+    if (issue.state === "closed") return;
 
     await this.store.updateIssueState(issue.id, "closed");
     this.stopObserver(issue.id);
@@ -597,27 +638,29 @@ export class Engine {
         this.stopping.add(k);
         try { this.killProcessTree(proc.pid, "SIGTERM"); } catch { /* already dead */ }
       }
-      // Clear runtime state
       this.clearRuntimeState(k);
-      // Mark pending/running messages as interrupted
       const msgs = await this.store.getMessagesForSession(session.id);
       for (const msg of msgs) {
         if (msg.status === "pending" || msg.status === "running") {
           await this.store.updateMessageStatus(msg.id, "interrupted", "issue closed");
         }
       }
-      // Update session state
       await this.store.updateSession(session.id, { state: "idle", opencodePid: undefined });
     }
 
+    const gcKey = `${ref.trackerType}:${scopeKey}#${ref.issueId}`;
     const gc = this.groupConfigFor(issue);
     if (gc?.destroyScript) {
+      const workdirs = new Set<string>();
       for (const session of sessions) {
-        const workdir = await this.resolveWorkdir(session, issue);
-        await this.runHookScript(gc.destroyScript, workdir, `destroyScript for ${scopeKey}#${ref.issueId}`);
+        const workdir = this.workdirPathFor(session, issue);
+        if (existsSync(workdir)) workdirs.add(workdir);
+      }
+      for (const workdir of workdirs) {
+        await runHookScript(gc.destroyScript, workdir, `destroyScript for ${scopeKey}#${ref.issueId}`, this.hookEnvFor(issue, { name: "" } as OpSession, workdir));
       }
     }
-    this.groupConfigs.delete(`${ref.trackerType}:${scopeKey}#${ref.issueId}`);
+    if (this.groupConfigs.get(gcKey) === gc) this.groupConfigs.delete(gcKey);
 
     log.info(`engine: issue closed, ${sessions.length} sessions paused for ${scopeKey}#${ref.issueId}`);
   }
@@ -715,7 +758,7 @@ export class Engine {
 
     const gc = this.groupConfigFor(issue);
     if (gc?.initScript) {
-      await this.runHookScript(gc.initScript, workdir, `initScript for ${k}`);
+      await runHookScript(gc.initScript, workdir, `initScript for ${k}`, this.hookEnvFor(issue, session, workdir));
     }
 
     const ref = this.sessionToRef(session, issue);
