@@ -6,12 +6,53 @@
   const saveBtn = document.getElementById("strategy-save");
   const addBindingBtn = document.getElementById("binding-add");
 
-  let currentStrategy = { strategy: "least-loaded", groupBindings: {}, daemonGroups: {} };
+  let currentStrategy = { strategy: "least-loaded", groupBindings: {}, daemonGroups: {}, groupConfigs: {} };
 
   function showResult(msg, ok) {
     result.textContent = msg;
     result.className = "db-result " + (ok ? "db-ok" : "db-err");
     setTimeout(() => { result.textContent = ""; result.className = "db-result"; }, 3000);
+  }
+
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  function collectGroupNames() {
+    var names = new Set();
+    var dg = currentStrategy.daemonGroups || {};
+    Object.values(dg).forEach(function (arr) { (arr || []).forEach(function (g) { names.add(g); }); });
+    var gb = currentStrategy.groupBindings || {};
+    Object.values(gb).forEach(function (g) { names.add(g); });
+    Object.keys(currentStrategy.groupConfigs || {}).forEach(function (g) { names.add(g); });
+    return Array.from(names).sort();
+  }
+
+  function renderGroupConfigs() {
+    var container = document.getElementById("group-configs-list");
+    if (!container) return;
+    var names = collectGroupNames();
+    if (!names.length) {
+      container.innerHTML = '<p class="hint" style="margin:0">先添加分组（上方给 daemon 打组或绑定 repo→组）后这里会出现配置项。</p>';
+      return;
+    }
+    container.innerHTML = names.map(function (g) {
+      var cfg = (currentStrategy.groupConfigs || {})[g] || {};
+      return '<details class="gc-card" style="border:1px solid var(--border);border-radius:8px;padding:.6rem .8rem;margin:.4rem 0">' +
+        '<summary style="cursor:pointer;font-weight:600;font-size:13px">' + esc(g) + '</summary>' +
+        '<div style="margin-top:.5rem">' +
+        '<label style="font-size:12px;color:var(--text-muted)">工作目录模板</label>' +
+        '<input type="text" class="gc-workdir" data-group="' + esc(g) + '" value="' + esc(cfg.workdirTemplate || "") + '" placeholder="/data/work/{owner}/{repo}/{issue}" style="width:100%;padding:.35rem .5rem;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:13px;margin-bottom:.5rem;font-family:ui-monospace,monospace">' +
+        '<label style="font-size:12px;color:var(--text-muted)">Init 脚本（投递时跑，如 git clone）</label>' +
+        '<textarea class="gc-init" data-group="' + esc(g) + '" placeholder="git clone ${CLONE_URL} ." rows="2" style="width:100%;padding:.35rem .5rem;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:12px;margin-bottom:.5rem;font-family:ui-monospace,monospace;resize:vertical">' + esc(cfg.initScript || "") + '</textarea>' +
+        '<label style="font-size:12px;color:var(--text-muted)">Destroy 脚本（关闭时跑）</label>' +
+        '<textarea class="gc-destroy" data-group="' + esc(g) + '" rows="2" style="width:100%;padding:.35rem .5rem;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:12px;margin-bottom:.5rem;font-family:ui-monospace,monospace;resize:vertical">' + esc(cfg.destroyScript || "") + '</textarea>' +
+        '<label style="font-size:12px;color:var(--text-muted)">Env-Init 脚本（机器级，预留）</label>' +
+        '<textarea class="gc-envinit" data-group="' + esc(g) + '" rows="1" disabled placeholder="预留，暂不执行" style="width:100%;padding:.35rem .5rem;border:1px solid var(--border);border-radius:6px;background:var(--bg-muted);color:var(--text-muted);font-size:12px;resize:vertical">' + esc(cfg.envInitScript || "") + '</textarea>' +
+        '</div></details>';
+    }).join("");
   }
 
   async function load() {
@@ -35,6 +76,7 @@
       }).join("") || '<tr><td colspan="4" class="daemon-empty">没有已注册的 daemon（节点启动后自动出现）</td></tr>';
 
       renderBindings();
+      renderGroupConfigs();
     } catch (e) {
       tbody.innerHTML = '<tr><td colspan="4" class="daemon-empty">无法连接 router — 确认 router 已启动</td></tr>';
     }
@@ -67,6 +109,7 @@
     document.getElementById("binding-repo").value = "";
     document.getElementById("binding-group").value = "";
     renderBindings();
+    renderGroupConfigs();
   };
 
   saveBtn.onclick = async () => {
@@ -78,6 +121,24 @@
       if (groups.length > 0) newGroups[id] = groups;
     });
     currentStrategy.daemonGroups = newGroups;
+
+    var newConfigs = {};
+    document.querySelectorAll("details.gc-card").forEach(function (card) {
+      var g = card.querySelector("summary").textContent.trim();
+      var workdir = (card.querySelector(".gc-workdir") || {}).value || "";
+      var init = (card.querySelector(".gc-init") || {}).value || "";
+      var destroy = (card.querySelector(".gc-destroy") || {}).value || "";
+      var envinit = (card.querySelector(".gc-envinit") || {}).value || "";
+      if (workdir.trim() || init.trim() || destroy.trim() || envinit.trim()) {
+        newConfigs[g] = {
+          workdirTemplate: workdir.trim() || undefined,
+          initScript: init.trim() || undefined,
+          destroyScript: destroy.trim() || undefined,
+          envInitScript: envinit.trim() || undefined,
+        };
+      }
+    });
+    currentStrategy.groupConfigs = newConfigs;
 
     try {
       const res = await fetch("/api/router/strategy", {
