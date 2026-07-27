@@ -14,6 +14,8 @@ export interface LayoutProps {
   upstreamWebUrl?: string | null;
   translateEnabled?: boolean;
   ttsEnabled?: boolean;
+  labels?: { id: number; name: string; color: string }[];
+  canEditLabels?: boolean;
 }
 
 export const THEME_CSS = `
@@ -107,6 +109,20 @@ header.topbar .num{opacity:.7}
 .desc-toggle{margin-top:.4rem;background:none;border:none;color:var(--accent);font-size:13px;cursor:pointer;padding:.2rem 0}
 .upstream-link{font-size:12px;color:var(--accent);opacity:.85}
 .upstream-link:hover{opacity:1;text-decoration:underline}
+.issue-label{display:inline-flex;align-items:center;font-size:12px;font-weight:500;padding:.05rem .5rem;border:1px solid;border-radius:99px;line-height:1.6;background:color-mix(in srgb,currentColor 8%,transparent)}
+.label-edit-btn{background:none;border:1px solid var(--border);border-radius:6px;padding:.05rem .35rem;cursor:pointer;font-size:13px;line-height:1.5;color:var(--text-muted)}
+.label-edit-btn:hover{border-color:var(--accent);color:var(--accent)}
+#labelDlg{border:1px solid var(--border);border-radius:10px;background:var(--bg-elev);color:var(--text);padding:1.1rem;max-width:380px;width:90vw}
+#labelDlg::backdrop{background:rgba(0,0,0,.5)}
+#labelDlg h3{margin:0 0 .6rem;font-size:14px}
+.lp-list{max-height:300px;overflow-y:auto;display:flex;flex-direction:column;gap:.15rem}
+.lp-item{display:flex;align-items:center;gap:.4rem;padding:.3rem .4rem;border-radius:6px;cursor:pointer;font-size:13px}
+.lp-item:hover{background:var(--bg-muted)}
+.lp-item input{margin:0}
+.lp-dot{width:10px;height:10px;border-radius:50%;border:1px solid var(--border);flex-shrink:0}
+.lp-name{flex:1;overflow-wrap:anywhere}
+.lp-scope{font-size:10px;color:var(--text-muted)}
+.lp-empty{color:var(--text-muted);font-size:12px;padding:.6rem 0;text-align:center}
 `;
 
 export function renderLayout(props: LayoutProps, inner: string, initialItems: string): string {
@@ -119,6 +135,12 @@ export function renderLayout(props: LayoutProps, inner: string, initialItems: st
   const [repoOwner, repoName] = props.repoPath.split("/");
   const repoIssuesHref = `/${encodeURIComponent(repoOwner ?? "")}/${encodeURIComponent(repoName ?? "")}/issues`;
   const op = props.operatorLogin ?? "operator";
+  const labelsHtml = (props.labels ?? []).length
+    ? props.labels!.map((l) => `<span class="issue-label" style="border-color:${escapeAttr(l.color)};color:${escapeAttr(l.color)}">${escapeHtml(l.name)}</span>`).join("")
+    : "";
+  const labelPickerBtn = props.canEditLabels
+    ? `<button type="button" class="label-edit-btn" id="labelEditBtn" title="管理标签">🏷️</button>`
+    : "";
   return `<!doctype html>
 <html lang="zh">
 <head>
@@ -140,6 +162,7 @@ export function renderLayout(props: LayoutProps, inner: string, initialItems: st
   <h1>${escapeHtml(props.issueTitle)}</h1>
   <div class="meta-status">
     <span class="state-badge ${stateClass}">${stateLabel}</span>
+    ${labelsHtml}${labelPickerBtn}
     <span class="count" id="count">…</span>
     ${props.upstreamWebUrl ? `<a class="upstream-link" href="${escapeAttr(props.upstreamWebUrl)}" target="_blank" rel="noopener noreferrer" title="跳转到上游仓库">🔗 查看上游</a>` : ""}
   </div>
@@ -168,6 +191,8 @@ ${props.writesEnabled !== false
 <script type="application/json" id="initial-data">${inner}</script>
 <script src="/static/tts.js?v=${BUILD_ID}" defer></script>
 <script src="/static/app.js?v=${BUILD_ID}" defer></script>
+${props.canEditLabels ? `<dialog id="labelDlg"><h3>标签</h3><div class="lp-list" id="lpList"></div><div class="lp-empty hidden" id="lpEmpty">该项目还没有标签。先到设置页创建。</div></dialog>
+<script src="/static/label-picker.js?v=${BUILD_ID}" defer></script>` : ""}
 </body>
 </html>`;
 }

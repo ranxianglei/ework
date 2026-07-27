@@ -11,6 +11,7 @@ import {
   listCommentsPage,
   listCommentsSince,
   getDefaultUpstreamUrl,
+  listLabelsForIssue,
   type CommentRow,
   type IssueWithMeta,
 } from "../store";
@@ -110,6 +111,7 @@ export async function buildIssueThread(
     if (!clone) return null;
     return webUrlFromClone(clone);
   })();
+  const labels = await listLabelsForIssue(issue.id);
 
   const html = renderLayout(
     {
@@ -126,6 +128,8 @@ export async function buildIssueThread(
       upstreamWebUrl,
       translateEnabled: !!cfg.translateUrl && cfg.translateUrl.trim() !== "",
       ttsEnabled: cfg.ttsBackends.some((b) => b.url && b.url.trim() !== ""),
+      labels: labels.map((l) => ({ id: l.id, name: l.name, color: l.color })),
+      canEditLabels: cfg.writesEnabled !== false,
     },
     safeJsonEmbed(payload),
     displayViews.map((v) => renderCommentCard(v, cfg)).join("")

@@ -16,7 +16,7 @@ interface Flash {
 export function projectSettingsTabsHTML(
   owner: string,
   name: string,
-  active: "webhooks" | "members" | "upstreams" | "model",
+  active: "webhooks" | "members" | "upstreams" | "model" | "labels",
 ): string {
   const base = `/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/settings`;
   const cls = (which: typeof active) => (active === which ? " active" : "");
@@ -24,6 +24,7 @@ export function projectSettingsTabsHTML(
     <a class="subtab${cls("webhooks")}" href="${escapeAttr(base)}/webhooks">Webhooks</a>
     <a class="subtab${cls("members")}" href="${escapeAttr(base)}/members">成员</a>
     <a class="subtab${cls("upstreams")}" href="${escapeAttr(base)}/upstreams">上游</a>
+    <a class="subtab${cls("labels")}" href="${escapeAttr(base)}/labels">🏷️ 标签</a>
     <a class="subtab${cls("model")}" href="${escapeAttr(base)}/model">🤖 模型</a>
   </nav>`;
 }
