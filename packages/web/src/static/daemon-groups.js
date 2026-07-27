@@ -43,14 +43,14 @@
       return '<details class="gc-card" style="border:1px solid var(--border);border-radius:8px;padding:.6rem .8rem;margin:.4rem 0">' +
         '<summary style="cursor:pointer;font-weight:600;font-size:13px">' + esc(g) + '</summary>' +
         '<div style="margin-top:.5rem">' +
-        '<label style="font-size:12px;color:var(--text-muted)">工作目录模板</label>' +
-        '<input type="text" class="gc-workdir" data-group="' + esc(g) + '" value="' + esc(cfg.workdirTemplate || "") + '" placeholder="/data/work/{owner}/{repo}/{issue}" style="width:100%;padding:.35rem .5rem;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:13px;margin-bottom:.5rem;font-family:ui-monospace,monospace">' +
-        '<label style="font-size:12px;color:var(--text-muted)">Init 脚本（投递时跑，如 git clone）</label>' +
-        '<textarea class="gc-init" data-group="' + esc(g) + '" placeholder="git clone ${CLONE_URL} ." rows="2" style="width:100%;padding:.35rem .5rem;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:12px;margin-bottom:.5rem;font-family:ui-monospace,monospace;resize:vertical">' + esc(cfg.initScript || "") + '</textarea>' +
-        '<label style="font-size:12px;color:var(--text-muted)">Destroy 脚本（关闭时跑）</label>' +
-        '<textarea class="gc-destroy" data-group="' + esc(g) + '" rows="2" style="width:100%;padding:.35rem .5rem;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:12px;margin-bottom:.5rem;font-family:ui-monospace,monospace;resize:vertical">' + esc(cfg.destroyScript || "") + '</textarea>' +
+        '<label style="font-size:12px;color:var(--text-muted)">工作目录模板（变量: {owner} {repo} {issue} {session}）</label>' +
+        '<input type="text" class="gc-workdir" data-group="' + esc(g) + '" value="' + esc(cfg.workdirTemplate || "") + '" placeholder="/data/work/{owner}/{repo}/{issue}" maxlength="512" style="width:100%;padding:.35rem .5rem;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:13px;margin-bottom:.5rem;font-family:ui-monospace,monospace">' +
+        '<label style="font-size:12px;color:var(--text-muted)">Init 脚本（投递时跑，cwd=workdir，env 有 $EWORK_OWNER/$EWORK_REPO/$EWORK_ISSUE/$EWORK_WORKDIR）</label>' +
+        '<textarea class="gc-init" data-group="' + esc(g) + '" placeholder="git clone https://gitea.example.com/$EWORK_OWNER/$EWORK_REPO.git ." rows="2" maxlength="4096" style="width:100%;padding:.35rem .5rem;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:12px;margin-bottom:.5rem;font-family:ui-monospace,monospace;resize:vertical">' + esc(cfg.initScript || "") + '</textarea>' +
+        '<label style="font-size:12px;color:var(--text-muted)">Destroy 脚本（关闭时跑，cwd=workdir）</label>' +
+        '<textarea class="gc-destroy" data-group="' + esc(g) + '" rows="2" maxlength="4096" style="width:100%;padding:.35rem .5rem;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:12px;margin-bottom:.5rem;font-family:ui-monospace,monospace;resize:vertical">' + esc(cfg.destroyScript || "") + '</textarea>' +
         '<label style="font-size:12px;color:var(--text-muted)">Env-Init 脚本（机器级，预留）</label>' +
-        '<textarea class="gc-envinit" data-group="' + esc(g) + '" rows="1" disabled placeholder="预留，暂不执行" style="width:100%;padding:.35rem .5rem;border:1px solid var(--border);border-radius:6px;background:var(--bg-muted);color:var(--text-muted);font-size:12px;resize:vertical">' + esc(cfg.envInitScript || "") + '</textarea>' +
+        '<textarea class="gc-envinit" data-group="' + esc(g) + '" rows="1" disabled maxlength="4096" placeholder="预留，暂不执行" style="width:100%;padding:.35rem .5rem;border:1px solid var(--border);border-radius:6px;background:var(--bg-muted);color:var(--text-muted);font-size:12px;resize:vertical">' + esc(cfg.envInitScript || "") + '</textarea>' +
         '</div></details>';
     }).join("");
   }

@@ -1060,16 +1060,18 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
   if (url.pathname === "/api/router/strategy") {
     if (!ctx.user || ctx.user.is_admin !== 1) return json({ error: "admin required" }, 403);
     const routerUrl = cfg.daemonWebhookUrl.replace(/\/$/, "");
+    const routerHeaders: Record<string, string> = { "Content-Type": "application/json" };
+    if (cfg.routerAdminToken) routerHeaders["Authorization"] = `Bearer ${cfg.routerAdminToken}`;
     try {
       if (req.method === "GET") {
-        const res = await fetch(`${routerUrl}/api/strategy`, { signal: AbortSignal.timeout(5000) });
+        const res = await fetch(`${routerUrl}/api/strategy`, { headers: routerHeaders, signal: AbortSignal.timeout(5000) });
         return json(await res.json());
       }
       if (req.method === "POST") {
         const body = await req.text();
         const res = await fetch(`${routerUrl}/api/strategy`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: routerHeaders,
           body,
           signal: AbortSignal.timeout(5000),
         });
