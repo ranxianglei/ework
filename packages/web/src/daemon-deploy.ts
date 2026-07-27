@@ -72,7 +72,7 @@ function parseEnvFile(content: string): Map<string, string> {
   return out;
 }
 
-function buildEnvBlock(env: Map<string, string>, target: DeployTarget): string {
+export function buildEnvBlock(env: Map<string, string>, target: DeployTarget): string {
   const lines: string[] = [];
   const localIP = detectLocalIP();
   for (const k of FORWARD_KEYS) {
