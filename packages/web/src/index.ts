@@ -7,7 +7,7 @@ import { loadConfig, DB_OVERRIDABLE, parseOverride, resolveTtsBackend } from "./
 import type { Config } from "./config";
 import { setConfig, initDB, getDB } from "./db";
 import { getActiveDaemons, listAllDaemons } from "./coordination";
-import { testMysqlConnection, migrateSqliteToMysql, writeMysqlEnv, migrateMysqlToSqlite, writeSqliteEnv, migrateDaemonSqliteToMysql } from "./db-admin";
+import { testMysqlConnection, migrateSqliteToMysql, writeMysqlEnv, migrateMysqlToSqlite, writeSqliteEnv, migrateDaemonSqliteToMysql, generateMysqlDDL } from "./db-admin";
 import type { MysqlTargetOpts } from "./db-admin";
 import { checkAuth, makeAuthCookieHeader, clearAuthCookieHeader, loginHTML, sanitizeNext, ensureBootstrapAdmin, ensureBootstrapSystem, isReservedSystemLogin } from "./auth";
 import { OpencodeError, createOpencodeClient, MultiDaemonOpencodeClient, RemoteOpencodeClient, isLocalhost, type OpencodeClientInterface } from "./opencode";
@@ -201,7 +201,9 @@ function html(body: string, status = 200): Response {
 // The prefix regex below must match db.ts:WORK_DB_PREFIX exactly — if the API
 // accepts a prefix that boot rejects, the wizard writes a .env that restarts
 // into a crash. Any change here must be mirrored in db.ts + db-admin.ts.
-function parseDbTargetOpts(payload: unknown): MysqlTargetOpts | { error: string } {
+type ParsedDbTarget = MysqlTargetOpts & { daemonPrefix?: string };
+
+function parseDbTargetOpts(payload: unknown): ParsedDbTarget | { error: string } {
   if (typeof payload !== "object" || payload === null) return { error: "invalid body" };
   const p = payload as Record<string, unknown>;
   const host = typeof p.host === "string" ? p.host.trim() : "";
@@ -210,17 +212,23 @@ function parseDbTargetOpts(payload: unknown): MysqlTargetOpts | { error: string 
   const password = typeof p.password === "string" ? p.password : "";
   const database = typeof p.database === "string" ? p.database.trim() : "";
   const prefix = typeof p.prefix === "string" ? p.prefix.trim() : "";
+  const daemonPrefix = typeof p.daemonPrefix === "string" ? p.daemonPrefix.trim() : "";
   if (!host) return { error: "host required" };
   if (!user) return { error: "user required" };
   if (!database) return { error: "database required" };
   if (!Number.isInteger(portNum) || portNum < 1 || portNum > 65535) {
     return { error: "port must be an integer 1-65535" };
   }
-  if (prefix && !/^[A-Za-z_][A-Za-z0-9_]{0,31}$/.test(prefix)) {
+  const prefixRe = /^[A-Za-z_][A-Za-z0-9_]{0,31}$/;
+  if (prefix && !prefixRe.test(prefix)) {
     return { error: "prefix must match ^[A-Za-z_][A-Za-z0-9_]{0,31}$" };
   }
-  const opts: MysqlTargetOpts = { host, port: portNum, user, password, database };
+  if (daemonPrefix && !prefixRe.test(daemonPrefix)) {
+    return { error: "daemonPrefix must match ^[A-Za-z_][A-Za-z0-9_]{0,31}$" };
+  }
+  const opts: ParsedDbTarget = { host, port: portNum, user, password, database };
   if (prefix) opts.prefix = prefix;
+  if (daemonPrefix) opts.daemonPrefix = daemonPrefix;
   return opts;
 }
 
@@ -805,7 +813,9 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     const rawPayload = await req.json().catch(() => ({}));
     const parsed = parseDbTargetOpts(rawPayload);
     if ("error" in parsed) return json(parsed, 400);
-    const daemonOpts: MysqlTargetOpts = { ...parsed, prefix: daemonPrefix(parsed.prefix ?? "") };
+    const { daemonPrefix: _dp, ...mysqlFields } = parsed;
+    const dPrefix = parsed.daemonPrefix ?? daemonPrefix(parsed.prefix ?? "");
+    const daemonOpts: MysqlTargetOpts = { ...mysqlFields, prefix: dPrefix };
     const envPath = daemonEnvPath();
     if (!envPath) {
       return json({ ok: false, configured: false, manual: daemonManualInstructions(daemonOpts) });
@@ -822,6 +832,21 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
       return json({ ok: true, configured: true, envPath, written: written.written, daemonMigrated });
     } catch (e) {
       return json({ ok: false, configured: false, error: errMsg(e), manual: daemonManualInstructions(daemonOpts) });
+    }
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/db/ddl") {
+    if (!ctx.user || ctx.user.is_admin !== 1) return json({ error: "admin required" }, 403);
+    if (!rateLimit(`db-ddl:${ip}`, 10, 10 / 60)) return json({ error: "rate limited" }, 429);
+    const payload = await req.json().catch(() => ({}));
+    const parsed = parseDbTargetOpts(payload);
+    if ("error" in parsed) return json(parsed, 400);
+    const dPrefix = parsed.daemonPrefix ?? daemonPrefix(parsed.prefix ?? "");
+    try {
+      const result = generateMysqlDDL(parsed, dPrefix);
+      return json(result);
+    } catch (e) {
+      return json({ ok: false, error: errMsg(e) }, 400);
     }
   }
 

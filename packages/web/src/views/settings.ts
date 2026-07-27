@@ -49,20 +49,23 @@ function buildDbSection(viewer: UserRow): string {
   return `<section class="sg db-section">
 <h2>数据库后端</h2>
 <p class="db-badge">当前后端: <strong>${escapeHtml(driver.toUpperCase())}</strong> · ${escapeHtml(currentTarget)}</p>
-<div class="db-warn">⚠ 切换到 MySQL 后 Web 进程会重启并以 MySQL 为存储。若 MySQL 不可达，进程无法启动——需手动编辑 <code>.env</code> 将 <code>WORK_DB_DRIVER</code> 改回 <code>sqlite</code> 才能恢复。流程：先 ① 测试连接、再 ② 迁移数据、最后 ③ 启用。</div>
+<div class="db-warn">⚠ 切换到 MySQL 后 Web 进程会重启并以 MySQL 为存储。若 MySQL 不可达，进程无法启动——需手动编辑 <code>.env</code> 将 <code>WORK_DB_DRIVER</code> 改回 <code>sqlite</code> 才能恢复。流程：先 ① 测试连接、再 ② 迁移数据、最后 ③ 启用。若你的 MySQL 账号无 CREATE 权限，先点 ⑤ 生成建表 SQL，用有权限的账号跑一遍，再回来 ② 迁移。</div>
 <label class="sf"><span>MySQL 主机</span><input type="text" id="db-host" placeholder="127.0.0.1" autocomplete="off"></label>
 <label class="sf"><span>端口</span><input type="number" id="db-port" value="3306" min="1" max="65535" autocomplete="off"></label>
 <label class="sf"><span>用户名</span><input type="text" id="db-user" placeholder="ework" autocomplete="off"></label>
 <label class="sf"><span>密码</span><input type="password" id="db-password" placeholder="••••••" autocomplete="new-password"></label>
 <label class="sf"><span>数据库名</span><input type="text" id="db-database" placeholder="ework" autocomplete="off"></label>
 <label class="sf"><span>表前缀（可选）</span><input type="text" id="db-prefix" placeholder="留空 = 无前缀" autocomplete="off"></label>
+<label class="sf"><span>daemon 前缀（可选）</span><input type="text" id="db-daemon-prefix" placeholder="留空 = 自动用「表前缀」+d_" autocomplete="off"></label>
 <div class="db-controls">
 <button type="button" id="db-test">① 测试连接</button>
 <button type="button" id="db-migrate" class="secondary">② 迁移数据</button>
 <button type="button" id="db-daemon" class="secondary">③ 配置 daemon</button>
 <button type="button" id="db-enable" class="secondary">④ 启用并重启</button>
+<button type="button" id="db-ddl" class="secondary">⑤ 生成建表 SQL（手动建库）</button>
 </div>
 <div id="db-result" class="db-result"></div>
+<div id="db-ddl-out" style="display:none;margin-top:.6rem"><div class="db-controls" style="align-items:center"><button type="button" id="db-ddl-copy" class="secondary">📋 复制 SQL</button><span id="db-ddl-meta" style="font-size:12px;color:var(--text-muted)"></span></div><textarea id="db-ddl-text" readonly style="width:100%;min-height:240px;padding:.5rem;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:11px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" wrap="off"></textarea></div>
 ${isMysql ? `<hr style="border:0;border-top:1px solid var(--border);margin:1rem 0"><div class="db-controls"><button type="button" id="db-revert" class="secondary">⚠ 切回 SQLite（安全网）</button></div><div id="db-revert-result" class="db-result"></div>` : ""}
 <script src="/static/db-wizard.js"></script>
 </section>`;
