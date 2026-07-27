@@ -1,3 +1,5 @@
+import type { GroupConfig } from "./strategy.ts";
+
 export interface DaemonInfo {
   id: number;
   displayName: string;
@@ -20,6 +22,7 @@ export interface RouteDecision {
   daemon: DaemonInfo | null;
   reason: string;
   candidates: DaemonInfo[];
+  groupConfig?: GroupConfig;
 }
 
 export interface ReplyPayload {
