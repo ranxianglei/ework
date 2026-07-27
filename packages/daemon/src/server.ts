@@ -55,7 +55,7 @@ export function createServer(
       return json({
         env: cfg.env,
         daemon: { host: cfg.daemon.host, port: cfg.daemon.port },
-        db: cfg.db.path,
+        db: cfg.db.driver === "mysql" ? `${cfg.db.host}:${cfg.db.port}/${cfg.db.name}` : cfg.db.path,
         driver: cfg.db.driver,
         running: status.runningCount,
         pending: status.pendingCount,
