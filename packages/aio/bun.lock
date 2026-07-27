@@ -6,7 +6,7 @@
       "name": "ework-aio",
       "dependencies": {
         "ework-daemon": "^0.4.1",
-        "ework-router": "^0.1.3",
+        "ework-router": "^0.1.4",
         "ework-web": "^0.10.1",
         "opencode-ework": "^0.1.0",
         "zod": "^3.23.0",
@@ -96,7 +96,7 @@
 
     "ework-daemon": ["ework-daemon@0.4.3", "", { "dependencies": { "mysql2": "^3.23.1", "zod": "^4.4.3" }, "peerDependencies": { "typescript": "^5" }, "bin": { "ework-daemon": "src/cli.ts", "ework-daemon-server": "bin/ework-daemon-server.js" } }, "sha512-f5vKJjv4wmNfVmCcr5CSeuJOfFvQiYQavMzvgocDMult6N2DkcwxtcV6X3fRB0B8+H/naa1fU5BNo96qO7WaoQ=="],
 
-    "ework-router": ["ework-router@0.1.3", "", { "dependencies": { "mysql2": "^3.11.0", "zod": "^4.4.3" }, "bin": { "ework-router": "bin/ework-router.js" } }, "sha512-kUU4RZ4JthlVk/2KMx6h5sTWvLIlV7Iap434+gLdn95W4IHfk6RVzpyUq1CU3lO5ZhMF/AH4LrlvnuLmj1odIQ=="],
+    "ework-router": ["ework-router@0.1.4", "", { "dependencies": { "mysql2": "^3.11.0", "zod": "^4.4.3" }, "bin": { "ework-router": "bin/ework-router.js" } }, "sha512-rT2L8y8iSudddrrmtOSqQ/jNyd0bXbXLtT1YBdZxnYPAjsEHTF6B+ZcwmcAy3bzVf51zGEvDsTIR7V/xSl7hAQ=="],
 
     "ework-web": ["ework-web@0.10.10", "", { "dependencies": { "@types/dompurify": "^3.2.0", "dompurify": "^3.4.11", "highlight.js": "^11.10.0", "jsdom": "^29.1.1", "marked": "^15.0.0", "marked-highlight": "^2.2.0", "mysql2": "^3.23.1", "zod": "^3.23.8" }, "bin": { "ework-web": "bin/ework-web.js" } }, "sha512-Rk3tx3RtljWpt2xnRjP9zHQgn5nIsfHe1bvg5i6hnx+Vg2L4biWzxIpdowXILbLGExgpDT8Ss8HRSW8+EAxc1Q=="],
 
