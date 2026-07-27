@@ -21,6 +21,19 @@ jobs:
       - name: Install deps
         run: bun install --frozen-lockfile
 
+      # install.test.ts runs the real install flow → preflight requires
+      # opencode on PATH. The runner has none.
+      - name: Install opencode
+        run: |
+          set -euo pipefail
+          curl -fsSL https://github.com/sst/opencode/releases/latest/download/opencode-linux-x64.tar.gz -o /tmp/opencode.tgz
+          mkdir -p /tmp/opencode-extract
+          tar xzf /tmp/opencode.tgz -C /tmp/opencode-extract
+          BIN="$(find /tmp/opencode-extract -name opencode -type f | head -1)"
+          [[ -n "$BIN" ]] || { echo "opencode binary not found in tarball"; ls -R /tmp/opencode-extract; exit 1; }
+          sudo install "$BIN" /usr/local/bin/opencode
+          opencode --version
+
       - name: TypeScript type-check
         run: bun run check
 
