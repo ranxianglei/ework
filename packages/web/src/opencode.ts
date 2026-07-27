@@ -192,6 +192,30 @@ export class OpencodeClient {
     return stdout;
   }
 
+  async listModels(): Promise<string[]> {
+    try {
+      const { stdout, code } = await this.run(["models"]);
+      if (code !== 0) return [];
+      const seen = new Set<string>();
+      const out: string[] = [];
+      for (const raw of stdout.split(/\r?\n/)) {
+        const line = raw.trim();
+        // Provider/model shape: non-empty segments on both sides of '/',
+        // alphanumeric + ._-. only. Rejects banner lines like "[omo-stable] ..."
+        // (which start with '['), "Exporting session:" (no slash), empty lines.
+        const m = line.match(/^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/);
+        if (!m) continue;
+        if (seen.has(line)) continue;
+        seen.add(line);
+        out.push(line);
+      }
+      out.sort();
+      return out;
+    } catch {
+      return [];
+    }
+  }
+
   // Direct read-only DB pass producing the same SessionExport shape as the CLI,
   // so the rest of the renderer is unchanged. message.data carries role/agent/
   // time/tokens; part.data carries {type,text/tool/state}. User messages store
