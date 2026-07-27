@@ -20,6 +20,6 @@
     "forceConsistentCasingInFileNames": true,
     "verbatimModuleSyntax": false
   },
-  "include": ["src/**/*", "test/**/*", "bin/ework-aio"],
-  "exclude": ["node_modules", "scripts/**"]
+  "include": ["src/**/*", "bin/ework-aio"],
+  "exclude": ["node_modules", "scripts/**", "test/**"]
 }
