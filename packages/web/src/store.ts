@@ -79,6 +79,17 @@ export interface LabelRow {
   project_id: number;
   name: string;
   color: string;
+  description: string;
+  exclusive: number;
+  is_archived: number;
+}
+
+/** For an exclusive label named "scope/name", the scope is "scope". A label
+ *  with no "/" has no scope and is never exclusive. Issues may carry at most
+ *  one label per scope (Gitea semantics). */
+export function labelScope(name: string): string {
+  const i = name.indexOf("/");
+  return i > 0 ? name.slice(0, i) : "";
 }
 
 export interface AttachmentRow {
@@ -595,8 +606,12 @@ export async function removeReaction(commentId: number, userLogin: string, conte
   );
 }
 
-export async function listLabels(projectId: number): Promise<LabelRow[]> {
-  return await getDB().all<LabelRow>("SELECT * FROM {{labels}} WHERE project_id = ? ORDER BY name", [projectId]);
+const LABEL_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
+const LABEL_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9 _\-./]{0,62}$/;
+
+export async function listLabels(projectId: number, includeArchived = false): Promise<LabelRow[]> {
+  const where = includeArchived ? "project_id = ?" : "project_id = ? AND is_archived = 0";
+  return await getDB().all<LabelRow>(`SELECT * FROM {{labels}} WHERE ${where} ORDER BY name`, [projectId]);
 }
 
 export async function listLabelsForIssue(issueId: number): Promise<LabelRow[]> {
@@ -608,19 +623,98 @@ export async function listLabelsForIssue(issueId: number): Promise<LabelRow[]> {
   );
 }
 
-export async function createLabel(projectId: number, name: string, color: string): Promise<LabelRow> {
-  name = name.trim();
+export async function getLabel(projectId: number, id: number): Promise<LabelRow | null> {
+  return (await getDB().get<LabelRow>("SELECT * FROM {{labels}} WHERE project_id = ? AND id = ?", [projectId, id])) ?? null;
+}
+
+interface LabelInput {
+  name: string;
+  color: string;
+  description?: string;
+  exclusive?: boolean;
+}
+
+function validateLabel(t: LabelInput): { name: string; color: string; description: string; exclusive: number } {
+  const name = t.name.trim();
   if (!name) throw new StoreError(400, "标签名不能为空");
-  if (!/^#[0-9a-fA-F]{6}$/.test(color)) throw new StoreError(400, "颜色须为 #RRGGBB");
-  const info = await getDB().run("INSERT INTO {{labels}} (project_id, name, color) VALUES (?, ?, ?)", [projectId, name, color]);
+  if (!LABEL_NAME_RE.test(name)) throw new StoreError(400, "标签名仅允许字母数字、空格、_ - . /，且不能以 / 开头");
+  if (!LABEL_COLOR_RE.test(t.color)) throw new StoreError(400, "颜色须为 #RRGGBB");
+  return { name, color: t.color, description: (t.description ?? "").trim(), exclusive: t.exclusive ? 1 : 0 };
+}
+
+export async function createLabel(projectId: number, input: LabelInput): Promise<LabelRow> {
+  const v = validateLabel(input);
+  const info = await getDB().run(
+    "INSERT INTO {{labels}} (project_id, name, color, description, exclusive) VALUES (?, ?, ?, ?, ?)",
+    [projectId, v.name, v.color, v.description, v.exclusive]
+  );
   return (await getDB().get<LabelRow>("SELECT * FROM {{labels}} WHERE id = ?", [info.insertId]))!;
 }
 
+export async function updateLabel(projectId: number, id: number, input: Partial<LabelInput>): Promise<LabelRow> {
+  const existing = await getLabel(projectId, id);
+  if (!existing) throw new StoreError(404, "标签不存在");
+  const merged: LabelInput = {
+    name: input.name ?? existing.name,
+    color: input.color ?? existing.color,
+    description: input.description ?? existing.description,
+    exclusive: input.exclusive ?? (existing.exclusive === 1),
+  };
+  const v = validateLabel(merged);
+  await getDB().run(
+    "UPDATE {{labels}} SET name = ?, color = ?, description = ?, exclusive = ? WHERE project_id = ? AND id = ?",
+    [v.name, v.color, v.description, v.exclusive, projectId, id]
+  );
+  return (await getDB().get<LabelRow>("SELECT * FROM {{labels}} WHERE id = ?", [id]))!;
+}
+
+export async function archiveLabel(projectId: number, id: number, archived: boolean): Promise<LabelRow> {
+  const existing = await getLabel(projectId, id);
+  if (!existing) throw new StoreError(404, "标签不存在");
+  await getDB().run("UPDATE {{labels}} SET is_archived = ? WHERE project_id = ? AND id = ?", [archived ? 1 : 0, projectId, id]);
+  return (await getDB().get<LabelRow>("SELECT * FROM {{labels}} WHERE id = ?", [id]))!;
+}
+
+export async function deleteLabel(projectId: number, id: number): Promise<void> {
+  await getDB().run("DELETE FROM {{labels}} WHERE project_id = ? AND id = ?", [projectId, id]);
+}
+
+/** Attach (`on=true`) or detach a label. When attaching an exclusive label
+ *  (scope/name with exclusive=1), any other already-attached label sharing the
+ *  same scope is removed first, so an issue holds at most one label per scope. */
 export async function setIssueLabel(issueId: number, labelId: number, on: boolean): Promise<void> {
-  if (on) {
-    await getDB().run("INSERT OR IGNORE INTO {{issue_labels}} (issue_id, label_id) VALUES (?, ?)", [issueId, labelId]);
-  } else {
+  if (!on) {
     await getDB().run("DELETE FROM {{issue_labels}} WHERE issue_id = ? AND label_id = ?", [issueId, labelId]);
+    return;
+  }
+  const label = await getDB().get<LabelRow>("SELECT * FROM {{labels}} WHERE id = ?", [labelId]);
+  if (!label) throw new StoreError(404, "标签不存在");
+  if (label.exclusive === 1) {
+    const scope = labelScope(label.name);
+    if (scope) {
+      const current = await listLabelsForIssue(issueId);
+      const siblings = current.filter((l) => l.exclusive === 1 && labelScope(l.name) === scope && l.id !== labelId);
+      for (const s of siblings) {
+        await getDB().run("DELETE FROM {{issue_labels}} WHERE issue_id = ? AND label_id = ?", [issueId, s.id]);
+      }
+    }
+  }
+  const dialect = getDB().dialect;
+  const insert = dialect === "sqlite"
+    ? "INSERT OR IGNORE INTO {{issue_labels}} (issue_id, label_id) VALUES (?, ?)"
+    : "INSERT IGNORE INTO {{issue_labels}} (issue_id, label_id) VALUES (?, ?)";
+  await getDB().run(insert, [issueId, labelId]);
+}
+
+export async function setIssueLabels(issueId: number, labelIds: number[]): Promise<void> {
+  const dialect = getDB().dialect;
+  await getDB().run("DELETE FROM {{issue_labels}} WHERE issue_id = ?", [issueId]);
+  const ids = Array.from(new Set(labelIds));
+  const insert = dialect === "sqlite"
+    ? "INSERT OR IGNORE INTO {{issue_labels}} (issue_id, label_id) VALUES (?, ?)"
+    : "INSERT IGNORE INTO {{issue_labels}} (issue_id, label_id) VALUES (?, ?)";
+  for (const id of ids) {
+    await getDB().run(insert, [issueId, id]);
   }
 }
 

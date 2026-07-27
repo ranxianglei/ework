@@ -26,7 +26,7 @@ describe.skipIf(!PREFIX)("storage under WORK_DB_PREFIX", () => {
     const c = await postComment(issue.id, "first!", "alice");
     await addReaction(c.id, "alice", "+1");
     await listReactionsFor([c.id]);
-    const lab = await createLabel(p.id, "bug", "#ff0000");
+    const lab = await createLabel(p.id, { name: "bug", color: "#ff0000" });
     await setIssueLabel(issue.id, lab.id, true);
     await listLabelsForIssue(issue.id);
     await createAttachment({
