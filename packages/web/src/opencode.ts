@@ -84,7 +84,16 @@ export class OpencodeClient {
   private readonly bin: string;
   private readonly dbPath: string;
   private readonly timeoutMs: number;
-  private readonly maxBytes = 50 * 1024 * 1024;
+  private readonly maxBytes = 100 * 1024 * 1024;
+  // exportSession is called on every page view, poll (/since), and load-more
+  // (/batch). For huge sessions (7000+ msgs → 50MB+ JSON) re-running the
+  // opencode export subprocess per request hammers the server. Cache the parsed
+  // result briefly so repeated requests within a viewing session reuse it.
+  // Staleness: a poll misses within CACHE_TTL_MS, so new messages appear with
+  // at most that delay — acceptable for a session viewer (not real-time-critical).
+  private readonly exportCache = new Map<string, { data: SessionExport; expires: number }>();
+  private static readonly CACHE_TTL_MS = 30_000;
+  private static readonly CACHE_MAX = 2;
 
   constructor(cfg: Config) {
     this.bin = cfg.opencodeBin;
@@ -142,9 +151,21 @@ export class OpencodeClient {
     if (!/^[A-Za-z0-9_-]+$/.test(id)) {
       throw new OpencodeError(`bad session id: ${id}`, 400);
     }
+    const now = Date.now();
+    const hit = this.exportCache.get(id);
+    if (hit && hit.expires > now) return hit.data;
     const raw = await this.runJSON(["export", id]);
     const exp = parseSessionExport(raw);
     if (!exp) throw new OpencodeError(`malformed export for ${id}`, 502);
+    if (this.exportCache.size >= OpencodeClient.CACHE_MAX) {
+      let oldestKey: string | null = null;
+      let oldestExp = Infinity;
+      for (const [k, v] of this.exportCache) {
+        if (v.expires < oldestExp) { oldestExp = v.expires; oldestKey = k; }
+      }
+      if (oldestKey) this.exportCache.delete(oldestKey);
+    }
+    this.exportCache.set(id, { data: exp, expires: now + OpencodeClient.CACHE_TTL_MS });
     return exp;
   }
 
