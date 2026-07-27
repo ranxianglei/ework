@@ -33,7 +33,7 @@ function parseWebhookEvent(body: unknown): RouteContext {
   };
 }
 
-async function forwardToDaemon(
+export async function forwardToDaemon(
   endpoint: string,
   payload: unknown,
   timeoutMs: number,
