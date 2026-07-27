@@ -1,6 +1,6 @@
 {
   "name": "ework-router",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Standalone webhook router for ework — receives events, routes to daemons by strategy, proxies replies",
   "type": "module",
   "bin": {
