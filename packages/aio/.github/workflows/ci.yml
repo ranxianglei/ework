@@ -41,7 +41,7 @@ jobs:
         run: bun test
 
       - name: Verify CLI entry
-        run: bun run bin/ework-aio.js --help
+        run: bun run bin/ework-aio --help
 
   e2e:
     name: Docker E2E (install + lifecycle + migration)

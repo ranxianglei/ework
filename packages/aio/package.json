@@ -38,7 +38,7 @@
     "access": "public"
   },
   "scripts": {
-    "start": "bun bin/ework-aio.js",
+    "start": "bun bin/ework-aio",
     "check": "tsc --noEmit",
     "test": "bun test",
     "test:e2e": "bash scripts/e2e-install.sh",
