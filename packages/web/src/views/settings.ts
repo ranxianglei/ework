@@ -20,14 +20,15 @@ function fieldInput(group: SettingGroup, cfg: Config, models: CachedModel[]): st
         // If the cache is empty (opencode not yet polled), fall back to a free
         // text input so the user can still type a known provider/model id.
         if (models.length === 0) {
-          return `<label class="sf"><span>${escapeHtml(f.label)}</span><input type="text" name="${escapeAttr(String(f.key))}" value="${escapeAttr(cur)}" placeholder="provider/model（点下面的刷新拉列表）"></label>`;
+          return `<label class="sf"><span>${escapeHtml(f.label)}</span><input type="text" name="${escapeAttr(String(f.key))}" value="${escapeAttr(cur)}" placeholder="provider/model（点下方刷新拉列表）"></label>`;
         }
-        const opts = [`<option value=""${cur === "" ? " selected" : ""}>（用 opencode 默认）</option>`]
-          .concat(
-            models.map(
-              (m) =>
-                `<option value="${escapeAttr(m.id)}"${m.id === cur ? " selected" : ""}>${escapeHtml(m.label)}</option>`
-            )
+        // No empty "use opencode default" option: empty default lets env
+        // vars pollute the model slot (see M-1 in index.ts refresh handler).
+        // If cur is empty, the browser auto-selects the first option.
+        const opts = models
+          .map(
+            (m) =>
+              `<option value="${escapeAttr(m.id)}"${m.id === cur ? " selected" : ""}>${escapeHtml(m.label)}</option>`
           )
           .join("");
         return `<label class="sf"><span>${escapeHtml(f.label)}</span><select name="${escapeAttr(String(f.key))}">${opts}</select></label>`;
@@ -104,7 +105,7 @@ export function buildSettingsPage(cfg: Config, saved: boolean, viewer: UserRow, 
   const ttsLink = viewer.is_admin === 1
     ? `<p class="hint">要增删朗读后端（kokoro / cosyvoice3 等），去 <a href="/admin/tts-backends">朗读后端管理</a>。</p>`
     : "";
-  const modelRefreshForm = `<form method="POST" action="/settings/models/refresh" style="margin-top:.4rem"><button type="submit" class="secondary">🔄 刷新 opencode 模型列表</button></form>`;
+  const modelRefreshForm = `<section class="sg"><h2>opencode 模型列表</h2><p class="hint" style="margin:0 0 .6rem">从 <code>opencode models</code> 拉取可用模型并刷新上方下拉列表。刷新后自动选定一个具体模型作为默认（不会留空）。</p><form method="POST" action="/settings/models/refresh"><button type="submit" class="secondary">🔄 刷新 opencode 模型列表</button></form></section>`;
   const html = `<!doctype html>
 <html lang="zh"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -164,9 +165,9 @@ button.secondary{background:transparent;color:var(--text-muted);border:1px solid
 <p class="hint">改完保存立即生效，无需重启。密钥/启动项（token、端口等）仍在 <code>.env</code>，不在此处。</p>
 ${banner}
 <form method="POST" action="/settings">${groups}
-${modelRefreshForm}
 <div class="bar"><button type="submit">保存</button><a class="a-back" href="/">返回</a></div>
 </form>
+${modelRefreshForm}
 ${ttsLink}
 ${buildDbSection(viewer)}
 ${buildDaemonSection(viewer)}
