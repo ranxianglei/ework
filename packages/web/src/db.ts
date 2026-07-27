@@ -127,6 +127,20 @@ function migrateIssuesTable(db: Database): void {
   }
 }
 
+function migrateLabelsTable(db: Database): void {
+  const have = tableColumns(db, "labels");
+  if (have.size === 0) return;
+  if (!have.has("description")) {
+    db.exec(applyPrefix("ALTER TABLE {{labels}} ADD COLUMN description TEXT NOT NULL DEFAULT ''"));
+  }
+  if (!have.has("exclusive")) {
+    db.exec(applyPrefix("ALTER TABLE {{labels}} ADD COLUMN exclusive INTEGER NOT NULL DEFAULT 0"));
+  }
+  if (!have.has("is_archived")) {
+    db.exec(applyPrefix("ALTER TABLE {{labels}} ADD COLUMN is_archived INTEGER NOT NULL DEFAULT 0"));
+  }
+}
+
 // ---- SqliteDriver: wraps bun:sqlite behind AsyncDatabase ----
 class SqliteDriver implements AsyncDatabase {
   readonly dialect = "sqlite" as const;
@@ -145,10 +159,11 @@ class SqliteDriver implements AsyncDatabase {
       )
     );
     // Migration must run BEFORE schema.sql (same ordering as the original file).
-    migrateUsersTable(db);
-    migratePatTable(db);
-    migrateProjectsTable(db);
-    migrateIssuesTable(db);
+  migrateUsersTable(db);
+  migratePatTable(db);
+  migrateProjectsTable(db);
+  migrateIssuesTable(db);
+  migrateLabelsTable(db);
     db.exec(applyPrefix(readFileSync(join(import.meta.dir, "schema.sql"), "utf8")));
     return new SqliteDriver(db);
   }

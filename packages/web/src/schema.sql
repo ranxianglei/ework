@@ -78,10 +78,13 @@ CREATE INDEX IF NOT EXISTS comments_issue_created
   ON {{comments}} (issue_id, created_at);
 
 CREATE TABLE IF NOT EXISTS {{labels}} (
-  id         INTEGER PRIMARY KEY AUTOINCREMENT,
-  project_id INTEGER NOT NULL REFERENCES {{projects}}(id) ON DELETE CASCADE,
-  name       TEXT NOT NULL,
-  color      TEXT NOT NULL DEFAULT '#888888',
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id  INTEGER NOT NULL REFERENCES {{projects}}(id) ON DELETE CASCADE,
+  name        TEXT NOT NULL,
+  color       TEXT NOT NULL DEFAULT '#888888',
+  description TEXT NOT NULL DEFAULT '',
+  exclusive   INTEGER NOT NULL DEFAULT 0,
+  is_archived INTEGER NOT NULL DEFAULT 0,
   UNIQUE (project_id, name)
 );
 
