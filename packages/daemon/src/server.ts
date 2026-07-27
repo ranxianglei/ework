@@ -1,12 +1,24 @@
 import type { Config } from "./config";
 import type { Store } from "./op";
 import type { Engine } from "./opencode";
+import type { GroupConfig } from "./opencode";
 import type { IssueTracker, TrackerEvent } from "./trackers/types";
 import { OpencodeReader, OpencodeReaderError } from "./opencode-reader";
 import { listDir, readFile, readFileSince, FileApiError } from "./file-api";
 import { log, uptimeSeconds, version } from "./logger";
 
 type TrackerMap = Map<string, IssueTracker>;
+
+function parseGroupConfigHeader(raw: string | null): GroupConfig | undefined {
+  if (!raw) return undefined;
+  try {
+    const decoded = Buffer.from(raw, "base64").toString("utf8");
+    const parsed = JSON.parse(decoded);
+    if (typeof parsed === "object" && parsed !== null) return parsed as GroupConfig;
+  } catch {
+  }
+  return undefined;
+}
 
 function json(data: unknown, status = 200) {
   return new Response(JSON.stringify(data, null, 2), {
@@ -41,7 +53,9 @@ export function createServer(
       `webhook: type=${event.type} ref=${event.ref.trackerType}:${event.ref.scope.owner ?? ""}/${event.ref.scope.repo ?? ""}#${event.ref.issueId}`
     );
 
-    engine.handleEvent(event).catch((err) => {
+    const groupConfig = parseGroupConfigHeader(req.headers.get("x-ework-group-config"));
+
+    engine.handleEvent(event, groupConfig).catch((err) => {
       log.error("webhook: handler error:", err);
     });
 

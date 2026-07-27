@@ -27,6 +27,13 @@ export interface TakeoverStrategy {
   resumeOpenCodeSession(session: OpSession): Promise<string | null>;
 }
 
+export interface GroupConfig {
+  workdirTemplate?: string;
+  initScript?: string;
+  destroyScript?: string;
+  envInitScript?: string;
+}
+
 /**
  * Default TakeoverStrategy: deterministic per-issue workdir under
  * `<baseWorkdir>/<owner>--<repo>/<issueId>/<sessionName>`, with a best-effort
@@ -158,6 +165,8 @@ export class Engine {
   private observedIssues = new Set<string>();
   private observerTimer?: ReturnType<typeof setInterval>;
 
+  private groupConfigs = new Map<string, GroupConfig>();
+
   private static MAX_INLINE_SIZE = 4000;
   private static MAX_NUDGE_ROUNDS = 1;
   private static MAX_STUCK_NUDGE_ROUNDS = 1;
@@ -234,6 +243,12 @@ export class Engine {
   }
 
   private async resolveWorkdir(session: OpSession, issue: Issue): Promise<string> {
+    const gc = this.groupConfigFor(issue);
+    if (gc?.workdirTemplate && !session.workdir) {
+      const dir = this.resolveTemplatedWorkdir(gc.workdirTemplate, issue, session);
+      mkdirSync(dir, { recursive: true });
+      return dir;
+    }
     return this.takeover.acquireWorkdir(session, issue);
   }
 
@@ -314,10 +329,14 @@ export class Engine {
 
   // ─── Event Dispatch ───
 
-  async handleEvent(event: TrackerEvent) {
+  async handleEvent(event: TrackerEvent, groupConfig?: GroupConfig) {
     const { ref, issue: issueData } = event;
     const tracker = this.getTracker(ref.trackerType);
     const scopeKey = tracker.formatScopeKey(ref.scope);
+
+    if (groupConfig) {
+      this.groupConfigs.set(`${ref.trackerType}:${scopeKey}#${ref.issueId}`, groupConfig);
+    }
 
     switch (event.type) {
       case "issue_opened":
@@ -326,6 +345,44 @@ export class Engine {
         return this.handleCommented(ref, scopeKey, issueData, event.comment!, tracker, event.model);
       case "issue_closed":
         return this.handleClosed(ref, scopeKey, tracker);
+    }
+  }
+
+  private groupConfigFor(issue: Issue): GroupConfig | undefined {
+    return this.groupConfigs.get(`${issue.trackerType}:${issue.trackerScopeKey}#${issue.trackerIssueId}`);
+  }
+
+  private resolveTemplatedWorkdir(template: string, issue: Issue, session: OpSession): string {
+    const parts = issue.trackerScopeKey.split("/");
+    const owner = issue.trackerScope["owner"] ?? parts[0] ?? "default";
+    const repo = issue.trackerScope["repo"] ?? parts[parts.length - 1] ?? "default";
+    const dir = template
+      .replace(/\{owner\}/g, String(owner))
+      .replace(/\{repo\}/g, String(repo))
+      .replace(/\{issue\}/g, String(issue.trackerIssueId))
+      .replace(/\{session\}/g, session.name);
+    return dir.startsWith("~") ? join(homedir(), dir.slice(1)) : dir;
+  }
+
+  private async runHookScript(script: string | undefined, workdir: string, label: string): Promise<void> {
+    if (!script || !script.trim()) return;
+    try {
+      mkdirSync(workdir, { recursive: true });
+      const result = Bun.spawnSync({
+        cmd: ["bash", "-c", script],
+        cwd: workdir,
+        stdout: "pipe",
+        stderr: "pipe",
+        env: process.env,
+      });
+      const stderr = result.stderr?.toString() ?? "";
+      if (result.exitCode !== 0) {
+        log.warn(`engine: ${label} exited ${result.exitCode}: ${stderr.slice(0, 500)}`);
+      } else if (stderr) {
+        log.info(`engine: ${label} stderr: ${stderr.slice(0, 300)}`);
+      }
+    } catch (e) {
+      log.warn(`engine: ${label} failed: ${(e as Error).message}`);
     }
   }
 
@@ -541,6 +598,15 @@ export class Engine {
       await this.store.updateSession(session.id, { state: "idle", opencodePid: undefined });
     }
 
+    const gc = this.groupConfigFor(issue);
+    if (gc?.destroyScript) {
+      for (const session of sessions) {
+        const workdir = await this.resolveWorkdir(session, issue);
+        await this.runHookScript(gc.destroyScript, workdir, `destroyScript for ${scopeKey}#${ref.issueId}`);
+      }
+    }
+    this.groupConfigs.delete(`${ref.trackerType}:${scopeKey}#${ref.issueId}`);
+
     log.info(`engine: issue closed, ${sessions.length} sessions paused for ${scopeKey}#${ref.issueId}`);
   }
 
@@ -634,6 +700,11 @@ export class Engine {
     this.generation.set(k, gen);
 
     const workdir = await this.resolveWorkdir(session, issue);
+
+    const gc = this.groupConfigFor(issue);
+    if (gc?.initScript) {
+      await this.runHookScript(gc.initScript, workdir, `initScript for ${k}`);
+    }
 
     const ref = this.sessionToRef(session, issue);
     const tracker = this.getTracker(issue.trackerType);
