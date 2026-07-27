@@ -1004,6 +1004,41 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     });
   }
 
+  if (url.pathname === "/api/router/daemons" && req.method === "GET") {
+    if (!ctx.user || ctx.user.is_admin !== 1) return json({ error: "admin required" }, 403);
+    try {
+      const routerUrl = cfg.daemonWebhookUrl.replace(/\/$/, "");
+      const res = await fetch(`${routerUrl}/api/daemons`, { signal: AbortSignal.timeout(5000) });
+      const data = await res.json();
+      return json(data);
+    } catch (e) {
+      return json({ daemons: [], error: errMsg(e) });
+    }
+  }
+
+  if (url.pathname === "/api/router/strategy") {
+    if (!ctx.user || ctx.user.is_admin !== 1) return json({ error: "admin required" }, 403);
+    const routerUrl = cfg.daemonWebhookUrl.replace(/\/$/, "");
+    try {
+      if (req.method === "GET") {
+        const res = await fetch(`${routerUrl}/api/strategy`, { signal: AbortSignal.timeout(5000) });
+        return json(await res.json());
+      }
+      if (req.method === "POST") {
+        const body = await req.text();
+        const res = await fetch(`${routerUrl}/api/strategy`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body,
+          signal: AbortSignal.timeout(5000),
+        });
+        return json(await res.json(), res.ok ? 200 : 400);
+      }
+    } catch (e) {
+      return json({ error: errMsg(e) }, 502);
+    }
+  }
+
   if (url.pathname === "/settings") {
     if (req.method === "GET") {
       return html(buildSettingsPage(cfg, url.searchParams.get("saved") === "1", ctx.user!, await listCachedModels()).html);

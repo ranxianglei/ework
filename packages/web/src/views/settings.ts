@@ -170,6 +170,44 @@ ${modelRefreshForm}
 ${ttsLink}
 ${buildDbSection(viewer)}
 ${buildDaemonSection(viewer)}
+${viewer.is_admin === 1 ? buildGroupsSection() : ""}
 </main></body></html>`;
   return { html };
+}
+
+function buildGroupsSection(): string {
+  return `
+<section class="sg" id="groups-section">
+  <h2>Daemon 分组与路由策略</h2>
+  <p class="hint">配置 daemon 分组和 webhook 派发策略。Router 自动摘除心跳超时的节点（120s）。</p>
+  <div class="sf">
+    <span>路由策略</span>
+    <select id="strategy-select">
+      <option value="least-loaded">least-loaded（负载最低优先）</option>
+      <option value="round-robin">round-robin（轮询）</option>
+      <option value="first-available">first-available（按 ID 顺序）</option>
+      <option value="group">group（按分组路由）</option>
+    </select>
+  </div>
+  <div id="daemon-groups-editor" style="margin-top:.7rem">
+    <table class="daemon-list" id="groups-table">
+      <thead><tr><th>ID</th><th>节点</th><th>状态</th><th>分组</th></tr></thead>
+      <tbody id="groups-tbody"></tbody>
+    </table>
+  </div>
+  <div id="bindings-editor" style="margin-top:.7rem">
+    <h2 style="margin-bottom:.5rem">Repo → 分组绑定</h2>
+    <div id="bindings-list"></div>
+    <div class="db-controls">
+      <input type="text" id="binding-repo" placeholder="owner/repo" style="padding:.35rem .5rem;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:13px;flex:1">
+      <input type="text" id="binding-group" placeholder="group-name" style="padding:.35rem .5rem;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:13px;flex:1">
+      <button type="button" id="binding-add" class="secondary">添加绑定</button>
+    </div>
+  </div>
+  <div class="db-controls" style="margin-top:.7rem">
+    <button type="button" id="strategy-save">保存策略</button>
+  </div>
+  <div class="db-result" id="strategy-result"></div>
+</section>
+<script src="/static/daemon-groups.js"></script>`;
 }
