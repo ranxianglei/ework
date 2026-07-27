@@ -84,7 +84,16 @@ export class OpencodeClient {
   private readonly bin: string;
   private readonly dbPath: string;
   private readonly timeoutMs: number;
-  private readonly maxBytes = 50 * 1024 * 1024;
+  private readonly maxBytes = 100 * 1024 * 1024;
+  // exportSession is called on every page view, poll (/since), and load-more
+  // (/batch). For huge sessions (7000+ msgs → 50MB+ JSON) re-running the
+  // opencode export subprocess per request hammers the server. Cache the parsed
+  // result briefly so repeated requests within a viewing session reuse it.
+  // Staleness: a poll misses within CACHE_TTL_MS, so new messages appear with
+  // at most that delay — acceptable for a session viewer (not real-time-critical).
+  private readonly exportCache = new Map<string, { data: SessionExport; expires: number }>();
+  private static readonly CACHE_TTL_MS = 30_000;
+  private static readonly CACHE_MAX = 2;
 
   constructor(cfg: Config) {
     this.bin = cfg.opencodeBin;
@@ -142,9 +151,33 @@ export class OpencodeClient {
     if (!/^[A-Za-z0-9_-]+$/.test(id)) {
       throw new OpencodeError(`bad session id: ${id}`, 400);
     }
-    const raw = await this.runJSON(["export", id]);
-    const exp = parseSessionExport(raw);
-    if (!exp) throw new OpencodeError(`malformed export for ${id}`, 502);
+    const now = Date.now();
+    const hit = this.exportCache.get(id);
+    if (hit && hit.expires > now) return hit.data;
+    // Prefer a direct read-only DB pass: no subprocess, no 50MB stdout cap, no
+    // per-poll re-export cost beyond the SQL + JSON.parse. Fall back to the
+    // `opencode export` CLI if the DB path rejects (e.g. schema drift after an
+    // opencode upgrade) so the viewer stays robust.
+    let exp: SessionExport | null = null;
+    try {
+      exp = this.exportSessionFromDB(id);
+    } catch (e) {
+      if (e instanceof OpencodeError && (e.status === 400 || e.status === 404)) throw e;
+    }
+    if (!exp) {
+      const raw = await this.runJSON(["export", id]);
+      exp = parseSessionExport(raw);
+      if (!exp) throw new OpencodeError(`malformed export for ${id}`, 502);
+    }
+    if (this.exportCache.size >= OpencodeClient.CACHE_MAX) {
+      let oldestKey: string | null = null;
+      let oldestExp = Infinity;
+      for (const [k, v] of this.exportCache) {
+        if (v.expires < oldestExp) { oldestExp = v.expires; oldestKey = k; }
+      }
+      if (oldestKey) this.exportCache.delete(oldestKey);
+    }
+    this.exportCache.set(id, { data: exp, expires: now + OpencodeClient.CACHE_TTL_MS });
     return exp;
   }
 
@@ -159,12 +192,6 @@ export class OpencodeClient {
     return stdout;
   }
 
-  // List available models from `opencode models`. Output is plain text — one
-  // `provider/model` per line — with plugin banners (e.g. "[opencode-ework]
-  // registered 5 tools: ...") on stderr. We strip any line that doesn't
-  // match the `provider/model` shape, dedupe, sort. Errors (binary missing,
-  // non-zero exit) return an empty array — the settings UI degrades to a
-  // free-text input.
   async listModels(): Promise<string[]> {
     try {
       const { stdout, code } = await this.run(["models"]);
@@ -186,6 +213,65 @@ export class OpencodeClient {
       return out;
     } catch {
       return [];
+    }
+  }
+
+  // Direct read-only DB pass producing the same SessionExport shape as the CLI,
+  // so the rest of the renderer is unchanged. message.data carries role/agent/
+  // time/tokens; part.data carries {type,text/tool/state}. User messages store
+  // the model as a bare `model` string, assistant messages as `modelID` — accept
+  // either. 404 (no such session) propagates so the caller can return a real
+  // not-found; other query errors bubble up to trigger the CLI fallback.
+  private exportSessionFromDB(id: string): SessionExport {
+    let db: Database;
+    try {
+      db = new Database(this.dbPath, { readonly: true });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      throw new OpencodeError(`cannot open opencode DB (${this.dbPath}): ${msg}`, 502);
+    }
+    try {
+      const srow = db
+        .prepare("SELECT id, title, directory, version, time_created, time_updated FROM session WHERE id = ?")
+        .get(id) as { id: string; title: string; directory: string; version: string; time_created: number; time_updated: number } | null;
+      if (!srow) throw new OpencodeError(`session not found: ${id}`, 404);
+      const info: SessionInfo = {
+        id: srow.id,
+        title: srow.title || "(untitled)",
+        directory: srow.directory ?? "",
+        version: srow.version ?? "",
+        time: { created: srow.time_created, updated: srow.time_updated },
+      };
+      const mrows = db
+        .prepare("SELECT id, data FROM message WHERE session_id = ? ORDER BY time_created, id")
+        .all(id) as Array<{ id: string; data: string }>;
+      const prows = db
+        .prepare("SELECT message_id, data FROM part WHERE session_id = ? ORDER BY message_id, id")
+        .all(id) as Array<{ message_id: string; data: string }>;
+      const partsByMsg = new Map<string, MessagePart[]>();
+      for (const p of prows) {
+        let pd: unknown;
+        try { pd = JSON.parse(p.data); } catch { continue; }
+        const part = parsePart(pd);
+        if (!part) continue;
+        const arr = partsByMsg.get(p.message_id);
+        if (arr) arr.push(part); else partsByMsg.set(p.message_id, [part]);
+      }
+      const messages: SessionMessage[] = [];
+      for (const m of mrows) {
+        let md: unknown;
+        try { md = JSON.parse(m.data); } catch { continue; }
+        const mi = parseMessageInfoDB(m.id, md);
+        if (!mi) continue;
+        messages.push({ info: mi, parts: partsByMsg.get(m.id) ?? [] });
+      }
+      return { info, messages };
+    } catch (e) {
+      if (e instanceof OpencodeError) throw e;
+      const msg = e instanceof Error ? e.message : String(e);
+      throw new OpencodeError(`session export query failed: ${msg}`, 502);
+    } finally {
+      db.close();
     }
   }
 
@@ -444,6 +530,26 @@ function parseSessionInfo(v: unknown): SessionInfo | null {
       created: typeof timeRaw.created === "number" ? timeRaw.created : undefined,
       updated: typeof timeRaw.updated === "number" ? timeRaw.updated : undefined,
     },
+  };
+}
+
+// DB-direct counterpart of parseMessageInfo: message.data stores the model as a
+// bare `model` string (user msgs) or `modelID` string (assistant msgs) — accept
+// either so both roles render their model label correctly.
+function parseMessageInfoDB(id: string, v: unknown): MessageInfo | null {
+  if (!v || typeof v !== "object") return null;
+  const o = v as Record<string, unknown>;
+  const role = typeof o.role === "string" ? o.role : "";
+  if (!role) return null;
+  const timeRaw = o.time && typeof o.time === "object" ? (o.time as Record<string, unknown>) : null;
+  const modelID = typeof o.modelID === "string" ? o.modelID : (typeof o.model === "string" ? o.model : undefined);
+  return {
+    role,
+    id,
+    agent: typeof o.agent === "string" ? o.agent : undefined,
+    modelID,
+    time: timeRaw && typeof timeRaw.created === "number" ? { created: timeRaw.created } : undefined,
+    tokens: parseTokens(o.tokens),
   };
 }
 
