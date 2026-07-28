@@ -97,8 +97,7 @@ ok "opencode config with fake provider"
 export XDG_CONFIG_HOME="$FAKE_XDG"
 unset OPENCODE OPENCODE_PID OPENCODE_RUN_ID OPENCODE_PROCESS_ROLE OPENCODE_MODEL COMPLETION_CHECK_MODEL COMPLETION_CHECK_BASE_URL OPENCODE_DISABLE_CHANNEL_DB 2>/dev/null || true
 OC_BIN="${OPENCODE_BINARY:-$(which opencode 2>/dev/null || echo /usr/local/bin/opencode)}"
-timeout 120 "$OC_BIN" session list </dev/null >/dev/null 2>&1 || true
-ok "opencode warmed up ($OC_BIN)"
+timeout 120 "$OC_BIN" session list </dev/null >/dev/null 2>&1 && ok "opencode warmed up ($OC_BIN)" || warn "opencode warmup may have failed"
 
 rm -rf "$DATA_DIR"
 mkdir -p "$DATA_DIR"
@@ -184,7 +183,7 @@ sqlite3 "$DATA_DIR/ework-web/ework.db" "
 INSERT OR IGNORE INTO webhooks (project_id, url, secret, events, active, created_at, updated_at)
 VALUES ($PROJECT_ID, 'http://127.0.0.1:$ROUTER_PORT/webhook/gitea', '$WEBHOOK_SECRET', '[\"issues\",\"issue_comment\"]', 1, '$NOW', '$NOW');
 " 2>/dev/null
-ok "project + webhook created via SQL"
+[[ -n "$PROJECT_ID" ]] && ok "project + webhook created (id=$PROJECT_ID)" || { fail "project creation via SQL failed"; exit 1; }
 
 ISSUE_RESP=$(curl --max-time 10 -s -X POST \
   -H "Authorization: token $BOT_TOKEN" \
@@ -214,9 +213,9 @@ create_issue() {
 ISSUE1=$(create_issue "route-1" "test")
 ISSUE2=$(create_issue "route-2" "test")
 ISSUE3=$(create_issue "route-3" "test")
-assert_gt "${#ISSUE1}" 0 0 "issue-1 (#$ISSUE1)"
-assert_gt "${#ISSUE2}" 0 0 "issue-2 (#$ISSUE2)"
-assert_gt "${#ISSUE3}" 0 0 "issue-3 (#$ISSUE3)"
+assert_gt "${#ISSUE1}" 0 "issue-1 (#$ISSUE1)"
+assert_gt "${#ISSUE2}" 0 "issue-2 (#$ISSUE2)"
+assert_gt "${#ISSUE3}" 0 "issue-3 (#$ISSUE3)"
 
 sleep 15
 
@@ -259,30 +258,38 @@ curl -sf -X PATCH -H "Authorization: token $BOT_TOKEN" \
   "http://127.0.0.1:$WEB_PORT/api/v1/repos/e2e/router-test/issues/$ISSUE1" >/dev/null 2>&1
 sleep 3
 ISSUE4=$(create_issue "route-4-after-close" "test")
-assert_gt "${#ISSUE4}" 0 0 "issue-4 (#$ISSUE4)"
+assert_gt "${#ISSUE4}" 0 "issue-4 (#$ISSUE4)"
 sleep 10
 FINAL_ROUTES=$(count_lines '"routing"' "$ROUTER_LOG")
 assert_gt "$FINAL_ROUTES" "$ROUTE_AFTER" "new route after issue-4"
 kill_test_opencode
 
-phase 5 "Failover (kill daemon-2)"
-D2_PID=$(cat "$DATA_DIR/run/daemon-2.pid" 2>/dev/null || echo "")
-if [[ -n "$D2_PID" ]] && kill -0 "$D2_PID" 2>/dev/null; then
+phase 5 "Failover (kill primary daemon-1)"
+D1_PID=$(cat "$DATA_DIR/run/daemon.pid" 2>/dev/null || echo "")
+if [[ -z "$D1_PID" ]] || ! kill -0 "$D1_PID" 2>/dev/null; then
+  fail "daemon-1 not running (pid missing) — failover cannot be tested"
+else
   LOG_MARK=$(wc -l < "$ROUTER_LOG" 2>/dev/null || echo 0)
-  kill "$D2_PID" 2>/dev/null || true
-  ok "daemon-2 killed (pid $D2_PID)"
+  kill -9 "$D1_PID" 2>/dev/null || true
+  fuser -k "${D1_PORT}/tcp" 2>/dev/null || true
+  sleep 1
+  ok "daemon-1 killed (pid $D1_PID, SIGKILL + fuser)"
+  sleep 1
+  if curl --max-time 2 -sf "http://127.0.0.1:$D1_PORT/healthz" >/dev/null 2>&1; then
+    fail "daemon-1 still responding on :$D1_PORT after kill"
+  else
+    ok "daemon-1 port :$D1_PORT closed"
+  fi
   warn "waiting 15s for heartbeat to expire (ROUTER_STALE_THRESHOLD_MS=10000)..."
   sleep 15
   ISSUE5=$(create_issue "route-5-failover" "test")
-  assert_gt "${#ISSUE5}" 0 0 "issue-5 (#$ISSUE5)"
+  assert_gt "${#ISSUE5}" 0 "issue-5 (#$ISSUE5)"
   sleep 10
   POST_KILL_ROUTES=$(tail -n +"$((LOG_MARK+1))" "$ROUTER_LOG" 2>/dev/null | count_lines '"routing"')
   assert_gt "$POST_KILL_ROUTES" 0 "≥1 route happened post-kill (anti-vacuous)"
-  POST_KILL_D2=$(tail -n +"$((LOG_MARK+1))" "$ROUTER_LOG" 2>/dev/null | count_lines '"routing".*'"$D2_PORT")
-  assert_eq "$POST_KILL_D2" 0 "no routes to dead daemon-2 (post-kill delta)"
+  POST_KILL_D1=$(tail -n +"$((LOG_MARK+1))" "$ROUTER_LOG" 2>/dev/null | count_lines '"routing".*'"$D1_PORT")
+  assert_eq "$POST_KILL_D1" 0 "no routes to dead daemon-1 (the preferred target)"
   kill_test_opencode
-else
-  warn "daemon-2 not running, skipping failover"
 fi
 
 phase 6 "Webhook delivery audit"
@@ -297,7 +304,7 @@ else
 fi
 
 phase 7 "Concurrent routing (3 parallel issues)"
-CONCURRENT_BEFORE=$(count_lines '"routing"' "$ROUTER_LOG")
+CONCURRENT_MARK=$(wc -l < "$ROUTER_LOG" 2>/dev/null || echo 0)
 CURL_PIDS=""
 for i in 1 2 3; do
   curl --max-time 10 -s -X POST \
@@ -310,11 +317,9 @@ done
 wait $CURL_PIDS 2>/dev/null || true
 sleep 10
 kill_test_opencode
-sleep 2
-CONCURRENT_AFTER=$(count_lines '"routing"' "$ROUTER_LOG")
-CONCURRENT_ROUTES=$((CONCURRENT_AFTER - CONCURRENT_BEFORE))
+CONCURRENT_ROUTES=$(tail -n +"$((CONCURRENT_MARK+1))" "$ROUTER_LOG" 2>/dev/null | count_lines '"routing"')
 assert_ge "$CONCURRENT_ROUTES" 3 "≥3 routes for 3 concurrent issues"
-CONCURRENT_FORWARDS=$(tail -n +"$((CONCURRENT_BEFORE+1))" "$ROUTER_LOG" 2>/dev/null | count_lines '"forward result".*"ok":true')
+CONCURRENT_FORWARDS=$(tail -n +"$((CONCURRENT_MARK+1))" "$ROUTER_LOG" 2>/dev/null | count_lines '"forward result".*"ok":true')
 assert_ge "$CONCURRENT_FORWARDS" 2 "≥2 successful forwards under concurrency"
 
 phase 8 "Strategy runtime switch"
@@ -337,6 +342,18 @@ kill_test_opencode
 STRAT_AFTER=$(count_lines '"routing"' "$ROUTER_LOG")
 STRAT_ROUTES=$((STRAT_AFTER - STRAT_BEFORE))
 assert_ge "$STRAT_ROUTES" 3 "≥3 routes after strategy switch"
+# Verify round-robin actually distributed (proves switch took effect, not just routes happened)
+RR_D1=$(tail -n +"$((STRAT_BEFORE+1))" "$ROUTER_LOG" 2>/dev/null | count_lines '"routing".*'"$D1_PORT")
+RR_D2=$(tail -n +"$((STRAT_BEFORE+1))" "$ROUTER_LOG" 2>/dev/null | count_lines '"routing".*'"$D2_PORT")
+RR_D3=$(tail -n +"$((STRAT_BEFORE+1))" "$ROUTER_LOG" 2>/dev/null | count_lines '"routing".*'"$D3_PORT")
+RR_UNIQUE=0
+[[ $RR_D1 -gt 0 ]] && RR_UNIQUE=$((RR_UNIQUE+1))
+[[ $RR_D2 -gt 0 ]] && RR_UNIQUE=$((RR_UNIQUE+1))
+[[ $RR_D3 -gt 0 ]] && RR_UNIQUE=$((RR_UNIQUE+1))
+echo "  round-robin distribution: d1=$RR_D1 d2=$RR_D2 d3=$RR_D3"
+assert_ge "$RR_UNIQUE" 2 "round-robin hit ≥2 daemons (proves switch took effect)"
+STRAT_NOW=$(curl --max-time 5 -sf "http://127.0.0.1:$ROUTER_PORT/api/strategy" 2>/dev/null | jq -r '.strategy // empty' 2>/dev/null || echo "?")
+assert_eq "$STRAT_NOW" "round-robin" "strategy config persisted (GET /api/strategy)"
 
 phase 9 "All-dead fallback (terminal)"
 ps aux | grep "ework-daemon-server" | grep -v grep | awk '{print $2}' | xargs -r kill 2>/dev/null || true
