@@ -63,8 +63,9 @@ export function resolveTemplatedWorkdir(
  *  hung scripts. Failures are logged and swallowed — never throws — so a broken
  *  init/destroy never blocks the opencode task flow. */
 const HOOK_SCRIPT_TIMEOUT_MS = 60_000;
-export async function runHookScript(script: string | undefined, workdir: string, label: string, env: Record<string, string> = {}): Promise<void> {
+export async function runHookScript(script: string | undefined, workdir: string, label: string, env: Record<string, string> = {}, timeoutMs?: number): Promise<void> {
   if (!script || !script.trim()) return;
+  const effectiveTimeout = timeoutMs ?? HOOK_SCRIPT_TIMEOUT_MS;
   try {
     mkdirSync(workdir, { recursive: true });
     const proc = Bun.spawn({
@@ -74,7 +75,7 @@ export async function runHookScript(script: string | undefined, workdir: string,
       stderr: "pipe",
       env: { ...process.env, ...env },
     });
-    const timer = setTimeout(() => { try { proc.kill("SIGKILL"); } catch { /* already dead */ } }, HOOK_SCRIPT_TIMEOUT_MS);
+    const timer = setTimeout(() => { try { proc.kill("SIGKILL"); } catch { /* already dead */ } }, effectiveTimeout);
     try {
       const exitCode = await proc.exited;
       const stderr = await new Response(proc.stderr).text().catch(() => "");

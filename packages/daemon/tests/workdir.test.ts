@@ -140,4 +140,28 @@ describe("runHookScript", () => {
   test("never throws on nonexistent shell command", async () => {
     await expect(runHookScript("this-cmd-does-not-exist-xyz", "/tmp", "init")).resolves.toBeUndefined();
   });
+
+  test("injects EWORK_* env vars into script environment", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ewenv2-"));
+    try {
+      await runHookScript(
+        'echo "$EWORK_OWNER/$EWORK_REPO/issue-$EWORK_ISSUE" > env.txt',
+        dir,
+        "init",
+        { EWORK_OWNER: "acme", EWORK_REPO: "widget", EWORK_ISSUE: "42", EWORK_SESSION: "s1", EWORK_WORKDIR: dir },
+      );
+      const content = readFileSync(join(dir, "env.txt"), "utf8").trim();
+      expect(content).toBe("acme/widget/issue-42");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("kills hung scripts within timeout bound", async () => {
+    const start = Date.now();
+    await runHookScript("sleep 30", "/tmp", "init", {}, 500);
+    const elapsed = Date.now() - start;
+    expect(elapsed).toBeLessThan(5000);
+    expect(elapsed).toBeGreaterThan(300);
+  });
 });

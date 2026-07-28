@@ -11,10 +11,17 @@ type TrackerMap = Map<string, IssueTracker>;
 
 export function parseGroupConfigHeader(raw: string | null): GroupConfig | undefined {
   if (!raw) return undefined;
+  if (raw.length > 16_384) return undefined;
   try {
     const decoded = Buffer.from(raw, "base64").toString("utf8");
     const parsed = JSON.parse(decoded);
-    if (typeof parsed === "object" && parsed !== null) return parsed as GroupConfig;
+    if (typeof parsed !== "object" || parsed === null) return undefined;
+    const gc = parsed as Record<string, unknown>;
+    if (gc.workdirTemplate !== undefined && typeof gc.workdirTemplate !== "string") return undefined;
+    if (gc.initScript !== undefined && typeof gc.initScript !== "string") return undefined;
+    if (gc.destroyScript !== undefined && typeof gc.destroyScript !== "string") return undefined;
+    if (gc.envInitScript !== undefined && typeof gc.envInitScript !== "string") return undefined;
+    return gc as GroupConfig;
   } catch {
   }
   return undefined;
