@@ -1,4 +1,5 @@
 import type { OpencodeClientInterface, SessionListItem, SessionExport, SessionMessage, MessagePart, ToolState } from "../opencode";
+import type { SessionDaemonInfo } from "../coordination";
 import { THEME_CSS, escapeHtml, escapeAttr, tabNavHTML } from "../render/layout";
 import { renderMarkdown, linkifySessionIDs, linkifyAbsPaths } from "../render/markdown";
 import { BUILD_ID } from "../build";
@@ -8,8 +9,19 @@ import { homedir } from "os";
 
 const LIST_LIMIT = 100;
 
-export async function buildSessionList(client: OpencodeClientInterface, q: string): Promise<{ html: string }> {
+export async function buildSessionList(
+  client: OpencodeClientInterface,
+  q: string,
+  daemonMap?: Map<string, SessionDaemonInfo>,
+): Promise<{ html: string }> {
   let sessions = await client.listSessions(LIST_LIMIT);
+  if (daemonMap) {
+    sessions = sessions.map((s) => {
+      const di = daemonMap.get(s.id);
+      if (di) return { ...s, daemon: { displayName: di.displayName, endpoint: di.endpoint } };
+      return s;
+    });
+  }
   const needle = q.trim().toLowerCase();
   if (needle) {
     sessions = sessions.filter((s) => s.title.toLowerCase().includes(needle) || s.id.toLowerCase().includes(needle));
@@ -32,6 +44,7 @@ export async function buildSessionList(client: OpencodeClientInterface, q: strin
 .srow .st{font-weight:600;color:var(--text);font-size:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .srow .sm{display:flex;gap:1rem;color:var(--text-muted);font-size:12px;margin-top:.25rem;flex-wrap:wrap}
 .srow .sid{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.sd-badge{background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:0 .3rem;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px}
 .empty{padding:2rem;text-align:center;color:var(--text-muted)}
 </style></head><body>
 <header class="nav" style="display:flex;align-items:center;gap:.5rem;padding:.55rem 1rem;background:var(--header-bg);color:var(--header-text);font-size:13px"><a href="/" style="color:var(--header-text)">🏠 ework-web</a><span style="opacity:.8"> · OpenCode 会话 ${sessions.length}</span></header>
@@ -50,6 +63,7 @@ function sessionRow(s: SessionListItem): string {
   const badges = [
     s.peakTokens ? `<span>🧮 峰值 ${kfmt(s.peakTokens)}</span>` : "",
     s.msgCount ? `<span>💬 ${s.msgCount}</span>` : "",
+    s.daemon ? `<span class="sd-badge" title="${escapeAttr(s.daemon.endpoint)}">🖥️ ${escapeHtml(s.daemon.displayName)} ${escapeHtml(s.daemon.endpoint)}</span>` : "",
   ].join("");
   return `<a class="srow" href="${escapeAttr(href)}">
   <div class="st">${escapeHtml(s.title)}</div>

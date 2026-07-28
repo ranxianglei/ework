@@ -29,6 +29,7 @@ export interface SessionListItem {
   directory?: string;
   peakTokens?: number;
   msgCount?: number;
+  daemon?: { displayName: string; endpoint: string };
 }
 
 export interface SessionInfo {

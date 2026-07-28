@@ -68,3 +68,38 @@ export async function listAllDaemons(): Promise<DaemonDetail[]> {
     return [];
   }
 }
+
+export interface SessionDaemonInfo {
+  daemonId: number;
+  displayName: string;
+  endpoint: string;
+}
+
+export async function getSessionDaemonMap(): Promise<Map<string, SessionDaemonInfo>> {
+  try {
+    const rows = await getDB().all<{
+      opencode_session_id: string;
+      daemon_id: number;
+      display_name: string | null;
+      internal_endpoint: string | null;
+    }>(
+      `SELECT s.opencode_session_id, d.id AS daemon_id, d.display_name, d.internal_endpoint
+       FROM {{d_op_sessions}} s
+       JOIN {{d_issues}} i ON i.uid = s.issue_id
+       LEFT JOIN {{d_daemons}} d ON d.id = i.owner_daemon_id
+       WHERE s.opencode_session_id IS NOT NULL AND s.opencode_session_id != ''`,
+    );
+    const map = new Map<string, SessionDaemonInfo>();
+    for (const r of rows) {
+      map.set(r.opencode_session_id, {
+        daemonId: r.daemon_id,
+        displayName: r.display_name ?? `daemon-${r.daemon_id}`,
+        endpoint: r.internal_endpoint ?? "",
+      });
+    }
+    return map;
+  } catch (e) {
+    log.info(`coordination: session-daemon map failed (${e instanceof Error ? e.message : String(e)})`);
+    return new Map();
+  }
+}

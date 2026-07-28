@@ -6,7 +6,7 @@ import { homedir } from "os";
 import { loadConfig, DB_OVERRIDABLE, parseOverride, resolveTtsBackend } from "./config";
 import type { Config } from "./config";
 import { setConfig, initDB, getDB } from "./db";
-import { getActiveDaemons, listAllDaemons } from "./coordination";
+import { getActiveDaemons, listAllDaemons, getSessionDaemonMap } from "./coordination";
 import { testMysqlConnection, migrateSqliteToMysql, writeMysqlEnv, migrateMysqlToSqlite, writeSqliteEnv, migrateDaemonSqliteToMysql, generateMysqlDDL } from "./db-admin";
 import type { MysqlTargetOpts } from "./db-admin";
 import { checkAuth, makeAuthCookieHeader, clearAuthCookieHeader, loginHTML, sanitizeNext, ensureBootstrapAdmin, ensureBootstrapSystem, isReservedSystemLogin } from "./auth";
@@ -610,7 +610,8 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
   if (url.pathname.match(SESSIONS_RE)) {
     const q = url.searchParams.get("q")?.trim() ?? "";
     try {
-      const { html: body } = await buildSessionList(opencode, q);
+      const daemonMap = await getSessionDaemonMap();
+      const { html: body } = await buildSessionList(opencode, q, daemonMap);
       return html(body);
     } catch (e) {
       return html(errorPage("加载失败", errMsg(e)), e instanceof OpencodeError ? e.status : 502);
