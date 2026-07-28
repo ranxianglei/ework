@@ -375,7 +375,8 @@ class MysqlDriver implements AsyncDatabase {
         try {
           await pool.query(stmt);
         } catch (e) {
-          if (e && typeof e === "object" && "errno" in e && (e as { errno: number }).errno === 1061) continue;
+          const errno = (e as { errno?: number }).errno;
+          if (errno === 1061 || errno === 30000) continue;
           throw e;
         }
       }
@@ -456,10 +457,17 @@ export function getDB(): AsyncDatabase {
 export async function getConfigAll(): Promise<Record<string, string>> {
   try {
     const driver = getDB();
-    const rows = await driver.all<{ akey: string; value: string }>("SELECT akey, value FROM {{config}}");
-    const out: Record<string, string> = {};
-    for (const r of rows) out[r.akey] = r.value;
-    return out;
+    try {
+      const rows = await driver.all<{ akey: string; value: string }>("SELECT akey, value FROM {{config}}");
+      const out: Record<string, string> = {};
+      for (const r of rows) out[r.akey] = r.value;
+      return out;
+    } catch {
+      const rows = await driver.all<{ key: string; value: string }>("SELECT key, value FROM {{config}}");
+      const out: Record<string, string> = {};
+      for (const r of rows) out[r.key] = r.value;
+      return out;
+    }
   } catch {
     return {};
   }
@@ -467,13 +475,25 @@ export async function getConfigAll(): Promise<Record<string, string>> {
 
 export async function setConfig(key: string, value: string): Promise<void> {
   const now = new Date().toISOString();
-  await getDB().run(
-    "INSERT INTO {{config}} (akey, value, updated_at) VALUES (?, ?, ?) " +
-      "ON CONFLICT(akey) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
-    [key, value, now]
-  );
+  try {
+    await getDB().run(
+      "INSERT INTO {{config}} (akey, value, updated_at) VALUES (?, ?, ?) " +
+        "ON CONFLICT(akey) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+      [key, value, now]
+    );
+  } catch {
+    await getDB().run(
+      "INSERT INTO {{config}} (key, value, updated_at) VALUES (?, ?, ?) " +
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+      [key, value, now]
+    );
+  }
 }
 
 export async function deleteConfig(key: string): Promise<void> {
-  await getDB().run("DELETE FROM {{config}} WHERE akey = ?", [key]);
+  try {
+    await getDB().run("DELETE FROM {{config}} WHERE akey = ?", [key]);
+  } catch {
+    await getDB().run("DELETE FROM {{config}} WHERE key = ?", [key]);
+  }
 }
