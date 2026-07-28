@@ -689,33 +689,41 @@ export async function setIssueLabel(issueId: number, labelId: number, on: boolea
   }
   const label = await getDB().get<LabelRow>("SELECT * FROM {{labels}} WHERE id = ?", [labelId]);
   if (!label) throw new StoreError(404, "标签不存在");
-  if (label.exclusive === 1) {
-    const scope = labelScope(label.name);
-    if (scope) {
-      const current = await listLabelsForIssue(issueId);
-      const siblings = current.filter((l) => l.exclusive === 1 && labelScope(l.name) === scope && l.id !== labelId);
-      for (const s of siblings) {
-        await getDB().run("DELETE FROM {{issue_labels}} WHERE issue_id = ? AND label_id = ?", [issueId, s.id]);
+  // Wrap read-modify-write in a transaction to prevent concurrent callers
+  // from racing on exclusive-scope eviction (read old set → both insert).
+  await getDB().transaction(async () => {
+    if (label.exclusive === 1) {
+      const scope = labelScope(label.name);
+      if (scope) {
+        const current = await listLabelsForIssue(issueId);
+        const siblings = current.filter((l) => l.exclusive === 1 && labelScope(l.name) === scope && l.id !== labelId);
+        for (const s of siblings) {
+          await getDB().run("DELETE FROM {{issue_labels}} WHERE issue_id = ? AND label_id = ?", [issueId, s.id]);
+        }
       }
     }
-  }
-  const dialect = getDB().dialect;
-  const insert = dialect === "sqlite"
-    ? "INSERT OR IGNORE INTO {{issue_labels}} (issue_id, label_id) VALUES (?, ?)"
-    : "INSERT IGNORE INTO {{issue_labels}} (issue_id, label_id) VALUES (?, ?)";
-  await getDB().run(insert, [issueId, labelId]);
+    const dialect = getDB().dialect;
+    const insert = dialect === "sqlite"
+      ? "INSERT OR IGNORE INTO {{issue_labels}} (issue_id, label_id) VALUES (?, ?)"
+      : "INSERT IGNORE INTO {{issue_labels}} (issue_id, label_id) VALUES (?, ?)";
+    await getDB().run(insert, [issueId, labelId]);
+  });
 }
 
 export async function setIssueLabels(issueId: number, labelIds: number[]): Promise<void> {
   const dialect = getDB().dialect;
-  await getDB().run("DELETE FROM {{issue_labels}} WHERE issue_id = ?", [issueId]);
-  const ids = Array.from(new Set(labelIds));
-  const insert = dialect === "sqlite"
-    ? "INSERT OR IGNORE INTO {{issue_labels}} (issue_id, label_id) VALUES (?, ?)"
-    : "INSERT IGNORE INTO {{issue_labels}} (issue_id, label_id) VALUES (?, ?)";
-  for (const id of ids) {
-    await getDB().run(insert, [issueId, id]);
-  }
+  // Wrap DELETE + INSERTs in a transaction so a crash between operations
+  // doesn't leave the issue with zero labels.
+  await getDB().transaction(async () => {
+    await getDB().run("DELETE FROM {{issue_labels}} WHERE issue_id = ?", [issueId]);
+    const ids = Array.from(new Set(labelIds));
+    const insert = dialect === "sqlite"
+      ? "INSERT OR IGNORE INTO {{issue_labels}} (issue_id, label_id) VALUES (?, ?)"
+      : "INSERT IGNORE INTO {{issue_labels}} (issue_id, label_id) VALUES (?, ?)";
+    for (const id of ids) {
+      await getDB().run(insert, [issueId, id]);
+    }
+  });
 }
 
 export async function createAttachment(a: Omit<AttachmentRow, "created_at">): Promise<AttachmentRow> {
