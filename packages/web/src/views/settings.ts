@@ -208,6 +208,11 @@ function buildGroupsSection(): string {
       <button type="button" id="binding-add" class="secondary">添加绑定</button>
     </div>
   </div>
+  <div id="group-configs-editor" style="margin-top:.7rem">
+    <h2 style="margin-bottom:.5rem">分组工作目录与脚本</h2>
+    <p class="hint" style="margin:0 0 .5rem">为每个分组配置工作目录模板和生命周期脚本。模板变量：<code>{owner}</code> <code>{repo}</code> <code>{issue}</code> <code>{session}</code>。脚本在 daemon 上以工作目录为 cwd 执行。</p>
+    <div id="group-configs-list"></div>
+  </div>
   <div class="db-controls" style="margin-top:.7rem">
     <button type="button" id="strategy-save">保存策略</button>
   </div>
