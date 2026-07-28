@@ -74,10 +74,13 @@ CREATE INDEX comments_issue_created ON {{comments}} (issue_id, created_at);
 CREATE INDEX comments_author ON {{comments}} (author);
 
 CREATE TABLE IF NOT EXISTS {{labels}} (
-  id         BIGINT AUTO_INCREMENT PRIMARY KEY,
-  project_id BIGINT NOT NULL,
-  name       VARCHAR(255) NOT NULL,
-  color      VARCHAR(16) NOT NULL DEFAULT '#888888',
+  id          BIGINT AUTO_INCREMENT PRIMARY KEY,
+  project_id  BIGINT NOT NULL,
+  name        VARCHAR(255) NOT NULL,
+  color       VARCHAR(16) NOT NULL DEFAULT '#888888',
+  description VARCHAR(255) NOT NULL DEFAULT '',
+  exclusive   TINYINT NOT NULL DEFAULT 0,
+  is_archived TINYINT NOT NULL DEFAULT 0,
   UNIQUE (project_id, name),
   CONSTRAINT {{fk_labels_project}} FOREIGN KEY (project_id) REFERENCES {{projects}}(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

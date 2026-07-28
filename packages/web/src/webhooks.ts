@@ -26,6 +26,7 @@ import {
   getDefaultUpstreamUrl,
   ensureUser,
   resolveModel,
+  listLabelsForIssue,
   type IssueRow,
   type ProjectRow,
   type CommentRow,
@@ -355,12 +356,18 @@ function buildRepository(project: ProjectRow, origin: string, model?: string): P
   return repo;
 }
 
+async function toPayloadLabels(issueId: number): Promise<PayloadLabel[]> {
+  const rows = await listLabelsForIssue(issueId);
+  return rows.map((l) => ({ id: l.id, name: l.name, color: l.color, description: l.description }));
+}
+
 function buildIssue(
   issue: IssueRow,
   project: ProjectRow,
   commentCount: number,
   origin: string,
   model?: string,
+  labels: PayloadLabel[] = [],
 ): PayloadIssue {
   const repoUrl = `${origin}/${encodeURIComponent(project.owner)}/${encodeURIComponent(project.name)}`;
   const issueUrl = `${repoUrl}/issues/${issue.number}`;
@@ -371,7 +378,7 @@ function buildIssue(
     number: issue.number,
     title: issue.title,
     body: issue.body ?? "",
-    labels: [],
+    labels,
     milestone: null,
     assignee: null,
     assignees: null,
@@ -415,10 +422,11 @@ function buildCommentPayload(
   commentCount: number,
   origin: string,
   model?: string,
+  labels: PayloadLabel[] = [],
 ): CommentEventPayload {
   return {
     action: "created",
-    issue: buildIssue(issue, project, commentCount, origin, model),
+    issue: buildIssue(issue, project, commentCount, origin, model, labels),
     comment: buildComment(issue, comment, project, origin),
     repository: buildRepository(project, origin, model),
     sender: buildUser(comment.author, origin),
@@ -432,10 +440,11 @@ function buildIssuePayload(
   action: IssueAction,
   origin: string,
   model?: string,
+  labels: PayloadLabel[] = [],
 ): IssueEventPayload {
   return {
     action,
-    issue: buildIssue(issue, project, commentCount, origin, model),
+    issue: buildIssue(issue, project, commentCount, origin, model, labels),
     repository: buildRepository(project, origin, model),
     sender: buildUser(issue.author, origin),
   };
@@ -604,7 +613,8 @@ export async function emitIssueEvent(
     // comes from the config table via loadConfig() — cheap DB read.
     const globalDefault = (await loadConfig()).defaultModel;
     const model = resolveModel(project.model, globalDefault);
-    const payload = buildIssuePayload(issue, project, commentCount, action, origin, model);
+    const labels = await toPayloadLabels(issueId);
+    const payload = buildIssuePayload(issue, project, commentCount, action, origin, model, labels);
     const rawBody = JSON.stringify(payload);
     await fanOut(projectId, "issues", rawBody);
   } catch (e) {
@@ -633,7 +643,8 @@ export async function emitCommentEvent(
     const commentCount = await countCommentsSafe(issueId);
     const globalDefault = (await loadConfig()).defaultModel;
     const model = resolveModel(project.model, globalDefault);
-    const payload = buildCommentPayload(issue, comment, project, commentCount, origin, model);
+    const labels = await toPayloadLabels(issueId);
+    const payload = buildCommentPayload(issue, comment, project, commentCount, origin, model, labels);
     const rawBody = JSON.stringify(payload);
     await fanOut(projectId, "issue_comment", rawBody);
   } catch (e) {

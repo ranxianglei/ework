@@ -116,7 +116,7 @@ describe.skipIf(!process.env.WORK_MIGRATE_TEST)("db-admin: sqlite→mysql round-
     await addReaction(c1.id, "alice", "+1");
     await addReaction(c1.id, "bob", "heart");
     await addReaction(c2.id, "alice", "+1");
-    const lab = await createLabel(p.id, "bug", "#ff0000");
+    const lab = await createLabel(p.id, { name: "bug", color: "#ff0000" });
     await setIssueLabel(issue.id, lab.id, true);
     await createAttachment({
       uuid: "deadbeef-1234",
