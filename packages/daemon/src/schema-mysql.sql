@@ -8,8 +8,8 @@
 -- tables InnoDB + utf8mb4 for FK CASCADE + full Unicode (emoji).
 
 CREATE TABLE IF NOT EXISTS {{issues}} (
-  uid                 BIGINT       AUTO_INCREMENT PRIMARY KEY,
-  id                  VARCHAR(36)  NOT NULL UNIQUE,
+  id                  BIGINT       AUTO_INCREMENT PRIMARY KEY,
+  uid                 VARCHAR(36)  NOT NULL UNIQUE,
   tracker_type        VARCHAR(64)  NOT NULL,
   tracker_scope_key   VARCHAR(255) NOT NULL,
   tracker_scope       TEXT         NOT NULL,
@@ -22,8 +22,8 @@ CREATE TABLE IF NOT EXISTS {{issues}} (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS {{op_sessions}} (
-  uid                 BIGINT       AUTO_INCREMENT PRIMARY KEY,
-  id                  VARCHAR(36)  NOT NULL UNIQUE,
+  id                  BIGINT       AUTO_INCREMENT PRIMARY KEY,
+  uid                 VARCHAR(36)  NOT NULL UNIQUE,
   issue_id            VARCHAR(36) NOT NULL,
   name                VARCHAR(64)  NOT NULL,
   state               VARCHAR(16)  NOT NULL DEFAULT 'idle',
@@ -36,15 +36,15 @@ CREATE TABLE IF NOT EXISTS {{op_sessions}} (
   reaction_comment_id VARCHAR(64),
   current_prompt      TEXT,
   UNIQUE (issue_id, name),
-  CONSTRAINT {{fk_sessions_issue}} FOREIGN KEY (issue_id) REFERENCES {{issues}}(id) ON DELETE CASCADE
+  CONSTRAINT {{fk_sessions_issue}} FOREIGN KEY (issue_id) REFERENCES {{issues}}(uid) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 -- UNIQUE(issue_id, name) above creates a composite index whose leftmost
 -- prefix (issue_id) satisfies the FK's index requirement, so no separate
 -- idx_sessions_issue is needed on MySQL.
 
 CREATE TABLE IF NOT EXISTS {{messages}} (
-  uid                 BIGINT       AUTO_INCREMENT PRIMARY KEY,
-  id                  VARCHAR(36)  NOT NULL UNIQUE,
+  id                  BIGINT       AUTO_INCREMENT PRIMARY KEY,
+  uid                 VARCHAR(36)  NOT NULL UNIQUE,
   session_id          VARCHAR(36) NOT NULL,
   content             LONGTEXT    NOT NULL,
   source_comment_id   VARCHAR(64),
@@ -54,7 +54,7 @@ CREATE TABLE IF NOT EXISTS {{messages}} (
   error               TEXT,
   created_at          VARCHAR(40) NOT NULL,
   updated_at          VARCHAR(40) NOT NULL,
-  CONSTRAINT {{fk_messages_session}} FOREIGN KEY (session_id) REFERENCES {{op_sessions}}(id) ON DELETE CASCADE
+  CONSTRAINT {{fk_messages_session}} FOREIGN KEY (session_id) REFERENCES {{op_sessions}}(uid) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE INDEX idx_messages_session ON {{messages}} (session_id);
 CREATE INDEX idx_messages_status ON {{messages}} (status);
