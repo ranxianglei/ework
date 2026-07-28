@@ -454,6 +454,8 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
   if (url.pathname === "/static/app.js") return staticAsset("app.js", "text/javascript; charset=utf-8", req);
   if (url.pathname === "/static/db-wizard.js") return staticAsset("db-wizard.js", "text/javascript; charset=utf-8", req);
   if (url.pathname === "/static/daemon-mgr.js") return staticAsset("daemon-mgr.js", "text/javascript; charset=utf-8", req);
+  if (url.pathname === "/static/daemon-groups.js") return staticAsset("daemon-groups.js", "text/javascript; charset=utf-8", req);
+  if (url.pathname === "/static/label-picker.js") return staticAsset("label-picker.js", "text/javascript; charset=utf-8", req);
   if (url.pathname === "/static/session.js") return staticAsset("session.js", "text/javascript; charset=utf-8", req);
   if (url.pathname === "/static/file.js") return staticAsset("file.js", "text/javascript; charset=utf-8", req);
   if (url.pathname === "/static/tts.js") return staticAsset("tts.js", "text/javascript; charset=utf-8", req);
