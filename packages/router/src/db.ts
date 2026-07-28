@@ -5,8 +5,8 @@ let pool: import("mysql2/promise").Pool | null = null;
 let sqliteDb: import("bun:sqlite").Database | null = null;
 
 function applyPrefix(sql: string, prefix: string): string {
-  if (!prefix || !sql.includes("{{")) return sql;
-  return sql.replace(/\{\{(\w+)\}\}/g, (_m, name: string) => prefix + name);
+  if (!sql.includes("{{")) return sql;
+  return sql.replace(/\{\{(\w+)\}\}/g, (_m, name: string) => (prefix ?? "") + name);
 }
 
 export async function initDB(cfg: Config): Promise<void> {
@@ -61,10 +61,11 @@ export async function getActiveDaemons(cfg: Config): Promise<DaemonInfo[]> {
       COALESCE(s.active_count, 0) AS active_sessions
     FROM {{${daemonPrefix}daemons}} d
     LEFT JOIN (
-      SELECT owner_daemon_id, COUNT(*) AS active_count
-      FROM {{${daemonPrefix}op_sessions}}
-      WHERE state = 'running'
-      GROUP BY owner_daemon_id
+      SELECT i.owner_daemon_id, COUNT(*) AS active_count
+      FROM {{${daemonPrefix}issues}} i
+      JOIN {{${daemonPrefix}op_sessions}} s ON s.issue_id = i.uid
+      WHERE s.state = 'running' AND i.owner_daemon_id IS NOT NULL
+      GROUP BY i.owner_daemon_id
     ) s ON s.owner_daemon_id = d.id
     WHERE d.status = 'active'
       AND d.last_heartbeat > ?
