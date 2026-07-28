@@ -1386,6 +1386,38 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     }
   }
 
+  const issueLabelsApi = url.pathname.match(API_ISSUE_LABELS_RE);
+  if (issueLabelsApi) {
+    const [, owner, repo, numStr] = issueLabelsApi;
+    if (!(owner && repo && numStr)) return html(errorPage("404", "bad path"), 404);
+    const project = await getProject(owner, repo);
+    if (!project) return json({ error: "project not found" }, 404);
+    const issue = await getIssueWithMeta(project.id, Number(numStr));
+    if (!issue) return json({ error: "issue not found" }, 404);
+    if (req.method === "GET") {
+      const [current, available] = await Promise.all([
+        listLabelsForIssue(issue.id),
+        listLabels(project.id),
+      ]);
+      return json({ current, available });
+    }
+    if (req.method === "POST") {
+      if (!ctx.user || !(await canWriteProject(project.id, ctx.user))) {
+        return json({ error: "forbidden: needs writer role on project" }, 403);
+      }
+      const body = await req.json().catch(() => ({}));
+      const labelIds = Array.isArray(body.labelIds) ? body.labelIds.map((n: unknown) => Number(n)).filter((n: number) => Number.isInteger(n) && n > 0) : [];
+      try {
+        await setIssueLabels(issue.id, labelIds);
+        const current = await listLabelsForIssue(issue.id);
+        return json({ current });
+      } catch (e) {
+        return json({ error: errMsg(e) }, e instanceof StoreError ? e.status : 500);
+      }
+    }
+    return json({ error: "method not allowed" }, 405);
+  }
+
   if (req.method === "POST") {
     if (!cfg.writesEnabled) return json({ error: "writes disabled" }, 403);
     const up = url.pathname.match(UPLOAD_RE);
@@ -1763,38 +1795,6 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     } catch (e) {
       return json({ error: errMsg(e) }, e instanceof StoreError ? e.status : 500);
     }
-  }
-
-  const issueLabelsApi = url.pathname.match(API_ISSUE_LABELS_RE);
-  if (issueLabelsApi) {
-    const [, owner, repo, numStr] = issueLabelsApi;
-    if (!(owner && repo && numStr)) return html(errorPage("404", "bad path"), 404);
-    const project = await getProject(owner, repo);
-    if (!project) return json({ error: "project not found" }, 404);
-    const issue = await getIssueWithMeta(project.id, Number(numStr));
-    if (!issue) return json({ error: "issue not found" }, 404);
-    if (req.method === "GET") {
-      const [current, available] = await Promise.all([
-        listLabelsForIssue(issue.id),
-        listLabels(project.id),
-      ]);
-      return json({ current, available });
-    }
-    if (req.method === "POST") {
-      if (!ctx.user || !(await canWriteProject(project.id, ctx.user))) {
-        return json({ error: "forbidden: needs writer role on project" }, 403);
-      }
-      const body = await req.json().catch(() => ({}));
-      const labelIds = Array.isArray(body.labelIds) ? body.labelIds.map((n: unknown) => Number(n)).filter((n: number) => Number.isInteger(n) && n > 0) : [];
-      try {
-        await setIssueLabels(issue.id, labelIds);
-        const current = await listLabelsForIssue(issue.id);
-        return json({ current });
-      } catch (e) {
-        return json({ error: errMsg(e) }, e instanceof StoreError ? e.status : 500);
-      }
-    }
-    return json({ error: "method not allowed" }, 405);
   }
 
   const isNew = url.pathname.match(REPO_NEW_RE);
