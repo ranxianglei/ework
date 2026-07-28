@@ -128,8 +128,6 @@ async function refreshOpencodeClient(): Promise<void> {
 await refreshOpencodeClient();
 setInterval(refreshOpencodeClient, 10_000);
 
-void autoWireAllProjects(`http://${cfg.host}:${cfg.port}`);
-
 async function autoWireDaemon(projectId: number, origin: string): Promise<void> {
   if (!cfg.autowireActive) {
     log.info("autoWireDaemon: skipped (WORK_AUTOWIRE_ACTIVE=false)", { projectId });
@@ -180,6 +178,8 @@ async function autoWireAllProjects(origin: string): Promise<void> {
     log.warn("autoWireAllProjects failed", { err: e as Error });
   }
 }
+
+void autoWireAllProjects(`http://${cfg.host}:${cfg.port}`);
 
 const SEC_HEADERS: Record<string, string> = {
   "content-security-policy": `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`,
