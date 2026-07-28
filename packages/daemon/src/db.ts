@@ -320,7 +320,13 @@ async function runMigrations(db: AsyncDatabase): Promise<void> {
 
   const ensureColumn = async (table: string, col: string, ddl: string): Promise<void> => {
     if (await hasColumn(table, col)) return;
-    await db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+    try {
+      await db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+    } catch (e) {
+      const errno = (e as { errno?: number }).errno;
+      if (errno === 1060 || errno === 30000) return;
+      throw e;
+    }
   };
 
   // ── id/uid swap: id becomes AUTO_INCREMENT PK, uid holds the UUID ──
