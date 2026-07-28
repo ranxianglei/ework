@@ -21,6 +21,12 @@ warn()  { c_yellow "  ! $*"; }
 fail()  { c_red "  ✗ FAIL: $*"; FAILED=$((FAILED+1)); }
 
 FAILED=0
+FAKE_LLM_PID=""
+cleanup() {
+  [[ -n "$FAKE_LLM_PID" ]] && kill "$FAKE_LLM_PID" 2>/dev/null || true
+  [[ "${KEEP_ALIVE:-0}" != "1" ]] && ework-aio stop --data-dir "${DATA_DIR:-}" 2>/dev/null || true
+}
+trap cleanup EXIT
 assert_eq() { if [[ "$1" == "$2" ]]; then ok "$3: $1"; else fail "$3: expected '$2', got '$1'"; fi; }
 assert_ge() { if [[ "$1" -ge "$2" ]]; then ok "$3: $1 ≥ $2"; else fail "$3: expected ≥ $2, got $1"; fi; }
 assert_gt() { if [[ "$1" -gt "$2" ]]; then ok "$3: $1 > $2"; else fail "$3: expected > $2, got $1"; fi; }
@@ -117,16 +123,7 @@ echo $! > "$DATA_DIR/run/daemon.pid"
 cd "$SCRIPT_DIR/.."
 sleep 3
 
-WORK_TOKEN=$(grep WORK_TOKEN "$DATA_DIR/ework-web/.env" | cut -d= -f2)
-COOKIE_SECRET=$(grep WORK_COOKIE_SECRET "$DATA_DIR/ework-web/.env" | cut -d= -f2)
 BOT_TOKEN=$(cat "$DATA_DIR/bot-token" 2>/dev/null || echo "")
-
-AUTH_COOKIE=$(node -e "
-const crypto = require('crypto');
-const now = Math.floor(Date.now()/1000);
-const msg = 'v2.dog.' + now;
-console.log(msg + '.' + crypto.createHmac('sha256', '$COOKIE_SECRET').update(msg).digest('base64url'));
-")
 
 $AIO_BIN add-daemon "$D2_PORT" --data-dir "$DATA_DIR" --allow-root -y 2>&1 | tail -2
 sleep 2
@@ -197,6 +194,8 @@ sleep 10
 ROUTER_LOG="$DATA_DIR/run/router.log"
 ROUTE_BEFORE=$(grep -c '"routing"' "$ROUTER_LOG" 2>/dev/null || echo 0)
 assert_gt "$ROUTE_BEFORE" 0 "router routed bootstrap issue"
+FORWARD_OK=$(grep -c '"forward result".*"ok":true' "$ROUTER_LOG" 2>/dev/null || echo 0)
+assert_gt "$FORWARD_OK" 0 "router forwarded bootstrap issue successfully"
 
 phase 2 "Least-loaded distribution (3 issues)"
 create_issue() {
@@ -220,6 +219,8 @@ sleep 15
 ROUTE_AFTER=$(grep -c '"routing"' "$ROUTER_LOG" 2>/dev/null || echo 0)
 NEW_ROUTES=$((ROUTE_AFTER - ROUTE_BEFORE))
 assert_ge "$NEW_ROUTES" 3 "≥3 routing decisions"
+FORWARD_OK_AFTER=$(grep -c '"forward result".*"ok":true' "$ROUTER_LOG" 2>/dev/null || echo 0)
+assert_ge "$FORWARD_OK_AFTER" 3 "≥3 successful forwards"
 
 D1_HITS=$(grep '"routing"' "$ROUTER_LOG" 2>/dev/null | grep -c "127.0.0.1:$D1_PORT" || echo 0)
 D1_HITS=$(echo "$D1_HITS" | tail -1)
@@ -257,6 +258,7 @@ assert_gt "$FINAL_ROUTES" "$ROUTE_AFTER" "new route after issue-4"
 phase 5 "Failover (kill daemon-2)"
 D2_PID=$(cat "$DATA_DIR/run/daemon-2.pid" 2>/dev/null || echo "")
 if [[ -n "$D2_PID" ]] && kill -0 "$D2_PID" 2>/dev/null; then
+  LOG_MARK=$(wc -l < "$ROUTER_LOG" 2>/dev/null || echo 0)
   kill "$D2_PID" 2>/dev/null || true
   ok "daemon-2 killed (pid $D2_PID)"
   warn "waiting 125s for heartbeat to expire (ROUTER_STALE_THRESHOLD_MS=120000)..."
@@ -264,9 +266,11 @@ if [[ -n "$D2_PID" ]] && kill -0 "$D2_PID" 2>/dev/null; then
   ISSUE5=$(create_issue "route-5-failover" "test")
   assert_gt "${#ISSUE5}" 0 0 "issue-5 (#$ISSUE5)"
   sleep 10
-  POST_KILL_D2=$(grep '"routing"' "$ROUTER_LOG" | tail -5 \
-    | grep -c "127.0.0.1:$D2_PORT" || echo 0)
-  assert_eq "$POST_KILL_D2" 0 "no routes to dead daemon-2"
+  POST_KILL_ROUTES=$(tail -n +"$((LOG_MARK+1))" "$ROUTER_LOG" 2>/dev/null | grep -c '"routing"' || echo 0)
+  assert_gt "$POST_KILL_ROUTES" 0 "≥1 route happened post-kill (anti-vacuous)"
+  POST_KILL_D2=$(tail -n +"$((LOG_MARK+1))" "$ROUTER_LOG" 2>/dev/null \
+    | grep -c '"routing".*'"$D2_PORT" || echo 0)
+  assert_eq "$POST_KILL_D2" 0 "no routes to dead daemon-2 (post-kill delta)"
 else
   warn "daemon-2 not running, skipping failover"
 fi
@@ -291,6 +295,4 @@ else
 fi
 echo "════════════════════════════════════════════"
 
-kill "$FAKE_LLM_PID" 2>/dev/null || true
-[[ "${KEEP_ALIVE:-0}" != "1" ]] && ework-aio stop 2>/dev/null || true
-exit $FAILED
+exit $(( FAILED > 0 ? 1 : 0 ))
