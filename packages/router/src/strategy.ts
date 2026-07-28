@@ -8,18 +8,10 @@ export interface RouteStrategy {
   decide(daemons: DaemonInfo[], ctx: RouteContext, cfg: Config): RouteDecision;
 }
 
-export interface GroupConfig {
-  workdirTemplate?: string;
-  initScript?: string;
-  destroyScript?: string;
-  envInitScript?: string;
-}
-
 export interface RouteStrategyConfig {
   strategy: "least-loaded" | "round-robin" | "first-available" | "group";
   groupBindings?: Record<string, string>;
   daemonGroups?: Record<number, string[]>;
-  groupConfigs?: Record<string, GroupConfig>;
   weights?: Record<number, number>;
 }
 
@@ -148,20 +140,8 @@ const groupStrategy: RouteStrategy = {
   },
 };
 
-export function resolveGroupConfig(repoKey: string): GroupConfig | undefined {
-  const group = strategyConfig.groupBindings?.[repoKey];
-  if (!group) return undefined;
-  return strategyConfig.groupConfigs?.[group];
-}
-
 export function route(daemons: DaemonInfo[], ctx: RouteContext, cfg: Config): RouteDecision {
   const strategyName = strategyConfig.strategy || cfg.ROUTER_STRATEGY;
   const strategy = resolveStrategy(strategyName);
-  const decision = strategy.decide(daemons, ctx, cfg);
-  const repoKey = ctx.repository
-    ? `${ctx.repository.owner ?? ""}/${ctx.repository.name ?? ""}`
-    : "";
-  const gc = resolveGroupConfig(repoKey);
-  if (gc) decision.groupConfig = gc;
-  return decision;
+  return strategy.decide(daemons, ctx, cfg);
 }

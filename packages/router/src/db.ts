@@ -49,8 +49,7 @@ async function query<T>(sql: string, params: unknown[] = []): Promise<T[]> {
 }
 
 export async function getActiveDaemons(cfg: Config): Promise<DaemonInfo[]> {
-  const staleThreshold = new Date(Date.now() - cfg.ROUTER_STALE_THRESHOLD_MS)
-    .toISOString().slice(0, 19).replace("T", " ");
+  const staleThreshold = new Date(Date.now() - cfg.ROUTER_STALE_THRESHOLD_MS).toISOString();
 
   const daemonPrefix = cfg.DAEMON_TABLE_PREFIX;
 
@@ -143,8 +142,7 @@ export async function getAllDaemons(cfg: Config): Promise<DaemonInfo[]> {
 
 export async function markStaleDaemonsDead(cfg: Config): Promise<number> {
   const daemonPrefix = cfg.DAEMON_TABLE_PREFIX;
-  const staleThreshold = new Date(Date.now() - cfg.ROUTER_STALE_THRESHOLD_MS)
-    .toISOString().slice(0, 19).replace("T", " ");
+  const staleThreshold = new Date(Date.now() - cfg.ROUTER_STALE_THRESHOLD_MS).toISOString();
   try {
     if (pool) {
       const [result] = await pool.query(
