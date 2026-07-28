@@ -92,14 +92,15 @@ ${tabNavHTML("projects")}
 }
 
 export async function handleCreateProject(
-  form: Record<string, string | undefined>
+  form: Record<string, string | undefined>,
+  defaultModel: string,
 ): Promise<{ location: string; error?: string; projectId?: number }> {
   const owner = (form.owner ?? "").trim();
   const name = (form.name ?? "").trim();
   const description = (form.description ?? "").trim();
   if (!owner || !name) return { location: "/projects", error: "owner 和 name 必填" };
   try {
-    const p = await createProject(owner, name, description);
+    const p = await createProject(owner, name, description, defaultModel);
     return { location: `/${encodeURIComponent(p.owner)}/${encodeURIComponent(p.name)}/issues`, projectId: p.id };
   } catch (e) {
     return {

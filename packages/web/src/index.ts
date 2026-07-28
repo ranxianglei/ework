@@ -68,6 +68,7 @@ import {
   archiveLabel,
   deleteLabel,
   setIssueLabels,
+  listAllProjectIds,
   type ProjectRole,
   type UserRow,
 } from "./store";
@@ -127,6 +128,8 @@ async function refreshOpencodeClient(): Promise<void> {
 await refreshOpencodeClient();
 setInterval(refreshOpencodeClient, 10_000);
 
+void autoWireAllProjects(`http://${cfg.host}:${cfg.port}`);
+
 async function autoWireDaemon(projectId: number, origin: string): Promise<void> {
   if (!cfg.autowireActive) {
     log.info("autoWireDaemon: skipped (WORK_AUTOWIRE_ACTIVE=false)", { projectId });
@@ -157,6 +160,24 @@ async function autoWireDaemon(projectId: number, origin: string): Promise<void> 
     } catch (e) {
       log.warn("autoWireDaemon: createWebhook failed", { hookUrl, err: e as Error });
     }
+  }
+}
+
+let backfillStarted = false;
+async function autoWireAllProjects(origin: string): Promise<void> {
+  if (backfillStarted) return;
+  backfillStarted = true;
+  if (!cfg.autowireActive || (!cfg.daemonBotLogin.trim() && !cfg.daemonWebhookUrl.trim())) return;
+  try {
+    const ids = await listAllProjectIds();
+    let wired = 0;
+    for (const id of ids) {
+      await autoWireDaemon(id, origin);
+      wired++;
+    }
+    if (wired > 0) log.info("autoWireAllProjects: backfilled", { count: wired });
+  } catch (e) {
+    log.warn("autoWireAllProjects failed", { err: e as Error });
   }
 }
 
@@ -561,7 +582,7 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
       const form = await req.formData().catch(() => new FormData());
       const f: Record<string, string | undefined> = {};
       for (const [k, v] of form.entries()) f[k] = typeof v === "string" ? v : undefined;
-      const r = await handleCreateProject(f);
+      const r = await handleCreateProject(f, cfg.defaultModel);
       if (r.projectId) {
         await ensureProjectBootstrapAdmin(r.projectId, ctx.user!.login);
         await autoWireDaemon(r.projectId, url.origin);
@@ -971,6 +992,18 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
       return json({ ok: false, error: errMsg(e) });
     }
     return json({ ok: true });
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/daemons/wire-all") {
+    if (!ctx.user || ctx.user.is_admin !== 1) return json({ error: "admin required" }, 403);
+    if (!rateLimit(`daemons-wire:${ip}`, 5, 5 / 3600)) return json({ error: "rate limited" }, 429);
+    try {
+      const ids = await listAllProjectIds();
+      for (const id of ids) await autoWireDaemon(id, url.origin);
+      return json({ ok: true, count: ids.length });
+    } catch (e) {
+      return json({ ok: false, error: errMsg(e) });
+    }
   }
 
   if (req.method === "POST" && url.pathname === "/api/daemons/deploy") {
@@ -1931,10 +1964,7 @@ function parseState(s: string | null): "open" | "closed" | "all" {
 async function createProjectSafe(owner: string, name: string) {
   let project = await getProject(owner, name);
   if (project) return project;
-  // Auto-create project on first issue POST. Owner/name were already validated by the
-  // URL regex shape; allow creation here so `/<owner>/<new-repo>/issues` (POST) bootstraps
-  // a project in one step. Use createIssue's tx for atomicity.
-  project = await createProject(owner, name, "");
+  project = await createProject(owner, name, "", cfg.defaultModel);
   return project;
 }
 

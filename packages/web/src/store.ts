@@ -171,7 +171,12 @@ export async function listProjectsWithCounts(): Promise<ProjectWithCounts[]> {
   );
 }
 
-export async function createProject(owner: string, name: string, description: string): Promise<ProjectRow> {
+export async function listAllProjectIds(): Promise<number[]> {
+  const rows = await getDB().all<{ id: number }>("SELECT id FROM {{projects}} ORDER BY id");
+  return rows.map((r) => r.id);
+}
+
+export async function createProject(owner: string, name: string, description: string, model?: string): Promise<ProjectRow> {
   owner = owner.trim();
   name = name.trim();
   if (!/^[A-Za-z0-9_.-]+$/.test(owner)) throw new StoreError(400, "owner 含非法字符");
@@ -180,8 +185,8 @@ export async function createProject(owner: string, name: string, description: st
   const ts = now();
   const db = getDB();
   const info = await db.run(
-    "INSERT INTO {{projects}} (owner, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-    [owner, name, description ?? "", ts, ts]
+    "INSERT INTO {{projects}} (owner, name, description, model, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+    [owner, name, description ?? "", model ?? "", ts, ts]
   );
   return (await getProjectById(info.insertId))!;
 }
