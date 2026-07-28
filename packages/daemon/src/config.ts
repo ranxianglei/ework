@@ -32,6 +32,7 @@ export const configSchema = z.object({
     dbPath: z.string().default(
       `${process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share")}/opencode/opencode.db`
     ),
+    defaultModel: z.string().default(""),
   }),
   work: z.object({
     capacity: z.coerce.number().int().positive().default(4),
@@ -77,7 +78,7 @@ const TEST_DEFAULTS = {
   gitea: { url: "http://localhost:9999", token: "test-token", webhookSecret: "" },
   bot: { username: "ework-daemon-test", token: "test-bot-token" },
   daemon: { port: 3111, host: "0.0.0.0", endpoint: "" },
-  opencode: { binary: "opencode", baseWorkdir: join(tmpdir(), "ework-daemon-test") },
+  opencode: { binary: "opencode", baseWorkdir: join(tmpdir(), "ework-daemon-test"), defaultModel: "" },
   work: { capacity: 4, heartbeatMs: 10_000, leaseTtlMs: 60_000 },
   db: { path: join(process.cwd(), "test", "ework-daemon-test.db") },
 };
@@ -131,6 +132,7 @@ export function loadConfig(): Config {
         binary: process.env.OPENCODE_BINARY ?? TEST_DEFAULTS.opencode.binary,
         baseWorkdir: process.env.OPENCODE_BASE_WORKDIR ?? TEST_DEFAULTS.opencode.baseWorkdir,
         dbPath: process.env.OPENCODE_DB_PATH ?? `${process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share")}/opencode/opencode.db`,
+        defaultModel: process.env.WORK_DEFAULT_MODEL ?? TEST_DEFAULTS.opencode.defaultModel,
       },
       work: readWorkSection(),
       db: readDbSection(TEST_DEFAULTS.db.path),
@@ -166,6 +168,7 @@ export function loadConfig(): Config {
       binary: process.env.OPENCODE_BINARY ?? "opencode",
       baseWorkdir: process.env.OPENCODE_BASE_WORKDIR,
       dbPath: process.env.OPENCODE_DB_PATH ?? `${process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share")}/opencode/opencode.db`,
+      defaultModel: process.env.WORK_DEFAULT_MODEL ?? "",
     },
     work: readWorkSection(),
     db: readDbSection(PRODUCTION_DB_DEFAULT),

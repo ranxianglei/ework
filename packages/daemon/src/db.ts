@@ -210,7 +210,7 @@ class MysqlDriver implements AsyncDatabase {
         try {
           await pool.query(stmt);
         } catch (e) {
-          if (e && typeof e === "object" && "errno" in e && (e as { errno: number }).errno === 1061) continue;
+          if (e && typeof e === "object" && "errno" in e && ((e as { errno: number }).errno === 1061 || (e as { errno: number }).errno === 30000)) continue;
           throw e;
         }
       }
@@ -512,7 +512,7 @@ async function runMigrations(db: AsyncDatabase): Promise<void> {
     try {
       await db.exec(`CREATE INDEX idx_issues_owner ON ${tIssues}(owner_daemon_id)`);
     } catch (e) {
-      if (e && typeof e === "object" && "errno" in e && (e as { errno: number }).errno === 1061) {
+      if (e && typeof e === "object" && "errno" in e && ((e as { errno: number }).errno === 1061 || (e as { errno: number }).errno === 30000)) {
         // index already exists — expected on re-runs
       } else {
         throw e;

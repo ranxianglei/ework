@@ -124,11 +124,27 @@ export class RecloneStrategy implements TakeoverStrategy {
       if (entries.length === 0) {
         const base = this.cfg.gitea.url.replace(/\/$/, "");
         const url = `${base}/${owner}/${repo}.git`;
-        Bun.spawnSync({ cmd: ["git", "clone", url, dir], stdout: "ignore", stderr: "ignore" });
+        const r = Bun.spawnSync({ cmd: ["git", "clone", url, dir], stdout: "ignore", stderr: "ignore" });
+        // git clone deletes the target dir on failure (e.g. gitea shim
+        // without smart-http /info/refs 404). Re-create the workdir so
+        // Bun.spawn later doesn't throw a misleading ENOENT pointing at the
+        // opencode binary path instead of the missing cwd. Fall back to
+        // `git init` so the workdir is at least a valid git repo the agent
+        // can work in.
+        if (r.exitCode !== 0) {
+          if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+          if (existsSync(dir) && readdirSync(dir).length === 0) {
+            Bun.spawnSync({ cmd: ["git", "init", dir], stdout: "ignore", stderr: "ignore" });
+          }
+          log.warn(`acquireWorkdir: git clone failed (exit ${r.exitCode}) for ${url}; fell back to empty workdir`);
+        }
       }
     } catch {
       // directory access failed — leave it; the agent's own tools can clone
     }
+    // Final safety net: git clone may have deleted the dir. Without this
+    // Bun.spawn will throw ENOENT with the binary path, not the cwd path.
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
     return dir;
   }
 
@@ -777,11 +793,12 @@ export class Engine {
     if (resumeSessionId) {
       args.push("--session", resumeSessionId);
     }
-    // Push --model BEFORE the message content. Defends against env-var-
-    // registered providers stealing the slot (the original bug). Empty/
-    // undefined = omit, let opencode pick per its own opencode.json.
-    if (msg.model) {
-      args.push("--model", msg.model);
+    // Resolve the model: explicit per-message > daemon default > omit.
+    // Without this, opencode's own default (influenced by plugin agent
+    // presets) can pick a non-existent model, causing ProviderModelNotFoundError.
+    const model = msg.model || this.cfg.opencode.defaultModel;
+    if (model) {
+      args.push("--model", model);
     }
     args.push(msg.content);
 
@@ -802,7 +819,7 @@ export class Engine {
     // Provider keys / Gitea vars are preserved (opencode + its plugin need
     // them); only the explicit model-override var is neutralized.
     const childEnv = { ...process.env };
-    if (!msg.model) delete childEnv.OPENCODE_MODEL;
+    if (!model) delete childEnv.OPENCODE_MODEL;
 
     try {
       const proc = spawn({
