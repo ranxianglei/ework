@@ -323,6 +323,111 @@ async function runMigrations(db: AsyncDatabase): Promise<void> {
     await db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
   };
 
+  // ── uid: surrogate AUTO_INCREMENT PK on issues/op_sessions/messages ──
+  // SQLite cannot ADD PRIMARY KEY via ALTER — must rebuild. Runs before
+  // owner_daemon_id etc. so rebuild only copies base columns; ephemeral
+  // coordination data (owner_daemon_id, nudge state) is re-added below.
+  const tMessages = `${prefix}messages`;
+  if (sqlite) {
+    const UID_REBUILDS: { table: string; createSql: string; dataCols: string }[] = [
+      {
+        table: tIssues,
+        createSql: `CREATE TABLE ${tIssues} (
+  uid INTEGER PRIMARY KEY AUTOINCREMENT,
+  id TEXT NOT NULL UNIQUE,
+  tracker_type TEXT NOT NULL,
+  tracker_scope_key TEXT NOT NULL,
+  tracker_scope TEXT NOT NULL,
+  tracker_issue_id TEXT NOT NULL,
+  state TEXT NOT NULL DEFAULT 'created',
+  title TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(tracker_type, tracker_scope_key, tracker_issue_id)
+)`,
+        dataCols:
+          "id, tracker_type, tracker_scope_key, tracker_scope, tracker_issue_id, state, title, created_at, updated_at",
+      },
+      {
+        table: tSessions,
+        createSql: `CREATE TABLE ${tSessions} (
+  uid INTEGER PRIMARY KEY AUTOINCREMENT,
+  id TEXT NOT NULL UNIQUE,
+  issue_id TEXT NOT NULL REFERENCES ${tIssues}(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  state TEXT NOT NULL DEFAULT 'idle',
+  opencode_session_id TEXT,
+  opencode_pid INTEGER,
+  workdir TEXT,
+  created_at TEXT NOT NULL,
+  started_at INTEGER,
+  progress_comment_id TEXT,
+  reaction_comment_id TEXT,
+  current_prompt TEXT,
+  UNIQUE(issue_id, name)
+)`,
+        dataCols:
+          "id, issue_id, name, state, opencode_session_id, opencode_pid, workdir, created_at, started_at, progress_comment_id, reaction_comment_id, current_prompt",
+      },
+      {
+        table: tMessages,
+        createSql: `CREATE TABLE ${tMessages} (
+  uid INTEGER PRIMARY KEY AUTOINCREMENT,
+  id TEXT NOT NULL UNIQUE,
+  session_id TEXT NOT NULL REFERENCES ${tSessions}(id) ON DELETE CASCADE,
+  content TEXT NOT NULL,
+  source_comment_id TEXT,
+  reaction_comment_id TEXT,
+  status TEXT NOT NULL DEFAULT 'pending',
+  attempts INTEGER NOT NULL DEFAULT 0,
+  error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+)`,
+        dataCols:
+          "id, session_id, content, source_comment_id, reaction_comment_id, status, attempts, error, created_at, updated_at",
+      },
+    ];
+
+    for (const { table, createSql, dataCols } of UID_REBUILDS) {
+      if (await hasColumn(table, "uid")) continue;
+      const exists = await db.get<{ cnt: number }>(
+        `SELECT COUNT(*) AS cnt FROM sqlite_master WHERE type='table' AND name='${table}'`
+      );
+      if (Number(exists?.cnt ?? 0) === 0) continue;
+
+      await db.exec("PRAGMA foreign_keys = OFF");
+      try {
+        await db.transaction(async () => {
+          await db.exec(`ALTER TABLE ${table} RENAME TO ${table}__old_uid`);
+          await db.exec(createSql);
+          await db.exec(
+            `CREATE INDEX IF NOT EXISTS idx_${table}__id ON ${table}(id)`
+          );
+          await db.exec(`INSERT INTO ${table} (${dataCols}) SELECT ${dataCols} FROM ${table}__old_uid`);
+          await db.exec(`DROP TABLE ${table}__old_uid`);
+        });
+      } finally {
+        await db.exec("PRAGMA foreign_keys = ON");
+      }
+    }
+  } else {
+    const uidMySqlTables = [tIssues, tSessions, tMessages];
+    for (const tbl of uidMySqlTables) {
+      if (await hasColumn(tbl, "uid")) continue;
+      try {
+        await db.exec(
+          `ALTER TABLE ${tbl} DROP PRIMARY KEY, ` +
+            `ADD COLUMN uid BIGINT AUTO_INCREMENT PRIMARY KEY FIRST, ` +
+            `ADD UNIQUE INDEX uk_${tbl}_id (id)`
+        );
+      } catch (e) {
+        if (e && typeof e === "object" && "errno" in e && (e as { errno: number }).errno === 1146) continue;
+        throw e;
+      }
+    }
+  }
+
   // issues.owner_daemon_id — points at the leasing daemon (nullable = unclaimed).
   await ensureColumn(
     tIssues,

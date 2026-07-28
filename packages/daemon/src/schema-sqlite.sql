@@ -4,7 +4,8 @@
 -- share one DB across multiple daemon instances.
 
 CREATE TABLE IF NOT EXISTS {{issues}} (
-  id TEXT PRIMARY KEY,
+  uid INTEGER PRIMARY KEY AUTOINCREMENT,
+  id TEXT NOT NULL UNIQUE,
   tracker_type TEXT NOT NULL,
   tracker_scope_key TEXT NOT NULL,
   tracker_scope TEXT NOT NULL,
@@ -17,7 +18,8 @@ CREATE TABLE IF NOT EXISTS {{issues}} (
 );
 
 CREATE TABLE IF NOT EXISTS {{op_sessions}} (
-  id TEXT PRIMARY KEY,
+  uid INTEGER PRIMARY KEY AUTOINCREMENT,
+  id TEXT NOT NULL UNIQUE,
   issue_id TEXT NOT NULL REFERENCES {{issues}}(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
   state TEXT NOT NULL DEFAULT 'idle',
@@ -33,7 +35,8 @@ CREATE TABLE IF NOT EXISTS {{op_sessions}} (
 );
 
 CREATE TABLE IF NOT EXISTS {{messages}} (
-  id TEXT PRIMARY KEY,
+  uid INTEGER PRIMARY KEY AUTOINCREMENT,
+  id TEXT NOT NULL UNIQUE,
   session_id TEXT NOT NULL REFERENCES {{op_sessions}}(id) ON DELETE CASCADE,
   content TEXT NOT NULL,
   source_comment_id TEXT,

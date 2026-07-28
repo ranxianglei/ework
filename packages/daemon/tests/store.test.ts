@@ -254,3 +254,30 @@ describe("Store: messages", () => {
     await store.close();
   });
 });
+
+describe("Store: uid surrogate key", () => {
+  it("issues table has uid column that auto-increments", async () => {
+    const db = getDB();
+    const store = new Store();
+    await store.findOrCreateIssue(ref("700"), "dog/repo", "first");
+    await store.findOrCreateIssue(ref("701"), "dog/repo", "second");
+    const rows = await db.all<{ uid: number; id: string }>("SELECT uid, id FROM {{issues}} ORDER BY uid");
+    expect(rows).toHaveLength(2);
+    expect(rows[0]!.uid).toBeGreaterThanOrEqual(1);
+    expect(rows[1]!.uid).toBeGreaterThan(rows[0]!.uid);
+    await store.close();
+  });
+
+  it("op_sessions and messages have uid columns", async () => {
+    const db = getDB();
+    const store = new Store();
+    const issue = await store.findOrCreateIssue(ref("710"), "dog/repo", "t");
+    const session = await store.createSession(issue.id, "s1");
+    await store.createMessage(session.id, "hello", undefined);
+    const sRow = await db.get<{ uid: number }>("SELECT uid FROM {{op_sessions}} WHERE id = ?", [session.id]);
+    const mRow = await db.get<{ uid: number }>("SELECT uid FROM {{messages}} LIMIT 1");
+    expect(sRow?.uid).toBeGreaterThanOrEqual(1);
+    expect(mRow?.uid).toBeGreaterThanOrEqual(1);
+    await store.close();
+  });
+});

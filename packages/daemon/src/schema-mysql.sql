@@ -8,7 +8,8 @@
 -- tables InnoDB + utf8mb4 for FK CASCADE + full Unicode (emoji).
 
 CREATE TABLE IF NOT EXISTS {{issues}} (
-  id                  VARCHAR(36) PRIMARY KEY,
+  uid                 BIGINT       AUTO_INCREMENT PRIMARY KEY,
+  id                  VARCHAR(36)  NOT NULL UNIQUE,
   tracker_type        VARCHAR(64)  NOT NULL,
   tracker_scope_key   VARCHAR(255) NOT NULL,
   tracker_scope       TEXT         NOT NULL,
@@ -21,7 +22,8 @@ CREATE TABLE IF NOT EXISTS {{issues}} (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS {{op_sessions}} (
-  id                  VARCHAR(36) PRIMARY KEY,
+  uid                 BIGINT       AUTO_INCREMENT PRIMARY KEY,
+  id                  VARCHAR(36)  NOT NULL UNIQUE,
   issue_id            VARCHAR(36) NOT NULL,
   name                VARCHAR(64)  NOT NULL,
   state               VARCHAR(16)  NOT NULL DEFAULT 'idle',
@@ -41,7 +43,8 @@ CREATE TABLE IF NOT EXISTS {{op_sessions}} (
 -- idx_sessions_issue is needed on MySQL.
 
 CREATE TABLE IF NOT EXISTS {{messages}} (
-  id                  VARCHAR(36) PRIMARY KEY,
+  uid                 BIGINT       AUTO_INCREMENT PRIMARY KEY,
+  id                  VARCHAR(36)  NOT NULL UNIQUE,
   session_id          VARCHAR(36) NOT NULL,
   content             LONGTEXT    NOT NULL,
   source_comment_id   VARCHAR(64),
