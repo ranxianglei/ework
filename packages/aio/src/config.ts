@@ -104,9 +104,9 @@ export const ROUTER_ENV_KEYS: readonly EnvKeySpec[] = [
   { envVar: "ROUTER_FALLBACK_ENDPOINT", file: "router", generate: (c) => `http://127.0.0.1:${c.daemonPort}` },
   { envVar: "ROUTER_CONFIG_FILE",       file: "router", generate: (c) => `${c.paths.routerDataDir}/strategy.json` },
   { envVar: "WORK_DB_DRIVER",       file: "router", generate: () => "sqlite" },
-  { envVar: "WORK_DB_PATH",         file: "router", generate: (c) => c.paths.webDbPath },
+  { envVar: "WORK_DB_PATH",         file: "router", generate: (c) => c.paths.daemonDbPath },
   { envVar: "WORK_DB_PREFIX",       file: "router", generate: () => "" },
-  { envVar: "DAEMON_TABLE_PREFIX",  file: "router", generate: () => "d_" },
+  { envVar: "DAEMON_TABLE_PREFIX",  file: "router", generate: () => "" },
 ] as const;
 
 export function keysForFile(file: EnvFile): readonly EnvKeySpec[] {
