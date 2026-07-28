@@ -104,6 +104,19 @@ sleep 5
 [[ "$(curl -sf http://127.0.0.1:$ROUTER_PORT/api/health 2>/dev/null || echo FAIL)" != "FAIL" ]] \
   && ok "router on :$ROUTER_PORT" || { fail "router not responding"; exit 1; }
 
+# Ensure daemon uses fake model (opencode's build agent defaults to claude otherwise)
+echo "WORK_DEFAULT_MODEL=fake/fake-model" >> "$DATA_DIR/ework-daemon/.env"
+
+# Restart daemon-1 with updated config
+kill $(cat "$DATA_DIR/run/daemon.pid" 2>/dev/null) 2>/dev/null; sleep 2
+export $(grep -v '^#' "$DATA_DIR/ework-daemon/.env" | grep -v '^$' | xargs -d '\n' 2>/dev/null || true)
+DAEMON_BIN="$SCRIPT_DIR/../node_modules/ework-daemon/bin/ework-daemon-server.js"
+[[ -f "$DAEMON_BIN" ]] || DAEMON_BIN="$(npm root -g)/ework-aio/node_modules/ework-daemon/bin/ework-daemon-server.js"
+cd "$DATA_DIR/ework-daemon" && bun "$DAEMON_BIN" > "$DATA_DIR/run/daemon.log" 2>&1 &
+echo $! > "$DATA_DIR/run/daemon.pid"
+cd "$SCRIPT_DIR/.."
+sleep 3
+
 WORK_TOKEN=$(grep WORK_TOKEN "$DATA_DIR/ework-web/.env" | cut -d= -f2)
 COOKIE_SECRET=$(grep WORK_COOKIE_SECRET "$DATA_DIR/ework-web/.env" | cut -d= -f2)
 BOT_TOKEN=$(cat "$DATA_DIR/bot-token" 2>/dev/null || echo "")
@@ -208,9 +221,12 @@ ROUTE_AFTER=$(grep -c '"routing"' "$ROUTER_LOG" 2>/dev/null || echo 0)
 NEW_ROUTES=$((ROUTE_AFTER - ROUTE_BEFORE))
 assert_ge "$NEW_ROUTES" 3 "≥3 routing decisions"
 
-D1_HITS=$(grep '"routing"' "$ROUTER_LOG" | grep -c "127.0.0.1:$D1_PORT" || echo 0)
-D2_HITS=$(grep '"routing"' "$ROUTER_LOG" | grep -c "127.0.0.1:$D2_PORT" || echo 0)
-D3_HITS=$(grep '"routing"' "$ROUTER_LOG" | grep -c "127.0.0.1:$D3_PORT" || echo 0)
+D1_HITS=$(grep '"routing"' "$ROUTER_LOG" 2>/dev/null | grep -c "127.0.0.1:$D1_PORT" || echo 0)
+D1_HITS=$(echo "$D1_HITS" | tail -1)
+D2_HITS=$(grep '"routing"' "$ROUTER_LOG" 2>/dev/null | grep -c "127.0.0.1:$D2_PORT" || echo 0)
+D2_HITS=$(echo "$D2_HITS" | tail -1)
+D3_HITS=$(grep '"routing"' "$ROUTER_LOG" 2>/dev/null | grep -c "127.0.0.1:$D3_PORT" || echo 0)
+D3_HITS=$(echo "$D3_HITS" | tail -1)
 echo "  distribution: d1=$D1_HITS d2=$D2_HITS d3=$D3_HITS"
 
 UNIQUE=0
@@ -243,7 +259,8 @@ D2_PID=$(cat "$DATA_DIR/run/daemon-2.pid" 2>/dev/null || echo "")
 if [[ -n "$D2_PID" ]] && kill -0 "$D2_PID" 2>/dev/null; then
   kill "$D2_PID" 2>/dev/null || true
   ok "daemon-2 killed (pid $D2_PID)"
-  sleep 3
+  warn "waiting 125s for heartbeat to expire (ROUTER_STALE_THRESHOLD_MS=120000)..."
+  sleep 125
   ISSUE5=$(create_issue "route-5-failover" "test")
   assert_gt "${#ISSUE5}" 0 0 "issue-5 (#$ISSUE5)"
   sleep 10
@@ -258,7 +275,7 @@ phase 6 "Webhook delivery audit"
 WEB_DB="$DATA_DIR/ework-web/ework.db"
 if [[ -f "$WEB_DB" ]]; then
   DELIVERIES=$(sqlite3 "$WEB_DB" \
-    "SELECT COUNT(*) FROM webhook_deliveries WHERE status_code >= 200 AND status_code < 300;" \
+    "SELECT COUNT(*) FROM webhook_deliveries WHERE response_status >= 200 AND response_status < 300;" \
     2>/dev/null || echo 0)
   assert_ge "$DELIVERIES" 3 "≥3 successful webhook deliveries"
 else
