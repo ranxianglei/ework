@@ -46,7 +46,7 @@
     "postinstall": "echo '\\n  ework-aio installed. Run \\033[1mework-aio install\\033[0m to set up services.\\n  Help: ework-aio --help\\n'"
   },
   "dependencies": {
-    "ework-daemon": "^0.4.1",
+    "ework-daemon": "^0.4.11",
     "ework-router": "^0.1.7",
     "ework-web": "^0.10.15",
     "opencode-ework": "^0.1.0",

@@ -47,6 +47,7 @@ echo "╚═══════════════════════�
 
 phase 0 "Bootstrap (fake LLM + opencode config + services)"
 
+AIO_BIN="${AIO_BIN:-ework-aio}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 ework-aio stop 2>/dev/null || true
@@ -84,6 +85,7 @@ OCJSON
 ok "opencode config with fake provider"
 
 export XDG_CONFIG_HOME="$FAKE_XDG"
+unset OPENCODE OPENCODE_PID OPENCODE_RUN_ID OPENCODE_PROCESS_ROLE OPENCODE_MODEL COMPLETION_CHECK_MODEL COMPLETION_CHECK_BASE_URL OPENCODE_DISABLE_CHANNEL_DB 2>/dev/null || true
 OC_BIN="${OPENCODE_BINARY:-$(which opencode 2>/dev/null || echo /usr/local/bin/opencode)}"
 timeout 120 "$OC_BIN" session list </dev/null >/dev/null 2>&1 || true
 ok "opencode warmed up ($OC_BIN)"
@@ -96,12 +98,24 @@ ework-aio install --yes --allow-root \
   --data-dir "$DATA_DIR" \
   --port "$WEB_PORT" \
   --daemon-port "$D1_PORT" 2>&1 | tail -5
-
 sleep 5
 [[ "$(curl -sf http://127.0.0.1:$WEB_PORT/healthz 2>/dev/null || echo FAIL)" != "FAIL" ]] \
   && ok "web on :$WEB_PORT" || { fail "web not responding"; exit 1; }
 [[ "$(curl -sf http://127.0.0.1:$ROUTER_PORT/api/health 2>/dev/null || echo FAIL)" != "FAIL" ]] \
   && ok "router on :$ROUTER_PORT" || { fail "router not responding"; exit 1; }
+
+# Ensure daemon uses fake model (opencode's build agent defaults to claude otherwise)
+echo "WORK_DEFAULT_MODEL=fake/fake-model" >> "$DATA_DIR/ework-daemon/.env"
+
+# Restart daemon-1 with updated config
+kill $(cat "$DATA_DIR/run/daemon.pid" 2>/dev/null) 2>/dev/null; sleep 2
+export $(grep -v '^#' "$DATA_DIR/ework-daemon/.env" | grep -v '^$' | xargs -d '\n' 2>/dev/null || true)
+DAEMON_BIN="$SCRIPT_DIR/../node_modules/ework-daemon/bin/ework-daemon-server.js"
+[[ -f "$DAEMON_BIN" ]] || DAEMON_BIN="$(npm root -g)/ework-aio/node_modules/ework-daemon/bin/ework-daemon-server.js"
+cd "$DATA_DIR/ework-daemon" && bun "$DAEMON_BIN" > "$DATA_DIR/run/daemon.log" 2>&1 &
+echo $! > "$DATA_DIR/run/daemon.pid"
+cd "$SCRIPT_DIR/.."
+sleep 3
 
 WORK_TOKEN=$(grep WORK_TOKEN "$DATA_DIR/ework-web/.env" | cut -d= -f2)
 COOKIE_SECRET=$(grep WORK_COOKIE_SECRET "$DATA_DIR/ework-web/.env" | cut -d= -f2)
@@ -114,24 +128,71 @@ const msg = 'v2.dog.' + now;
 console.log(msg + '.' + crypto.createHmac('sha256', '$COOKIE_SECRET').update(msg).digest('base64url'));
 ")
 
-ework-aio add-daemon "$D2_PORT" --data-dir "$DATA_DIR" --allow-root -y 2>&1 | tail -2
+$AIO_BIN add-daemon "$D2_PORT" --data-dir "$DATA_DIR" --allow-root -y 2>&1 | tail -2
 sleep 2
-ework-aio add-daemon "$D3_PORT" --data-dir "$DATA_DIR" --allow-root -y 2>&1 | tail -2
+$AIO_BIN add-daemon "$D3_PORT" --data-dir "$DATA_DIR" --allow-root -y 2>&1 | tail -2
 sleep 5
 
 DAEMON_DB="$DATA_DIR/ework-daemon/ework-daemon.db"
 DAEMON_COUNT=$(sqlite3 "$DAEMON_DB" "SELECT COUNT(*) FROM daemons WHERE status='active';" 2>/dev/null || echo 0)
 assert_ge "$DAEMON_COUNT" 3 "daemons registered in DB"
 
+# Restart router so it picks up all daemons (install-started router may race with daemon registration)
+ROUTER_PID_OLD=$(cat "$DATA_DIR/run/router.pid" 2>/dev/null || echo "")
+if [[ -n "$ROUTER_PID_OLD" ]]; then kill "$ROUTER_PID_OLD" 2>/dev/null; sleep 2; fi
+ROUTER_PKG="$SCRIPT_DIR/../node_modules/ework-router"
+if [[ ! -f "$ROUTER_PKG/bin/ework-router.js" ]]; then
+  ROUTER_PKG="$(npm root -g)/ework-aio/node_modules/ework-router"
+fi
+WEBHOOK_SECRET=$(grep GITEA_WEBHOOK_SECRET "$DATA_DIR/ework-daemon/.env" 2>/dev/null | cut -d= -f2)
+DAEMON_DB_PATH="$DATA_DIR/ework-daemon/ework-daemon.db"
+ROUTER_CONFIG_FILE="$DATA_DIR/ework-router/strategy.json"
+WORK_DB_DRIVER=sqlite \
+WORK_DB_PATH="$DAEMON_DB_PATH" \
+WORK_DB_PREFIX="" \
+DAEMON_TABLE_PREFIX="" \
+ROUTER_ENV=production \
+ROUTER_PORT="$ROUTER_PORT" \
+ROUTER_HOST=127.0.0.1 \
+ROUTER_STRATEGY=least-loaded \
+ROUTER_FALLBACK_ENDPOINT="http://127.0.0.1:$D1_PORT" \
+ROUTER_CONFIG_FILE="$ROUTER_CONFIG_FILE" \
+ROUTER_STALE_THRESHOLD_MS=120000 \
+bun "$ROUTER_PKG/bin/ework-router.js" > "$DATA_DIR/run/router.log" 2>&1 &
+echo $! > "$DATA_DIR/run/router.pid"
+sleep 3
+ROUTER_DAEMONS=$(curl --max-time 5 -sf "http://127.0.0.1:$ROUTER_PORT/api/daemons" 2>/dev/null | jq '.daemons | length' 2>/dev/null || echo 0)
+assert_ge "$ROUTER_DAEMONS" 3 "router sees ≥3 daemons"
+
 phase 1 "Project + webhook → router"
-LOC=$(curl -s -o /dev/null -D - -X POST \
-  -H "Cookie: ework_auth=$AUTH_COOKIE" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "title=bootstrap&body=init" \
-  "http://127.0.0.1:$WEB_PORT/e2e/router-test/issues/new" 2>/dev/null \
-  | grep -i '^location:' | tr -d '\r' | awk '{print $2}')
-[[ -n "$LOC" ]] && ok "project+issue created" || { fail "issue creation failed"; exit 1; }
-sleep 8
+
+NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+sqlite3 "$DATA_DIR/ework-web/ework.db" "
+INSERT OR IGNORE INTO projects (owner, name, description, upstream_urls, model, created_at, updated_at)
+VALUES ('e2e', 'router-test', 'E2E test', '[]', '', '$NOW', '');
+" 2>/dev/null
+PROJECT_ID=$(sqlite3 "$DATA_DIR/ework-web/ework.db" "SELECT id FROM projects WHERE owner='e2e' AND name='router-test';" 2>/dev/null)
+
+sqlite3 "$DATA_DIR/ework-web/ework.db" "
+INSERT OR IGNORE INTO project_members (project_id, user_login, role, created_at) VALUES ($PROJECT_ID, 'dog', 'admin', '$NOW');
+INSERT OR IGNORE INTO project_members (project_id, user_login, role, created_at) VALUES ($PROJECT_ID, 'ework-daemon', 'writer', '$NOW');
+" 2>/dev/null
+
+WEBHOOK_SECRET=$(grep GITEA_WEBHOOK_SECRET "$DATA_DIR/ework-daemon/.env" 2>/dev/null | cut -d= -f2)
+sqlite3 "$DATA_DIR/ework-web/ework.db" "
+INSERT OR IGNORE INTO webhooks (project_id, url, secret, events, active, created_at, updated_at)
+VALUES ($PROJECT_ID, 'http://127.0.0.1:$ROUTER_PORT/webhook/gitea', '$WEBHOOK_SECRET', '[\"issues\",\"issue_comment\"]', 1, '$NOW', '$NOW');
+" 2>/dev/null
+ok "project + webhook created via SQL"
+
+ISSUE_RESP=$(curl --max-time 10 -s -X POST \
+  -H "Authorization: token $BOT_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"title":"bootstrap","body":"init"}' \
+  "http://127.0.0.1:$WEB_PORT/api/v1/repos/e2e/router-test/issues" 2>/dev/null)
+ISSUE_NUM=$(echo "$ISSUE_RESP" | jq -r '.number // empty' 2>/dev/null)
+[[ -n "$ISSUE_NUM" ]] && ok "issue #$ISSUE_NUM created" || { fail "issue creation failed: $ISSUE_RESP"; exit 1; }
+sleep 10
 
 ROUTER_LOG="$DATA_DIR/run/router.log"
 ROUTE_BEFORE=$(grep -c '"routing"' "$ROUTER_LOG" 2>/dev/null || echo 0)
@@ -139,12 +200,12 @@ assert_gt "$ROUTE_BEFORE" 0 "router routed bootstrap issue"
 
 phase 2 "Least-loaded distribution (3 issues)"
 create_issue() {
-  curl -s -o /dev/null -D - -X POST \
-    -H "Cookie: ework_auth=$AUTH_COOKIE" \
-    -H "Content-Type: application/x-www-form-urlencoded" \
-    -d "title=$1&body=$2" \
-    "http://127.0.0.1:$WEB_PORT/e2e/router-test/issues/new" 2>/dev/null \
-    | grep -i '^location:' | tr -d '\r' | awk '{print $2}' | grep -oP '\d+$'
+  curl --max-time 10 -s -X POST \
+    -H "Authorization: token $BOT_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d "{\"title\":\"$1\",\"body\":\"$2\"}" \
+    "http://127.0.0.1:$WEB_PORT/api/v1/repos/e2e/router-test/issues" 2>/dev/null \
+    | jq -r '.number // empty' 2>/dev/null
 }
 
 ISSUE1=$(create_issue "route-1" "test")
@@ -160,9 +221,12 @@ ROUTE_AFTER=$(grep -c '"routing"' "$ROUTER_LOG" 2>/dev/null || echo 0)
 NEW_ROUTES=$((ROUTE_AFTER - ROUTE_BEFORE))
 assert_ge "$NEW_ROUTES" 3 "≥3 routing decisions"
 
-D1_HITS=$(grep '"routing"' "$ROUTER_LOG" | grep -c "127.0.0.1:$D1_PORT" || echo 0)
-D2_HITS=$(grep '"routing"' "$ROUTER_LOG" | grep -c "127.0.0.1:$D2_PORT" || echo 0)
-D3_HITS=$(grep '"routing"' "$ROUTER_LOG" | grep -c "127.0.0.1:$D3_PORT" || echo 0)
+D1_HITS=$(grep '"routing"' "$ROUTER_LOG" 2>/dev/null | grep -c "127.0.0.1:$D1_PORT" || echo 0)
+D1_HITS=$(echo "$D1_HITS" | tail -1)
+D2_HITS=$(grep '"routing"' "$ROUTER_LOG" 2>/dev/null | grep -c "127.0.0.1:$D2_PORT" || echo 0)
+D2_HITS=$(echo "$D2_HITS" | tail -1)
+D3_HITS=$(grep '"routing"' "$ROUTER_LOG" 2>/dev/null | grep -c "127.0.0.1:$D3_PORT" || echo 0)
+D3_HITS=$(echo "$D3_HITS" | tail -1)
 echo "  distribution: d1=$D1_HITS d2=$D2_HITS d3=$D3_HITS"
 
 UNIQUE=0
@@ -195,7 +259,8 @@ D2_PID=$(cat "$DATA_DIR/run/daemon-2.pid" 2>/dev/null || echo "")
 if [[ -n "$D2_PID" ]] && kill -0 "$D2_PID" 2>/dev/null; then
   kill "$D2_PID" 2>/dev/null || true
   ok "daemon-2 killed (pid $D2_PID)"
-  sleep 3
+  warn "waiting 125s for heartbeat to expire (ROUTER_STALE_THRESHOLD_MS=120000)..."
+  sleep 125
   ISSUE5=$(create_issue "route-5-failover" "test")
   assert_gt "${#ISSUE5}" 0 0 "issue-5 (#$ISSUE5)"
   sleep 10
@@ -207,14 +272,14 @@ else
 fi
 
 phase 6 "Webhook delivery audit"
-WEB_DB="$DATA_DIR/ework-web/ework-web.db"
+WEB_DB="$DATA_DIR/ework-web/ework.db"
 if [[ -f "$WEB_DB" ]]; then
   DELIVERIES=$(sqlite3 "$WEB_DB" \
-    "SELECT COUNT(*) FROM webhook_deliveries WHERE status_code >= 200 AND status_code < 300;" \
+    "SELECT COUNT(*) FROM webhook_deliveries WHERE response_status >= 200 AND response_status < 300;" \
     2>/dev/null || echo 0)
   assert_ge "$DELIVERIES" 3 "≥3 successful webhook deliveries"
 else
-  warn "web DB not found"
+  warn "web DB not found at $WEB_DB"
 fi
 
 echo ""
