@@ -96,6 +96,7 @@ class SqliteDriver implements AsyncDatabase {
     const db = new Database(DB_PATH, { create: true, readwrite: true });
     db.exec("PRAGMA journal_mode = WAL");
     db.exec("PRAGMA foreign_keys = ON");
+    db.exec("PRAGMA busy_timeout = 5000");
     const schemaSql = applyPrefix(readFileSync(join(import.meta.dir, "schema-sqlite.sql"), "utf8"));
     db.exec(schemaSql);
     return new SqliteDriver(db);
