@@ -251,13 +251,12 @@ export async function migrateSqliteToMysql(opts: MysqlTargetOpts): Promise<Migra
     // The `config` table is created in db.ts:SqliteDriver.create at boot but
     // is missing from schema-mysql.sql (pre-existing gap — MysqlDriver.create
     // doesn't create it either, so a plain mysql boot has no config table).
-    // Recreate the same shape here so migrate() can copy config rows. `key`
-    // is a MySQL reserved word — must be backticked. VARCHAR(255) on the PK
-    // because MySQL TEXT can't be a PRIMARY KEY without a prefix length.
+    // Recreate the same shape here so migrate() can copy config rows.
     await conn.query(
       applyTargetPrefix(
         "CREATE TABLE IF NOT EXISTS {{config}} (" +
-          "`key` VARCHAR(255) PRIMARY KEY," +
+          "id BIGINT AUTO_INCREMENT PRIMARY KEY," +
+          "akey VARCHAR(255) NOT NULL UNIQUE," +
           "value TEXT NOT NULL," +
           "updated_at VARCHAR(40) NOT NULL" +
           ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
@@ -461,11 +460,10 @@ export async function migrateMysqlToSqlite(targetPath: string): Promise<MigrateR
     target.exec("PRAGMA journal_mode = WAL");
     target.exec("PRAGMA foreign_keys = ON");
 
-    // config table (same shape as db.ts:144 — not in schema.sql).
-    // `key` is NOT reserved in SQLite (unlike MySQL).
+    // config table (same shape as db.ts:158 — not in schema.sql).
     target.exec(
       applyTargetPrefix(
-        "CREATE TABLE IF NOT EXISTS {{config}} (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL)",
+        "CREATE TABLE IF NOT EXISTS {{config}} (id INTEGER PRIMARY KEY AUTOINCREMENT, akey TEXT NOT NULL UNIQUE, value TEXT NOT NULL, updated_at TEXT NOT NULL)",
         ""
       )
     );
@@ -609,12 +607,12 @@ export function generateMysqlDDL(
   }
 
   // config table — created in db.ts:SqliteDriver.create at boot, missing from
-  // schema-mysql.sql. Same shape as migrateSqliteToMysql L257-266. `key` is a
-  // MySQL reserved word → backticked.
+  // schema-mysql.sql. Same shape as migrateSqliteToMysql L257-266.
   lines.push(
     applyTargetPrefix(
       "CREATE TABLE IF NOT EXISTS {{config}} (" +
-        "`key` VARCHAR(255) PRIMARY KEY," +
+        "id BIGINT AUTO_INCREMENT PRIMARY KEY," +
+        "akey VARCHAR(255) NOT NULL UNIQUE," +
         "value TEXT NOT NULL," +
         "updated_at VARCHAR(40) NOT NULL" +
         ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;",

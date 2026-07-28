@@ -8,7 +8,8 @@
 -- tables InnoDB + utf8mb4 for FK CASCADE + full Unicode (emoji).
 
 CREATE TABLE IF NOT EXISTS {{users}} (
-  login         VARCHAR(255) PRIMARY KEY,
+  id            BIGINT AUTO_INCREMENT PRIMARY KEY,
+  login         VARCHAR(255) NOT NULL UNIQUE,
   kind          VARCHAR(16) NOT NULL DEFAULT 'human'
                 CHECK (kind IN ('human','bot','system')),
   display_name  VARCHAR(255) DEFAULT NULL,
@@ -33,7 +34,8 @@ CREATE TABLE IF NOT EXISTS {{projects}} (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS {{model_cache}} (
-  provider_model VARCHAR(128) PRIMARY KEY,
+  id             BIGINT AUTO_INCREMENT PRIMARY KEY,
+  provider_model VARCHAR(128) NOT NULL UNIQUE,
   label          VARCHAR(255) NOT NULL,
   refreshed_at   VARCHAR(40) NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -86,19 +88,21 @@ CREATE TABLE IF NOT EXISTS {{labels}} (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS {{issue_labels}} (
-  issue_id BIGINT NOT NULL,
-  label_id BIGINT NOT NULL,
-  PRIMARY KEY (issue_id, label_id),
+  id        BIGINT AUTO_INCREMENT PRIMARY KEY,
+  issue_id  BIGINT NOT NULL,
+  label_id  BIGINT NOT NULL,
+  UNIQUE (issue_id, label_id),
   CONSTRAINT {{fk_il_issue}} FOREIGN KEY (issue_id) REFERENCES {{issues}}(id) ON DELETE CASCADE,
   CONSTRAINT {{fk_il_label}} FOREIGN KEY (label_id) REFERENCES {{labels}}(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE INDEX issue_labels_label ON {{issue_labels}} (label_id);
 
 CREATE TABLE IF NOT EXISTS {{reactions}} (
-  comment_id BIGINT NOT NULL,
-  user_login VARCHAR(255) NOT NULL,
-  content    VARCHAR(64) NOT NULL,
-  PRIMARY KEY (comment_id, user_login, content),
+  id          BIGINT AUTO_INCREMENT PRIMARY KEY,
+  comment_id  BIGINT NOT NULL,
+  user_login  VARCHAR(255) NOT NULL,
+  content     VARCHAR(64) NOT NULL,
+  UNIQUE (comment_id, user_login, content),
   CONSTRAINT {{fk_reactions_comment}} FOREIGN KEY (comment_id)  REFERENCES {{comments}}(id) ON DELETE CASCADE,
   CONSTRAINT {{fk_reactions_user}} FOREIGN KEY (user_login)  REFERENCES {{users}}(login)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -106,14 +110,15 @@ CREATE INDEX reactions_comment ON {{reactions}} (comment_id);
 CREATE INDEX reactions_user   ON {{reactions}} (user_login);
 
 CREATE TABLE IF NOT EXISTS {{attachments}} (
-  uuid         VARCHAR(64) PRIMARY KEY,
-  issue_id     BIGINT NOT NULL,
-  filename     VARCHAR(255) NOT NULL,
-  content_type VARCHAR(128) NOT NULL DEFAULT 'application/octet-stream',
-  size         BIGINT NOT NULL,
-  blob_path    VARCHAR(1024) NOT NULL,
-  uploaded_by  VARCHAR(255) NOT NULL,
-  created_at   VARCHAR(40) NOT NULL,
+  id            BIGINT AUTO_INCREMENT PRIMARY KEY,
+  uuid          VARCHAR(64) NOT NULL UNIQUE,
+  issue_id      BIGINT NOT NULL,
+  filename      VARCHAR(255) NOT NULL,
+  content_type  VARCHAR(128) NOT NULL DEFAULT 'application/octet-stream',
+  size          BIGINT NOT NULL,
+  blob_path     VARCHAR(1024) NOT NULL,
+  uploaded_by   VARCHAR(255) NOT NULL,
+  created_at    VARCHAR(40) NOT NULL,
   CONSTRAINT {{fk_attachments_issue}} FOREIGN KEY (issue_id)    REFERENCES {{issues}}(id) ON DELETE CASCADE,
   CONSTRAINT {{fk_attachments_user}} FOREIGN KEY (uploaded_by) REFERENCES {{users}}(login)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -169,12 +174,13 @@ CREATE INDEX pat_user         ON {{personal_access_tokens}} (user_login);
 CREATE INDEX pat_last_eight   ON {{personal_access_tokens}} (token_last_eight);
 
 CREATE TABLE IF NOT EXISTS {{project_members}} (
-  project_id BIGINT NOT NULL,
-  user_login VARCHAR(255) NOT NULL,
-  role       VARCHAR(16) NOT NULL DEFAULT 'writer'
-             CHECK (role IN ('reader','writer','admin')),
-  created_at VARCHAR(40) NOT NULL,
-  PRIMARY KEY (project_id, user_login),
+  id          BIGINT AUTO_INCREMENT PRIMARY KEY,
+  project_id  BIGINT NOT NULL,
+  user_login  VARCHAR(255) NOT NULL,
+  role        VARCHAR(16) NOT NULL DEFAULT 'writer'
+              CHECK (role IN ('reader','writer','admin')),
+  created_at  VARCHAR(40) NOT NULL,
+  UNIQUE (project_id, user_login),
   CONSTRAINT {{fk_pm_project}} FOREIGN KEY (project_id) REFERENCES {{projects}}(id) ON DELETE CASCADE,
   CONSTRAINT {{fk_pm_user}} FOREIGN KEY (user_login) REFERENCES {{users}}(login) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

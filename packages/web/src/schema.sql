@@ -1,10 +1,10 @@
 -- ework schema. Applied idempotently on boot (IF NOT EXISTS everywhere).
 -- See db.ts for PRAGMA setup (WAL + foreign_keys = ON).
 
--- login stays PRIMARY KEY intentionally. Renaming users is not supported;
--- swap to INTEGER user_id + UNIQUE(login) if that ever changes.
+-- login is UNIQUE (not PRIMARY KEY) — surrogate id is the PK now.
 CREATE TABLE IF NOT EXISTS {{users}} (
-  login         TEXT PRIMARY KEY,
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  login         TEXT NOT NULL UNIQUE,
   kind          TEXT NOT NULL DEFAULT 'human'
                 CHECK (kind IN ('human','bot','system')),
   display_name  TEXT,
@@ -40,7 +40,8 @@ CREATE TABLE IF NOT EXISTS {{projects}} (
 -- than a single JSON blob so the settings UI can render a select without
 -- parsing JSON in SQL.
 CREATE TABLE IF NOT EXISTS {{model_cache}} (
-  provider_model TEXT PRIMARY KEY,
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  provider_model TEXT NOT NULL UNIQUE,
   label          TEXT NOT NULL,
   refreshed_at   TEXT NOT NULL
 );
@@ -89,29 +90,32 @@ CREATE TABLE IF NOT EXISTS {{labels}} (
 );
 
 CREATE TABLE IF NOT EXISTS {{issue_labels}} (
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
   issue_id  INTEGER NOT NULL REFERENCES {{issues}}(id) ON DELETE CASCADE,
   label_id  INTEGER NOT NULL REFERENCES {{labels}}(id) ON DELETE CASCADE,
-  PRIMARY KEY (issue_id, label_id)
+  UNIQUE (issue_id, label_id)
 );
 
 CREATE TABLE IF NOT EXISTS {{reactions}} (
-  comment_id INTEGER NOT NULL REFERENCES {{comments}}(id) ON DELETE CASCADE,
-  user_login TEXT NOT NULL REFERENCES {{users}}(login),
-  content    TEXT NOT NULL,
-  PRIMARY KEY (comment_id, user_login, content)
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  comment_id  INTEGER NOT NULL REFERENCES {{comments}}(id) ON DELETE CASCADE,
+  user_login  TEXT NOT NULL REFERENCES {{users}}(login),
+  content     TEXT NOT NULL,
+  UNIQUE (comment_id, user_login, content)
 );
 CREATE INDEX IF NOT EXISTS reactions_comment
   ON {{reactions}} (comment_id);
 
 CREATE TABLE IF NOT EXISTS {{attachments}} (
-  uuid        TEXT PRIMARY KEY,
-  issue_id    INTEGER NOT NULL REFERENCES {{issues}}(id) ON DELETE CASCADE,
-  filename    TEXT NOT NULL,
-  content_type TEXT NOT NULL DEFAULT 'application/octet-stream',
-  size        INTEGER NOT NULL,
-  blob_path   TEXT NOT NULL,
-  uploaded_by TEXT NOT NULL REFERENCES {{users}}(login),
-  created_at  TEXT NOT NULL
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  uuid          TEXT NOT NULL UNIQUE,
+  issue_id      INTEGER NOT NULL REFERENCES {{issues}}(id) ON DELETE CASCADE,
+  filename      TEXT NOT NULL,
+  content_type  TEXT NOT NULL DEFAULT 'application/octet-stream',
+  size          INTEGER NOT NULL,
+  blob_path     TEXT NOT NULL,
+  uploaded_by   TEXT NOT NULL REFERENCES {{users}}(login),
+  created_at    TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS attachments_issue
   ON {{attachments}} (issue_id);
@@ -187,12 +191,13 @@ CREATE INDEX IF NOT EXISTS pat_last_eight
 -- routes through here: a write-scoped PAT can only write where the owning user
 -- has writer+ role on the target project.
 CREATE TABLE IF NOT EXISTS {{project_members}} (
-  project_id INTEGER NOT NULL REFERENCES {{projects}}(id) ON DELETE CASCADE,
-  user_login TEXT NOT NULL REFERENCES {{users}}(login) ON DELETE CASCADE,
-  role       TEXT NOT NULL DEFAULT 'writer'
-             CHECK (role IN ('reader','writer','admin')),
-  created_at TEXT NOT NULL,
-  PRIMARY KEY (project_id, user_login)
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id  INTEGER NOT NULL REFERENCES {{projects}}(id) ON DELETE CASCADE,
+  user_login  TEXT NOT NULL REFERENCES {{users}}(login) ON DELETE CASCADE,
+  role        TEXT NOT NULL DEFAULT 'writer'
+              CHECK (role IN ('reader','writer','admin')),
+  created_at  TEXT NOT NULL,
+  UNIQUE (project_id, user_login)
 );
 CREATE INDEX IF NOT EXISTS project_members_user
   ON {{project_members}} (user_login);

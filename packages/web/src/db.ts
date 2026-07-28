@@ -141,6 +141,75 @@ function migrateLabelsTable(db: Database): void {
   }
 }
 
+function migrateConfigTable(db: Database): void {
+  const have = tableColumns(db, "config");
+  if (have.size === 0) return;
+  if (have.has("id") && have.has("akey")) return;
+  db.exec("PRAGMA foreign_keys = OFF");
+  try {
+    const oldKeyCol = have.has("key") ? "key" : "akey";
+    db.exec(applyPrefix("ALTER TABLE {{config}} RENAME TO config_old"));
+    db.exec(applyPrefix(
+      "CREATE TABLE {{config}} (id INTEGER PRIMARY KEY AUTOINCREMENT, akey TEXT NOT NULL UNIQUE, value TEXT NOT NULL, updated_at TEXT NOT NULL)"
+    ));
+    db.exec(applyPrefix(
+      `INSERT INTO {{config}} (akey, value, updated_at) SELECT ${oldKeyCol}, value, updated_at FROM config_old`
+    ));
+    db.exec("DROP TABLE config_old");
+  } finally {
+    db.exec("PRAGMA foreign_keys = ON");
+  }
+}
+
+const SURROGATE_ID_TABLES: Array<{ name: string; createSql: string; dataCols: string }> = [
+  {
+    name: "users",
+    createSql: "CREATE TABLE {{users}} (id INTEGER PRIMARY KEY AUTOINCREMENT, login TEXT NOT NULL UNIQUE, kind TEXT NOT NULL DEFAULT 'human' CHECK (kind IN ('human','bot','system')), display_name TEXT, password_hash TEXT, email TEXT, is_admin INTEGER NOT NULL DEFAULT 0, is_active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT '')",
+    dataCols: "login, kind, display_name, password_hash, email, is_admin, is_active, created_at, updated_at",
+  },
+  {
+    name: "model_cache",
+    createSql: "CREATE TABLE {{model_cache}} (id INTEGER PRIMARY KEY AUTOINCREMENT, provider_model TEXT NOT NULL UNIQUE, label TEXT NOT NULL, refreshed_at TEXT NOT NULL)",
+    dataCols: "provider_model, label, refreshed_at",
+  },
+  {
+    name: "issue_labels",
+    createSql: "CREATE TABLE {{issue_labels}} (id INTEGER PRIMARY KEY AUTOINCREMENT, issue_id INTEGER NOT NULL REFERENCES {{issues}}(id) ON DELETE CASCADE, label_id INTEGER NOT NULL REFERENCES {{labels}}(id) ON DELETE CASCADE, UNIQUE (issue_id, label_id))",
+    dataCols: "issue_id, label_id",
+  },
+  {
+    name: "reactions",
+    createSql: "CREATE TABLE {{reactions}} (id INTEGER PRIMARY KEY AUTOINCREMENT, comment_id INTEGER NOT NULL REFERENCES {{comments}}(id) ON DELETE CASCADE, user_login TEXT NOT NULL REFERENCES {{users}}(login), content TEXT NOT NULL, UNIQUE (comment_id, user_login, content))",
+    dataCols: "comment_id, user_login, content",
+  },
+  {
+    name: "attachments",
+    createSql: "CREATE TABLE {{attachments}} (id INTEGER PRIMARY KEY AUTOINCREMENT, uuid TEXT NOT NULL UNIQUE, issue_id INTEGER NOT NULL REFERENCES {{issues}}(id) ON DELETE CASCADE, filename TEXT NOT NULL, content_type TEXT NOT NULL DEFAULT 'application/octet-stream', size INTEGER NOT NULL, blob_path TEXT NOT NULL, uploaded_by TEXT NOT NULL REFERENCES {{users}}(login), created_at TEXT NOT NULL)",
+    dataCols: "uuid, issue_id, filename, content_type, size, blob_path, uploaded_by, created_at",
+  },
+  {
+    name: "project_members",
+    createSql: "CREATE TABLE {{project_members}} (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL REFERENCES {{projects}}(id) ON DELETE CASCADE, user_login TEXT NOT NULL REFERENCES {{users}}(login) ON DELETE CASCADE, role TEXT NOT NULL DEFAULT 'writer' CHECK (role IN ('reader','writer','admin')), created_at TEXT NOT NULL, UNIQUE (project_id, user_login))",
+    dataCols: "project_id, user_login, role, created_at",
+  },
+];
+
+function migrateAddSurrogateId(db: Database): void {
+  db.exec("PRAGMA foreign_keys = OFF");
+  try {
+    for (const t of SURROGATE_ID_TABLES) {
+      const have = tableColumns(db, t.name);
+      if (have.size === 0 || have.has("id")) continue;
+      db.exec(applyPrefix(`ALTER TABLE {{${t.name}}} RENAME TO ${t.name}_old`));
+      db.exec(applyPrefix(t.createSql));
+      db.exec(applyPrefix(`INSERT INTO {{${t.name}}} (${t.dataCols}) SELECT ${t.dataCols} FROM ${t.name}_old`));
+      db.exec(`DROP TABLE ${t.name}_old`);
+    }
+  } finally {
+    db.exec("PRAGMA foreign_keys = ON");
+  }
+}
+
 // ---- SqliteDriver: wraps bun:sqlite behind AsyncDatabase ----
 class SqliteDriver implements AsyncDatabase {
   readonly dialect = "sqlite" as const;
@@ -155,15 +224,17 @@ class SqliteDriver implements AsyncDatabase {
     db.exec("PRAGMA foreign_keys = ON");
     db.exec(
       applyPrefix(
-        "CREATE TABLE IF NOT EXISTS {{config}} (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL)"
+        "CREATE TABLE IF NOT EXISTS {{config}} (id INTEGER PRIMARY KEY AUTOINCREMENT, akey TEXT NOT NULL UNIQUE, value TEXT NOT NULL, updated_at TEXT NOT NULL)"
       )
     );
     // Migration must run BEFORE schema.sql (same ordering as the original file).
+  migrateConfigTable(db);
   migrateUsersTable(db);
   migratePatTable(db);
   migrateProjectsTable(db);
   migrateIssuesTable(db);
   migrateLabelsTable(db);
+  migrateAddSurrogateId(db);
     db.exec(applyPrefix(readFileSync(join(import.meta.dir, "schema.sql"), "utf8")));
     return new SqliteDriver(db);
   }
@@ -230,6 +301,43 @@ function translateForMysql(sql: string): string {
     .replace(/excluded\.(\w+)/g, "VALUES($1)");
 }
 
+async function migrateMysqlSurrogateId(pool: Pool): Promise<void> {
+  const MYSQL_ALTERS: Array<{ table: string; sql: string }> = [
+    { table: "users", sql: "ALTER TABLE {{users}} DROP PRIMARY KEY, ADD COLUMN id BIGINT AUTO_INCREMENT PRIMARY KEY FIRST, ADD UNIQUE INDEX uk_users_login (login)" },
+    { table: "model_cache", sql: "ALTER TABLE {{model_cache}} DROP PRIMARY KEY, ADD COLUMN id BIGINT AUTO_INCREMENT PRIMARY KEY FIRST, ADD UNIQUE INDEX uk_mc_pm (provider_model)" },
+    { table: "issue_labels", sql: "ALTER TABLE {{issue_labels}} DROP PRIMARY KEY, ADD COLUMN id BIGINT AUTO_INCREMENT PRIMARY KEY FIRST, ADD UNIQUE INDEX uk_il (issue_id, label_id)" },
+    { table: "reactions", sql: "ALTER TABLE {{reactions}} DROP PRIMARY KEY, ADD COLUMN id BIGINT AUTO_INCREMENT PRIMARY KEY FIRST, ADD UNIQUE INDEX uk_react (comment_id, user_login, content)" },
+    { table: "attachments", sql: "ALTER TABLE {{attachments}} DROP PRIMARY KEY, ADD COLUMN id BIGINT AUTO_INCREMENT PRIMARY KEY FIRST, ADD UNIQUE INDEX uk_att_uuid (uuid)" },
+    { table: "project_members", sql: "ALTER TABLE {{project_members}} DROP PRIMARY KEY, ADD COLUMN id BIGINT AUTO_INCREMENT PRIMARY KEY FIRST, ADD UNIQUE INDEX uk_pm (project_id, user_login)" },
+  ];
+  for (const m of MYSQL_ALTERS) {
+    const tbl = DB_PREFIX + m.table;
+    const [cols] = await pool.query(
+      "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = 'id'",
+      [tbl]
+    );
+    if ((cols as unknown[]).length > 0) continue;
+    try {
+      await pool.query(applyPrefix(m.sql));
+    } catch (e) {
+      const errno = (e as { errno?: number }).errno;
+      if (errno === 1146) continue;
+      console.warn(`[db] MySQL surrogate-id migration for ${m.table} failed (errno ${errno}):`, (e as Error).message);
+    }
+  }
+  const [cfgCols] = await pool.query(
+    "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = 'key'",
+    [DB_PREFIX + "config"]
+  );
+  if ((cfgCols as unknown[]).length > 0) {
+    try {
+      await pool.query(applyPrefix("ALTER TABLE {{config}} CHANGE `key` akey VARCHAR(255) NOT NULL"));
+    } catch (e) {
+      console.warn("[db] MySQL config key→akey rename failed:", (e as Error).message);
+    }
+  }
+}
+
 class MysqlDriver implements AsyncDatabase {
   readonly dialect = "mysql" as const;
   private readonly pool: Pool;
@@ -271,6 +379,7 @@ class MysqlDriver implements AsyncDatabase {
           throw e;
         }
       }
+      await migrateMysqlSurrogateId(pool);
     }
     return new MysqlDriver(pool);
   }
@@ -347,9 +456,9 @@ export function getDB(): AsyncDatabase {
 export async function getConfigAll(): Promise<Record<string, string>> {
   try {
     const driver = getDB();
-    const rows = await driver.all<{ key: string; value: string }>("SELECT key, value FROM {{config}}");
+    const rows = await driver.all<{ akey: string; value: string }>("SELECT akey, value FROM {{config}}");
     const out: Record<string, string> = {};
-    for (const r of rows) out[r.key] = r.value;
+    for (const r of rows) out[r.akey] = r.value;
     return out;
   } catch {
     return {};
@@ -359,12 +468,12 @@ export async function getConfigAll(): Promise<Record<string, string>> {
 export async function setConfig(key: string, value: string): Promise<void> {
   const now = new Date().toISOString();
   await getDB().run(
-    "INSERT INTO {{config}} (key, value, updated_at) VALUES (?, ?, ?) " +
-      "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+    "INSERT INTO {{config}} (akey, value, updated_at) VALUES (?, ?, ?) " +
+      "ON CONFLICT(akey) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
     [key, value, now]
   );
 }
 
 export async function deleteConfig(key: string): Promise<void> {
-  await getDB().run("DELETE FROM {{config}} WHERE key = ?", [key]);
+  await getDB().run("DELETE FROM {{config}} WHERE akey = ?", [key]);
 }
