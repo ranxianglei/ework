@@ -5,7 +5,7 @@ import type { TrackerRef, Issue, IssueState, OpSession, SessionState, Message } 
 // ─── Row Types ───
 
 interface IssueRow {
-  id: string;
+  uid: string;
   tracker_type: string;
   tracker_scope_key: string;
   tracker_scope: string;
@@ -18,7 +18,7 @@ interface IssueRow {
 }
 
 interface SessionRow {
-  id: string;
+  uid: string;
   issue_id: string;
   name: string;
   state: string;
@@ -37,7 +37,7 @@ interface SessionRow {
 }
 
 interface MessageRow {
-  id: string;
+  uid: string;
   session_id: string;
   content: string;
   source_comment_id: string | null;
@@ -55,7 +55,7 @@ function rowToIssue(row: IssueRow): Issue {
   let scope: Record<string, string>;
   try { scope = JSON.parse(row.tracker_scope); } catch { scope = {}; }
   return {
-    id: row.id,
+    id: row.uid,
     trackerType: row.tracker_type,
     trackerScope: scope,
     trackerScopeKey: row.tracker_scope_key,
@@ -70,7 +70,7 @@ function rowToIssue(row: IssueRow): Issue {
 
 function rowToSession(row: SessionRow): OpSession {
   return {
-    id: row.id,
+    id: row.uid,
     issueId: row.issue_id,
     name: row.name,
     state: row.state as SessionState,
@@ -91,7 +91,7 @@ function rowToSession(row: SessionRow): OpSession {
 
 function rowToMessage(row: MessageRow): Message {
   return {
-    id: row.id,
+    id: row.uid,
     sessionId: row.session_id,
     content: row.content,
     sourceCommentId: row.source_comment_id ?? undefined,
@@ -121,7 +121,7 @@ export class Store {
   // ─── Issues ───
 
   async getIssue(id: string): Promise<Issue | undefined> {
-    const row = await getDB().get<IssueRow>("SELECT * FROM {{issues}} WHERE id = ?", [id]);
+    const row = await getDB().get<IssueRow>("SELECT * FROM {{issues}} WHERE uid = ?", [id]);
     return row ? rowToIssue(row) : undefined;
   }
 
@@ -137,7 +137,7 @@ export class Store {
     const existing = await this.findIssue(ref.trackerType, scopeKey, ref.issueId);
     if (existing) {
       if (title && existing.title !== title) {
-        await getDB().run("UPDATE {{issues}} SET title = ?, updated_at = ? WHERE id = ?", [
+        await getDB().run("UPDATE {{issues}} SET title = ?, updated_at = ? WHERE uid = ?", [
           title,
           new Date().toISOString(),
           existing.id,
@@ -150,7 +150,7 @@ export class Store {
     const now = new Date();
     const id = crypto.randomUUID();
     await getDB().run(
-      "INSERT OR IGNORE INTO {{issues}} (id, tracker_type, tracker_scope_key, tracker_scope, tracker_issue_id, state, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT OR IGNORE INTO {{issues}} (uid, tracker_type, tracker_scope_key, tracker_scope, tracker_issue_id, state, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
       [id, ref.trackerType, scopeKey, JSON.stringify(ref.scope), ref.issueId, "created", title, now.toISOString(), now.toISOString()]
     );
 
@@ -166,7 +166,7 @@ export class Store {
   }
 
   async updateIssueState(id: string, state: IssueState): Promise<void> {
-    await getDB().run("UPDATE {{issues}} SET state = ?, updated_at = ? WHERE id = ?", [
+    await getDB().run("UPDATE {{issues}} SET state = ?, updated_at = ? WHERE uid = ?", [
       state,
       new Date().toISOString(),
       id,
@@ -186,7 +186,7 @@ export class Store {
   // ─── OpSessions ───
 
   async getSession(id: string): Promise<OpSession | undefined> {
-    const row = await getDB().get<SessionRow>("SELECT * FROM {{op_sessions}} WHERE id = ?", [id]);
+    const row = await getDB().get<SessionRow>("SELECT * FROM {{op_sessions}} WHERE uid = ?", [id]);
     return row ? rowToSession(row) : undefined;
   }
 
@@ -218,14 +218,14 @@ export class Store {
       createdAt: new Date(),
     };
     await getDB().run(
-      "INSERT OR IGNORE INTO {{op_sessions}} (id, issue_id, name, state, opencode_session_id, opencode_pid, workdir, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT OR IGNORE INTO {{op_sessions}} (uid, issue_id, name, state, opencode_session_id, opencode_pid, workdir, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
       [session.id, session.issueId, session.name, session.state, null, null, null, session.createdAt.toISOString()]
     );
     return session;
   }
 
   async updateSession(id: string, patch: Partial<OpSession>): Promise<OpSession | undefined> {
-    const row = await getDB().get<SessionRow>("SELECT * FROM {{op_sessions}} WHERE id = ?", [id]);
+    const row = await getDB().get<SessionRow>("SELECT * FROM {{op_sessions}} WHERE uid = ?", [id]);
     if (!row) return undefined;
     const existing = rowToSession(row);
     const updated = { ...existing, ...patch };
@@ -233,7 +233,7 @@ export class Store {
     await getDB().run(
       `UPDATE {{op_sessions}} SET state = ?, opencode_session_id = ?, opencode_pid = ?, workdir = ?,
        started_at = ?, progress_comment_id = ?, reaction_comment_id = ?, current_prompt = ?,
-       last_output_at = ?, nudge_rounds = ?, stuck_nudge_rounds = ?, generation = ? WHERE id = ?`,
+       last_output_at = ?, nudge_rounds = ?, stuck_nudge_rounds = ?, generation = ? WHERE uid = ?`,
       [
         updated.state,
         updated.opencodeSessionId ?? null,
@@ -275,7 +275,7 @@ export class Store {
     const now = new Date().toISOString();
     const id = crypto.randomUUID();
     await getDB().run(
-      "INSERT OR IGNORE INTO {{messages}} (id, session_id, content, source_comment_id, reaction_comment_id, status, attempts, error, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT OR IGNORE INTO {{messages}} (uid, session_id, content, source_comment_id, reaction_comment_id, status, attempts, error, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       [id, sessionId, content, sourceCommentId ?? null, reactionCommentId ?? null, "pending", 0, null, now, now]
     );
     return {
@@ -287,7 +287,7 @@ export class Store {
   }
 
   async getMessage(id: string): Promise<Message | undefined> {
-    const row = await getDB().get<MessageRow>("SELECT * FROM {{messages}} WHERE id = ?", [id]);
+    const row = await getDB().get<MessageRow>("SELECT * FROM {{messages}} WHERE uid = ?", [id]);
     return row ? rowToMessage(row) : undefined;
   }
 
@@ -300,10 +300,10 @@ export class Store {
   }
 
   async updateMessageStatus(id: string, status: Message["status"], error?: string): Promise<void> {
-    const row = await getDB().get<MessageRow>("SELECT * FROM {{messages}} WHERE id = ?", [id]);
+    const row = await getDB().get<MessageRow>("SELECT * FROM {{messages}} WHERE uid = ?", [id]);
     const attempts = row ? row.attempts + (status === "failed" ? 1 : 0) : 0;
     await getDB().run(
-      "UPDATE {{messages}} SET status = ?, attempts = ?, error = ?, updated_at = ? WHERE id = ?",
+      "UPDATE {{messages}} SET status = ?, attempts = ?, error = ?, updated_at = ? WHERE uid = ?",
       [status, attempts, error ?? null, new Date().toISOString(), id]
     );
   }
@@ -436,7 +436,7 @@ export class Store {
    */
   async claimIssue(issueId: string, daemonId: number): Promise<boolean> {
     const res = await getDB().run(
-      "UPDATE {{issues}} SET owner_daemon_id = ? WHERE id = ? AND owner_daemon_id IS NULL",
+      "UPDATE {{issues}} SET owner_daemon_id = ? WHERE uid = ? AND owner_daemon_id IS NULL",
       [daemonId, issueId]
     );
     return res.changes === 1;
@@ -454,7 +454,7 @@ export class Store {
   /** Atomic message claim: pending → running. False = lost or already done. */
   async claimMessage(messageId: string): Promise<boolean> {
     const res = await getDB().run(
-      "UPDATE {{messages}} SET status = 'running', updated_at = ? WHERE id = ? AND status = 'pending'",
+      "UPDATE {{messages}} SET status = 'running', updated_at = ? WHERE uid = ? AND status = 'pending'",
       [new Date().toISOString(), messageId]
     );
     return res.changes === 1;
@@ -471,7 +471,7 @@ export class Store {
   async listOwnedSessions(daemonId: number): Promise<OpSession[]> {
     const rows = await getDB().all<SessionRow>(
       `SELECT s.* FROM {{op_sessions}} s
-       INNER JOIN {{issues}} i ON i.id = s.issue_id
+       INNER JOIN {{issues}} i ON i.uid = s.issue_id
        WHERE i.owner_daemon_id = ?
        ORDER BY s.created_at`,
       [daemonId]
@@ -483,8 +483,8 @@ export class Store {
   async getOwnedPendingOrRunningMessages(daemonId: number): Promise<Message[]> {
     const rows = await getDB().all<MessageRow>(
       `SELECT m.* FROM {{messages}} m
-       INNER JOIN {{op_sessions}} s ON s.id = m.session_id
-       INNER JOIN {{issues}} i ON i.id = s.issue_id
+       INNER JOIN {{op_sessions}} s ON s.uid = m.session_id
+       INNER JOIN {{issues}} i ON i.uid = s.issue_id
        WHERE i.owner_daemon_id = ? AND m.status IN ('pending', 'running')
        ORDER BY m.created_at ASC`,
       [daemonId]
