@@ -820,6 +820,12 @@ export class Engine {
     // them); only the explicit model-override var is neutralized.
     const childEnv = { ...process.env };
     if (!model) delete childEnv.OPENCODE_MODEL;
+    // Strip parent-session env vars so the child opencode reads its own
+    // opencode.json instead of inheriting a parent session's model/provider.
+    delete childEnv.OPENCODE;
+    delete childEnv.OPENCODE_PID;
+    delete childEnv.OPENCODE_RUN_ID;
+    delete childEnv.OPENCODE_PROCESS_ROLE;
 
     try {
       const proc = spawn({
