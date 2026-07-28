@@ -60,8 +60,14 @@ export async function runAddDaemon(
     const eqIdx = line.indexOf("=");
     if (eqIdx === -1) return line;
     if (line.slice(0, eqIdx).trim().startsWith("#")) return line;
-    if (line.slice(0, eqIdx).trim() === "DAEMON_PORT") {
+    const key = line.slice(0, eqIdx).trim();
+    if (key === "DAEMON_PORT") {
       return `DAEMON_PORT=${newPort}`;
+    }
+    if (key === "DAEMON_ENDPOINT") {
+      const oldVal = line.slice(eqIdx + 1).trim();
+      const host = oldVal.split(":")[0] || "127.0.0.1";
+      return `DAEMON_ENDPOINT=${host}:${newPort}`;
     }
     return line;
   });
