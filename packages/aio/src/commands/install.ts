@@ -347,8 +347,27 @@ export async function runInstall(
   if (webStarted && exists(botTokenFile)) {
     botToken = (await fs.promises.readFile(botTokenFile, "utf8")).trim();
     if (botToken) {
-      logger.ok(`reusing saved bot token from ${botTokenFile}`);
-      botBootstrapped = true;
+      // Saved token may be orphaned if the DB was wiped/replaced (fresh MySQL,
+      // sqlite→mysql migration). Verify before trusting — a stale token causes
+      // silent 401s on every daemon call. Any non-401 status means auth passed
+      // (404 = route missing but token valid); network error = web starting up.
+      const fetchImpl = hooks.fetchImpl ?? fetch;
+      try {
+        const verifyRes = await fetchImpl(`${baseUrl}/api/v1/user`, {
+          headers: { Authorization: `token ${botToken}` },
+          redirect: "manual",
+        });
+        if (verifyRes.status !== 401) {
+          logger.ok(`reusing saved bot token from ${botTokenFile} (verified)`);
+          botBootstrapped = true;
+        } else {
+          logger.warn(`saved bot token is stale (db has no matching PAT), re-bootstrapping`);
+          botToken = "";
+        }
+      } catch {
+        logger.warn(`cannot verify saved bot token, will re-bootstrap`);
+        botToken = "";
+      }
     }
   }
   if (webStarted && !botBootstrapped) {
