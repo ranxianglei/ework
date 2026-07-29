@@ -1,6 +1,7 @@
 import type { Config } from "./config";
 import { getUserByLogin, ensureUser, verifyPat, type UserRow } from "./store";
 import { runAuthHook } from "./auth-hook";
+import { readFileSync, existsSync } from "fs";
 
 // Per-user token-cookie auth. Cookie value is HMAC-signed and carries login +
 // issued-at, so the server is stateless (no session table). Two cookie formats
@@ -191,7 +192,16 @@ function esc(s: string): string {
     .replace(/"/g, "&quot;");
 }
 
-export function loginHTML(next: string, error?: string): string {
+export function loginHTML(next: string, error?: string, cfg?: Config): string {
+  if (cfg?.loginPage && existsSync(cfg.loginPage)) {
+    try {
+      const tpl = readFileSync(cfg.loginPage, "utf-8");
+      return tpl
+        .replace(/\{\{next\}\}/g, esc(sanitizeNext(next)))
+        .replace(/\{\{error\}\}/g, error ? esc(error) : "");
+    } catch {
+    }
+  }
   const err = error ? `<div class="err">${esc(error)}</div>` : "";
   return `<!doctype html><html lang="zh"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">

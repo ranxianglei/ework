@@ -481,7 +481,7 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
       const form = await req.formData().catch(() => new FormData());
       const next = sanitizeNext(String(form.get("next") ?? "/"));
       if (!rateLimit(`login:${ip}`, 5, 5 / (15 * 60))) {
-        return html(loginHTML(next, "尝试过多，15 分钟后再试"), 429);
+        return html(loginHTML(next, "尝试过多，15 分钟后再试", cfg), 429);
       }
       const login = String(form.get("login") ?? "").trim();
       const password = String(form.get("password") ?? "");
@@ -516,10 +516,10 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
         : login || password
           ? "用户名或密码错误"
           : "请填写用户名密码或共享 token";
-      return html(loginHTML(next, err), 401);
+      return html(loginHTML(next, err, cfg), 401);
     }
     const next = sanitizeNext(url.searchParams.get("next") ?? "/");
-    return html(loginHTML(next));
+    return html(loginHTML(next, undefined, cfg));
   }
 
   if (url.pathname === "/logout" && req.method === "POST") {
