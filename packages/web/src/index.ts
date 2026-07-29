@@ -627,8 +627,10 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     const desc = url.searchParams.get("asc") !== "1";
     const all = url.searchParams.get("all") === "1";
     const limit = Math.min(5000, Math.max(1, Number(url.searchParams.get("limit")) || 30));
+    const daemonEp = url.searchParams.get("daemon");
+    const client = daemonEp ? new RemoteOpencodeClient(daemonEp) : opencode;
     try {
-      const { html: body } = await buildSessionView(opencode, sid, desc, cfg.collapseLines, limit, all);
+      const { html: body } = await buildSessionView(client, sid, desc, cfg.collapseLines, limit, all);
       return html(body);
     } catch (e) {
       const status = e instanceof OpencodeError ? e.status : 500;
