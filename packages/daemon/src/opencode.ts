@@ -221,6 +221,7 @@ export class Engine {
   private stopping = new Set<string>();
   private processingComments = new Set<string>();
   private currentMessage = new Map<string, string>();
+  private currentModel = new Map<string, string | undefined>();
   private lastOutputAt = new Map<string, number>();
   private startedAt = new Map<string, number>();
   private progressCommentId = new Map<string, string>();
@@ -687,6 +688,7 @@ export class Engine {
     this.running.delete(k);
     this.stopping.delete(k);
     this.currentMessage.delete(k);
+    this.currentModel.delete(k);
     this.lastOutputAt.delete(k);
     this.startedAt.delete(k);
     this.progressCommentId.delete(k);
@@ -738,6 +740,7 @@ export class Engine {
     // Don't clear stopping — let old execProcess detect preemption via process reference mismatch
     this.running.delete(k);
     this.currentMessage.delete(k);
+    this.currentModel.delete(k);
     this.startedAt.delete(k);
 
     // Execute new message
@@ -797,6 +800,7 @@ export class Engine {
     // Without this, opencode's own default (influenced by plugin agent
     // presets) can pick a non-existent model, causing ProviderModelNotFoundError.
     const model = msg.model || this.cfg.opencode.defaultModel;
+    this.currentModel.set(k, model);
     if (model) {
       args.push("--model", model);
     }
@@ -935,6 +939,7 @@ export class Engine {
 
     // running.delete deferred to dequeuePending
     this.currentMessage.delete(k);
+    this.currentModel.delete(k);
 
     const started = this.startedAt.get(k);
     this.startedAt.delete(k);
@@ -1006,7 +1011,7 @@ export class Engine {
 
         const instructions = tracker.getTrackerInstructions(ref);
         const nudgePrompt = this.buildNudgePrompt(session, issue, instructions);
-        const nudgeMsg = await this.store.createMessage(session.id, nudgePrompt);
+        const nudgeMsg = await this.store.createMessage(session.id, nudgePrompt, undefined, undefined, this.currentModel.get(k));
         await this.dequeueOrIdle(k, session, issue, nudgeMsg);
         return;
       }
@@ -1250,6 +1255,7 @@ export class Engine {
           if (msgId) {
             await this.store.updateMessageStatus(msgId, "failed", "process died unexpectedly");
             this.currentMessage.delete(k);
+    this.currentModel.delete(k);
           }
 
           const ref = this.sessionToRef(session, issue);
@@ -1268,7 +1274,7 @@ export class Engine {
 
               const instructions = tracker.getTrackerInstructions(ref);
               const nudgePrompt = this.buildProcessExitNudgePrompt(session, issue, instructions);
-              const nudgeMsg = await this.store.createMessage(session.id, nudgePrompt);
+              const nudgeMsg = await this.store.createMessage(session.id, nudgePrompt, undefined, undefined, this.currentModel.get(k));
               await this.dequeueOrIdle(k, session, issue, nudgeMsg);
               continue;
             } else {
@@ -1312,7 +1318,7 @@ export class Engine {
 
             const instructions = tracker.getTrackerInstructions(ref);
             const nudgePrompt = this.buildStuckNudgePrompt(session, issue, instructions, minutes);
-            const nudgeMsg = await this.store.createMessage(session.id, nudgePrompt);
+            const nudgeMsg = await this.store.createMessage(session.id, nudgePrompt, undefined, undefined, this.currentModel.get(k));
             await this.dequeueOrIdle(k, session, issue, nudgeMsg);
           } else {
             log.warn(`engine: stuck for ${minutes}min on ${k}, stuck nudge exhausted (${stuckNudgeRound}/${this.maxStuckNudges}), giving up`);

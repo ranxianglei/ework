@@ -8,6 +8,8 @@ import { GiteaTracker } from "./trackers/gitea-tracker";
 import type { IssueTracker } from "./trackers/types";
 import { initDB } from "./db";
 import { hostname } from "os";
+import * as fs from "node:fs";
+import * as path from "node:path";
 
 const config = loadConfig();
 const isTest = config.env === "test";
@@ -19,6 +21,26 @@ log.info(`  opencode: ${config.opencode.binary}`);
 log.info(`  workdir: ${config.opencode.baseWorkdir}`);
 log.info(`  db: ${config.db.driver === "mysql" ? `${config.db.user}@${config.db.host}:${config.db.port}/${config.db.name}` : config.db.path}${config.db.prefix ? ` (prefix=${config.db.prefix})` : ""}`);
 log.info(`  work: capacity=${config.work.capacity} heartbeat=${config.work.heartbeatMs}ms leaseTtl=${config.work.leaseTtlMs}ms`);
+
+function probePlugin() {
+  const configDir = process.env.XDG_CONFIG_HOME || path.join(process.env.HOME || "/tmp", ".config");
+  const cfgPath = path.join(configDir, "opencode", "opencode.json");
+  try {
+    const raw = fs.readFileSync(cfgPath, "utf8");
+    const parsed = JSON.parse(raw);
+    const plugin = parsed.plugin ?? parsed.plugins;
+    const plugins = Array.isArray(plugin) ? plugin : plugin ? [plugin] : [];
+    const hasEwork = plugins.some((p: unknown) =>
+      typeof p === "string" ? p.includes("opencode-ework") : false,
+    );
+    if (!hasEwork) {
+      log.warn("  ⚠️ opencode-ework plugin not found in opencode.json — the AI will lack the 'reply' tool and all nudges will fail. Install it: npm install -g opencode-ework");
+    }
+  } catch {
+    log.warn(`  ⚠️ could not read opencode config at ${cfgPath} — cannot verify opencode-ework plugin is installed`);
+  }
+}
+probePlugin();
 
 const giteaClient = new GiteaClient(config.gitea, config.bot.token);
 const giteaTracker = new GiteaTracker(
