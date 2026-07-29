@@ -50,64 +50,59 @@ async function query<T>(sql: string, params: unknown[] = []): Promise<T[]> {
 
 export async function getActiveDaemons(cfg: Config): Promise<DaemonInfo[]> {
   const staleThreshold = new Date(Date.now() - cfg.ROUTER_STALE_THRESHOLD_MS).toISOString();
-
   const daemonPrefix = cfg.DAEMON_TABLE_PREFIX;
 
-  const sql = `
-    SELECT
-      d.id, d.display_name, d.internal_endpoint, d.capacity,
-      d.last_heartbeat, d.status,
-      COALESCE(s.active_count, 0) AS active_sessions
-    FROM {{${daemonPrefix}daemons}} d
-    LEFT JOIN (
-      SELECT i.owner_daemon_id, COUNT(*) AS active_count
-      FROM {{${daemonPrefix}issues}} i
-      JOIN {{${daemonPrefix}op_sessions}} s ON s.issue_id = i.uid
-      WHERE s.state = 'running' AND i.owner_daemon_id IS NOT NULL
-      GROUP BY i.owner_daemon_id
-    ) s ON s.owner_daemon_id = d.id
-    WHERE d.status = 'active'
-      AND d.last_heartbeat > ?
-    ORDER BY d.id
-  `;
-
-  interface Row {
+  interface DaemonRow {
     id: number;
     display_name: string;
     internal_endpoint: string;
     capacity: number;
     last_heartbeat: string;
     status: string;
-    active_sessions: number;
   }
 
-  let rows: Row[];
+  // Query 1: active daemons (simple SELECT — no subquery JOIN)
+  let daemonRows: DaemonRow[];
   try {
-    rows = await query<Row>(sql, [staleThreshold]);
-  } catch {
-    try {
-      const fallbackSql = `
-        SELECT d.id, d.display_name, d.internal_endpoint, d.capacity,
-               d.last_heartbeat, d.status, 0 AS active_sessions
-        FROM {{${daemonPrefix}daemons}} d
-        WHERE d.status = 'active'
-          AND d.last_heartbeat > ?
-        ORDER BY d.id
-      `;
-      rows = await query<Row>(fallbackSql, [staleThreshold]);
-    } catch {
-      return [];
-    }
+    daemonRows = await query<DaemonRow>(
+      `SELECT id, display_name, internal_endpoint, capacity, last_heartbeat, status
+       FROM {{${daemonPrefix}daemons}}
+       WHERE status = 'active' AND last_heartbeat > ?
+       ORDER BY id`,
+      [staleThreshold],
+    );
+  } catch (err) {
+    console.warn("[ework-router] getActiveDaemons: daemon query failed:", err);
+    return [];
   }
 
-  return rows.map((r) => ({
+  if (daemonRows.length === 0) return [];
+
+  // Query 2: active session counts per daemon (separate simple query, join in memory)
+  const sessionMap = new Map<number, number>();
+  try {
+    const sessionRows = await query<{ owner_daemon_id: number; active_count: number }>(
+      `SELECT i.owner_daemon_id, COUNT(*) AS active_count
+       FROM {{${daemonPrefix}issues}} i
+       JOIN {{${daemonPrefix}op_sessions}} s ON s.issue_id = i.uid
+       WHERE s.state = 'running' AND i.owner_daemon_id IS NOT NULL
+       GROUP BY i.owner_daemon_id`,
+    );
+    for (const r of sessionRows) {
+      sessionMap.set(r.owner_daemon_id, Number(r.active_count) || 0);
+    }
+  } catch (err) {
+    console.warn("[ework-router] getActiveDaemons: session count query failed, defaulting to 0:", err);
+  }
+
+  return daemonRows.map((r) => ({
     id: r.id,
     displayName: r.display_name,
     endpoint: r.internal_endpoint,
     capacity: r.capacity,
     lastHeartbeat: r.last_heartbeat,
     status: r.status,
-    activeSessions: Number(r.active_sessions) || 0,
+    activeSessions: sessionMap.get(r.id) ?? 0,
   }));
 }
 
@@ -135,7 +130,8 @@ export async function getAllDaemons(cfg: Config): Promise<DaemonInfo[]> {
       status: r.status,
       activeSessions: 0,
     }));
-  } catch {
+  } catch (err) {
+    console.warn("[ework-router] getAllDaemons: query failed:", err);
     return [];
   }
 }
@@ -157,8 +153,8 @@ export async function markStaleDaemonsDead(cfg: Config): Promise<number> {
       ).run(staleThreshold as never);
       return Number(r.changes) || 0;
     }
-  } catch {
-    // Table might not exist in SQLite mode
+  } catch (err) {
+    console.warn("[ework-router] markStaleDaemonsDead: failed:", err);
   }
   return 0;
 }
@@ -182,8 +178,8 @@ export async function releaseOrphanedSessions(cfg: Config): Promise<number> {
       ).run();
       return Number(r.changes) || 0;
     }
-  } catch {
-    // Tables might not exist
+  } catch (err) {
+    console.warn("[ework-router] releaseOrphanedSessions: failed:", err);
   }
   return 0;
 }

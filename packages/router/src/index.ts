@@ -118,6 +118,10 @@ async function handleWebhook(req: Request, cfg: Config): Promise<Response> {
     load: `${decision.daemon.activeSessions}/${decision.daemon.capacity}`,
   });
 
+  if (decision.groupConfig) {
+    fwdHeaders["x-ework-group-config"] = Buffer.from(JSON.stringify(decision.groupConfig)).toString("base64");
+  }
+
   const result = await forwardToDaemon(decision.daemon.endpoint, rawBody, cfg.ROUTER_FORWARD_TIMEOUT_MS, fwdHeaders);
   log(result.ok ? "info" : "warn", "forward result", {
     daemon: decision.daemon.id,
@@ -130,6 +134,7 @@ async function handleWebhook(req: Request, cfg: Config): Promise<Response> {
     routed: true,
     daemon: { id: decision.daemon.id, endpoint: decision.daemon.endpoint },
     reason: decision.reason,
+    groupConfig: decision.groupConfig ? true : false,
     forwardStatus: result.status,
     forwardBody: result.body.slice(0, 500),
   }), {
