@@ -10,6 +10,7 @@ import { getActiveDaemons, listAllDaemons, getSessionDaemonMap, resolveDaemonEnd
 import { testMysqlConnection, migrateSqliteToMysql, writeMysqlEnv, migrateMysqlToSqlite, writeSqliteEnv, migrateDaemonSqliteToMysql, generateMysqlDDL } from "./db-admin";
 import type { MysqlTargetOpts } from "./db-admin";
 import { checkAuth, makeAuthCookieHeader, clearAuthCookieHeader, loginHTML, sanitizeNext, ensureBootstrapAdmin, ensureBootstrapSystem, isReservedSystemLogin } from "./auth";
+import { runAuthHook } from "./auth-hook";
 import { OpencodeError, createOpencodeClient, MultiDaemonOpencodeClient, RemoteOpencodeClient, isLocalhost, type OpencodeClientInterface } from "./opencode";
 import { renderMarkdown } from "./render/markdown";
 import { log, uptimeSeconds, version } from "./logger";
@@ -493,6 +494,14 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
       } else if (login && password) {
         const u = await verifyUserPassword(login, password);
         if (u) resolvedLogin = u.login;
+      }
+
+      if (!resolvedLogin && token && cfg.userAuthHook) {
+        const hookReq = new Request(url, {
+          headers: { authorization: `Bearer ${token}` },
+        });
+        const user = await runAuthHook(cfg.userAuthHook, hookReq);
+        if (user) resolvedLogin = user.login;
       }
 
       if (resolvedLogin) {
