@@ -141,6 +141,34 @@ export interface IssueTracker {
   isBotUser(userIdentifier: string): boolean;
 }
 
+// ─── Polling Tracker (Sync Source) ───
+
+export interface SyncExternalIssue {
+  externalId: string;
+  title: string;
+  body: string;
+  state: "open" | "closed";
+  author: string;
+  updatedAt: string;
+}
+
+export interface SyncExternalComment {
+  externalId: string;
+  body: string;
+  author: string;
+  createdAt: string;
+}
+
+export interface PollResult<T> {
+  items: T[];
+  nextCursor: string | null;
+}
+
+export interface PollingTracker extends IssueTracker {
+  listChangedIssues(scope: Record<string, string>, cursor: string | null): Promise<PollResult<SyncExternalIssue>>;
+  listChangedComments(ref: TrackerRef, cursor: string | null): Promise<PollResult<SyncExternalComment>>;
+}
+
 // ─── Runtime Key Format ───
 
 /**

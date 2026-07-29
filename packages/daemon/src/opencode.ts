@@ -22,7 +22,7 @@ interface TrackerRegistry {
  * the coordination layer.
  */
 export interface TakeoverStrategy {
-  acquireWorkdir(session: OpSession, issue: Issue, cloneUrl?: string): Promise<string>;
+  acquireWorkdir(session: OpSession, issue: Issue, cloneUrl?: string, env?: Record<string, string>): Promise<string>;
   resumeOpenCodeSession(session: OpSession): Promise<string | null>;
 }
 
@@ -162,7 +162,7 @@ export async function checkSessionOutput(
 export class RecloneStrategy implements TakeoverStrategy {
   constructor(private cfg: Config) {}
 
-  async acquireWorkdir(session: OpSession, issue: Issue, cloneUrl?: string): Promise<string> {
+  async acquireWorkdir(session: OpSession, issue: Issue, cloneUrl?: string, env?: Record<string, string>): Promise<string> {
     if (session.workdir) {
       let dir = session.workdir;
       if (dir.startsWith("~")) dir = join(homedir(), dir.slice(1));
@@ -188,7 +188,7 @@ export class RecloneStrategy implements TakeoverStrategy {
         const gitArgs = ["git"];
         if (credHelper) gitArgs.push("-c", `credential.helper=${credHelper}`);
         gitArgs.push("clone", url, dir);
-        const r = Bun.spawnSync({ cmd: gitArgs, stdout: "ignore", stderr: "pipe" });
+        const r = Bun.spawnSync({ cmd: gitArgs, stdout: "ignore", stderr: "pipe", env: { ...process.env, ...env } });
         if (r.exitCode !== 0) {
           if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
           if (existsSync(dir) && readdirSync(dir).length === 0) {
@@ -400,7 +400,16 @@ export class Engine {
     }
     const issueMapKey = `${issue.trackerType}:${issue.trackerScopeKey}#${issue.trackerIssueId}`;
     const cloneUrl = this.cloneUrls.get(issueMapKey);
-    return this.takeover.acquireWorkdir(session, issue, cloneUrl);
+    const owner = String(issue.trackerScope["owner"] ?? issue.trackerScopeKey.split("/")[0] ?? "");
+    const repo = String(issue.trackerScope["repo"] ?? issue.trackerScopeKey.split("/").slice(-1)[0] ?? "");
+    const sender = this.senders.get(issueMapKey);
+    const env: Record<string, string> = {
+      EWORK_OWNER: owner,
+      EWORK_REPO: repo,
+      EWORK_ISSUE: String(issue.trackerIssueId),
+    };
+    if (sender) env.EWORK_SENDER = sender;
+    return this.takeover.acquireWorkdir(session, issue, cloneUrl, env);
   }
 
   private hookEnvFor(issue: Issue, session: OpSession, workdir: string): Record<string, string> {
