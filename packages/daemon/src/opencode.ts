@@ -1,4 +1,5 @@
 import { spawn, type Subprocess } from "bun";
+import { Database } from "bun:sqlite";
 import { mkdirSync, writeFileSync, readdirSync, existsSync } from "fs";
 import { join, resolve, isAbsolute } from "path";
 import { homedir } from "os";
@@ -21,9 +22,7 @@ interface TrackerRegistry {
  * the coordination layer.
  */
 export interface TakeoverStrategy {
-  /** Resolve (and ensure exists) the workdir for this session+issue. */
-  acquireWorkdir(session: OpSession, issue: Issue): Promise<string>;
-  /** Return an opencode session id to resume, or null for a fresh session. */
+  acquireWorkdir(session: OpSession, issue: Issue, cloneUrl?: string): Promise<string>;
   resumeOpenCodeSession(session: OpSession): Promise<string | null>;
 }
 
@@ -101,7 +100,7 @@ export async function runHookScript(script: string | undefined, workdir: string,
 export class RecloneStrategy implements TakeoverStrategy {
   constructor(private cfg: Config) {}
 
-  async acquireWorkdir(session: OpSession, issue: Issue): Promise<string> {
+  async acquireWorkdir(session: OpSession, issue: Issue, cloneUrl?: string): Promise<string> {
     if (session.workdir) {
       let dir = session.workdir;
       if (dir.startsWith("~")) dir = join(homedir(), dir.slice(1));
@@ -122,21 +121,20 @@ export class RecloneStrategy implements TakeoverStrategy {
     try {
       const entries = readdirSync(dir);
       if (entries.length === 0) {
-        const base = this.cfg.gitea.url.replace(/\/$/, "");
-        const url = `${base}/${owner}/${repo}.git`;
-        const r = Bun.spawnSync({ cmd: ["git", "clone", url, dir], stdout: "ignore", stderr: "ignore" });
-        // git clone deletes the target dir on failure (e.g. gitea shim
-        // without smart-http /info/refs 404). Re-create the workdir so
-        // Bun.spawn later doesn't throw a misleading ENOENT pointing at the
-        // opencode binary path instead of the missing cwd. Fall back to
-        // `git init` so the workdir is at least a valid git repo the agent
-        // can work in.
+        const url = cloneUrl ?? `${this.cfg.gitea.url.replace(/\/$/, "")}/${owner}/${repo}.git`;
+        const credHelper = process.env.WORK_GIT_CREDENTIAL_HELPER;
+        const gitArgs = ["git"];
+        if (credHelper) gitArgs.push("-c", `credential.helper=${credHelper}`);
+        gitArgs.push("clone", url, dir);
+        const r = Bun.spawnSync({ cmd: gitArgs, stdout: "ignore", stderr: "pipe" });
         if (r.exitCode !== 0) {
           if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
           if (existsSync(dir) && readdirSync(dir).length === 0) {
             Bun.spawnSync({ cmd: ["git", "init", dir], stdout: "ignore", stderr: "ignore" });
           }
-          log.warn(`acquireWorkdir: git clone failed (exit ${r.exitCode}) for ${url}; fell back to empty workdir`);
+          const stderrBuf = r.stderr as Uint8Array | undefined;
+          const stderrText = stderrBuf ? new TextDecoder().decode(stderrBuf).slice(0, 500) : "";
+          log.warn(`acquireWorkdir: git clone failed (exit ${r.exitCode}) for ${url}${stderrText ? `: ${stderrText}` : ""}; fell back to empty workdir`);
         }
       }
     } catch {
@@ -227,6 +225,7 @@ export class Engine {
   private progressCommentId = new Map<string, string>();
 
   private nudgeRounds = new Map<string, number>();
+  private emptyResponseRounds = new Map<string, number>();
   private processExitNudgeRounds = new Map<string, number>();
   private stuckNudgeRounds = new Map<string, number>();
   private currentPrompt = new Map<string, string>();
@@ -241,9 +240,12 @@ export class Engine {
   private observerTimer?: ReturnType<typeof setInterval>;
 
   private groupConfigs = new Map<string, GroupConfig>();
+  private cloneUrls = new Map<string, string>();
+  private senders = new Map<string, string>();
 
   private static MAX_INLINE_SIZE = 4000;
   private static MAX_NUDGE_ROUNDS = 1;
+  private static MAX_EMPTY_RESPONSE_ROUNDS = 1;
   private static MAX_STUCK_NUDGE_ROUNDS = 1;
   private static OBSERVER_INTERVAL_MS = 5 * 60 * 1000;
   private static STUCK_THRESHOLD_MS = 30 * 60 * 1000;
@@ -334,20 +336,26 @@ export class Engine {
       mkdirSync(dir, { recursive: true });
       return dir;
     }
-    return this.takeover.acquireWorkdir(session, issue);
+    const issueMapKey = `${issue.trackerType}:${issue.trackerScopeKey}#${issue.trackerIssueId}`;
+    const cloneUrl = this.cloneUrls.get(issueMapKey);
+    return this.takeover.acquireWorkdir(session, issue, cloneUrl);
   }
 
   private hookEnvFor(issue: Issue, session: OpSession, workdir: string): Record<string, string> {
     const parts = issue.trackerScopeKey.split("/");
     const owner = (issue.trackerScope["owner"] as string) || parts[0] || "";
     const repo = (issue.trackerScope["repo"] as string) || parts[parts.length - 1] || "";
-    return {
+    const issueMapKey = `${issue.trackerType}:${issue.trackerScopeKey}#${issue.trackerIssueId}`;
+    const sender = this.senders.get(issueMapKey);
+    const env: Record<string, string> = {
       EWORK_OWNER: String(owner),
       EWORK_REPO: String(repo),
       EWORK_ISSUE: String(issue.trackerIssueId),
       EWORK_SESSION: session.name,
       EWORK_WORKDIR: workdir,
     };
+    if (sender) env.EWORK_SENDER = sender;
+    return env;
   }
 
   private workdirPathFor(session: OpSession, issue: Issue): string {
@@ -427,11 +435,23 @@ export class Engine {
     return comments.filter(c => tracker.isBotUser(c.author) && !this.isSystemComment(c)).length;
   }
 
-  private hasRecentBotReply(comments: TrackerComment[], tracker: IssueTracker): boolean {
+  private hasRecentBotReply(comments: TrackerComment[], tracker: IssueTracker, promptTime?: number): boolean {
+    // Causal check: if we know when this prompt was delivered, look for any
+    // bot reply CREATED AFTER that time. This is the correct signal — "did the
+    // AI reply to THIS prompt?" — and avoids false "done" when a previous
+    // round's reply is still within an absolute time window.
+    if (promptTime) {
+      return comments.some(c => {
+        if (!tracker.isBotUser(c.author) || this.isSystemComment(c)) return false;
+        if (!c.createdAt) return false; // no timestamp → can't confirm it's after prompt
+        return new Date(c.createdAt).getTime() > promptTime;
+      });
+    }
+    // Fallback: absolute 5-minute window (for stuck-check that has no prompt time)
     const now = Date.now();
     return comments.some(c => {
       if (!tracker.isBotUser(c.author) || this.isSystemComment(c)) return false;
-      if (!c.createdAt) return true; // no timestamp — assume recent to avoid false nudges
+      if (!c.createdAt) return true;
       const age = now - new Date(c.createdAt).getTime();
       return age < Engine.RECENT_BOT_REPLY_THRESHOLD_MS;
     });
@@ -441,6 +461,28 @@ export class Engine {
     return [...comments].reverse().find(c => tracker.isBotUser(c.author) && !this.isSystemComment(c));
   }
 
+  private async checkSessionOutput(opencodeSessionId: string | undefined): Promise<{ hasOutput: boolean; tokenCount: number }> {
+    if (!opencodeSessionId) return { hasOutput: true, tokenCount: 0 };
+    let db: Database;
+    try {
+      db = new Database(this.cfg.opencode.dbPath, { readonly: true });
+    } catch {
+      return { hasOutput: true, tokenCount: 0 };
+    }
+    try {
+      const row = db.prepare(
+        "SELECT COUNT(*) AS n, COALESCE(SUM(CAST(json_extract(data,'$.tokens.output') AS INT)), 0) AS tokens " +
+        "FROM message WHERE session_id = ? AND json_extract(data,'$.role') = 'assistant'"
+      ).get(opencodeSessionId) as { n: number; tokens: number } | null;
+      if (!row) return { hasOutput: true, tokenCount: 0 };
+      return { hasOutput: row.n > 0 && row.tokens > 0, tokenCount: row.tokens };
+    } catch {
+      return { hasOutput: true, tokenCount: 0 };
+    } finally {
+      db.close();
+    }
+  }
+
   // ─── Event Dispatch ───
 
   async handleEvent(event: TrackerEvent, groupConfig?: GroupConfig) {
@@ -448,8 +490,15 @@ export class Engine {
     const tracker = this.getTracker(ref.trackerType);
     const scopeKey = tracker.formatScopeKey(ref.scope);
 
+    const issueMapKey = `${ref.trackerType}:${scopeKey}#${ref.issueId}`;
     if (groupConfig) {
-      this.groupConfigs.set(`${ref.trackerType}:${scopeKey}#${ref.issueId}`, groupConfig);
+      this.groupConfigs.set(issueMapKey, groupConfig);
+    }
+    if (event.cloneUrl) {
+      this.cloneUrls.set(issueMapKey, event.cloneUrl);
+    }
+    if (event.sender) {
+      this.senders.set(issueMapKey, event.sender);
     }
 
     switch (event.type) {
@@ -689,6 +738,8 @@ export class Engine {
       }
     }
     if (this.groupConfigs.get(gcKey) === gc) this.groupConfigs.delete(gcKey);
+    this.cloneUrls.delete(gcKey);
+    this.senders.delete(gcKey);
 
     log.info(`engine: issue closed, ${sessions.length} sessions paused for ${scopeKey}#${ref.issueId}`);
   }
@@ -1005,17 +1056,21 @@ export class Engine {
       log.info(`engine: finishRun aborted (superseded) for ${k}`);
       return;
     }
-    const hasRecent = this.hasRecentBotReply(commentsNow, tracker);
+    const hasRecent = this.hasRecentBotReply(commentsNow, tracker, started ?? undefined);
 
     if (hasRecent) {
-      log.info(`engine: recent [bot] reply found for ${k}, marking done`);
+      const matched = commentsNow.find(c => tracker.isBotUser(c.author) && !this.isSystemComment(c) && c.createdAt && new Date(c.createdAt).getTime() > (started ?? 0));
+      log.info(`engine: [bot] reply found for ${k} after prompt (comment ${matched?.id ?? "?"} createdAt ${matched?.createdAt ?? "?"}), marking done`);
       this.nudgeRounds.delete(k);
+      this.emptyResponseRounds.delete(k);
       await this.persistRuntimeState(session.id);
     } else {
-      const nudgeRound = this.nudgeRounds.get(k) ?? 0;
-      if (exitCode === 0 && nudgeRound < Engine.MAX_NUDGE_ROUNDS) {
-        log.info(`engine: no recent [bot] reply for ${k}, nudging (round ${nudgeRound + 1}/${Engine.MAX_NUDGE_ROUNDS})`);
-        this.nudgeRounds.set(k, nudgeRound + 1);
+      const sessionOutput = await this.checkSessionOutput(session.opencodeSessionId);
+      const emptyRound = this.emptyResponseRounds.get(k) ?? 0;
+
+      if (!sessionOutput.hasOutput && emptyRound < Engine.MAX_EMPTY_RESPONSE_ROUNDS) {
+        log.warn(`engine: empty model response for ${k} (0 tokens, round ${emptyRound + 1}/${Engine.MAX_EMPTY_RESPONSE_ROUNDS}), retrying`);
+        this.emptyResponseRounds.set(k, emptyRound + 1);
         this.currentPrompt.delete(k);
         await this.persistRuntimeState(session.id);
 
@@ -1025,10 +1080,31 @@ export class Engine {
         await this.dequeueOrIdle(k, session, issue, nudgeMsg);
         return;
       }
-      log.info(`engine: no recent [bot] reply for ${k}, marking done (nudge exhausted or process failed)`);
-      this.nudgeRounds.delete(k);
-      const detail = exitCode === 0 ? "ran but did not post a reply" : `crashed (exit ${exitCode})`;
-      await tracker.createComment(ref, `[system] ❌ **${session.name}** ${detail}. Try posting again or @${session.name} to retry.`).catch(() => {});
+
+      if (!sessionOutput.hasOutput && emptyRound >= Engine.MAX_EMPTY_RESPONSE_ROUNDS) {
+        log.error(`engine: empty model response for ${k} after ${emptyRound} retries, reporting error`);
+        this.emptyResponseRounds.delete(k);
+        this.nudgeRounds.delete(k);
+        await tracker.createComment(ref, `[system] ❌ **${session.name}** 模型返回空响应（0 token），已重试 ${emptyRound} 次。请检查模型配置或稍后重试。`).catch(() => {});
+      } else {
+        const nudgeRound = this.nudgeRounds.get(k) ?? 0;
+        if (exitCode === 0 && nudgeRound < Engine.MAX_NUDGE_ROUNDS) {
+          log.info(`engine: no [bot] reply for ${k} (promptTime=${started ?? "unknown"}), nudging (round ${nudgeRound + 1}/${Engine.MAX_NUDGE_ROUNDS})`);
+          this.nudgeRounds.set(k, nudgeRound + 1);
+          this.currentPrompt.delete(k);
+          await this.persistRuntimeState(session.id);
+
+          const instructions = tracker.getTrackerInstructions(ref);
+          const nudgePrompt = this.buildNudgePrompt(session, issue, instructions);
+          const nudgeMsg = await this.store.createMessage(session.id, nudgePrompt, undefined, undefined, this.currentModel.get(k));
+          await this.dequeueOrIdle(k, session, issue, nudgeMsg);
+          return;
+        }
+        log.info(`engine: no [bot] reply for ${k} (promptTime=${started ?? "unknown"}), marking done (nudge exhausted or process failed)`);
+        this.nudgeRounds.delete(k);
+        const detail = exitCode === 0 ? "ran but did not post a reply" : `crashed (exit ${exitCode})`;
+        await tracker.createComment(ref, `[system] ❌ **${session.name}** ${detail}. Try posting again or @${session.name} to retry.`).catch(() => {});
+      }
     }
 
     // Remove eyes on source comment; react +1/-1 on the bot's last reply (fallback: source)
@@ -1619,5 +1695,9 @@ export class Engine {
     this.stuckNudgeRounds.clear();
     this.currentPrompt.clear();
     this.generation.clear();
+    this.groupConfigs.clear();
+    this.cloneUrls.clear();
+    this.senders.clear();
+    this.emptyResponseRounds.clear();
   }
 }

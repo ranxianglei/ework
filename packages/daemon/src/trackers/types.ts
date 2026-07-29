@@ -33,6 +33,12 @@ export interface TrackerEvent {
   // global default). Empty/undefined = no override; engine omits --model
   // and lets opencode pick per its own opencode.json + env.
   model?: string;
+  // Real clone URL from the upstream tracker (e.g. Gitea repository.clone_url).
+  // When present, RecloneStrategy uses this instead of the ework shim URL.
+  cloneUrl?: string;
+  // Webhook sender (who triggered the event). Forwarded to the daemon's
+  // task context so the AI knows who it's responding to.
+  sender?: string;
 }
 
 /** Tracker-agnostic comment */

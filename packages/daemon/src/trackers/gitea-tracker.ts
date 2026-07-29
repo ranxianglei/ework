@@ -119,6 +119,9 @@ export class GiteaTracker implements IssueTracker {
     const repoName = repository.name as string;
     if (!repoOwner || !repoName) return null;
 
+    const cloneUrl = typeof repository.clone_url === "string" ? repository.clone_url : undefined;
+    const sender = (payload.sender as Record<string, string>)?.login;
+
     // ework-web extension (non-Gitea field, ignored by strict Gitea consumers).
     // Empty/missing = no model override; engine omits --model.
     const modelRaw = repository.ework_model;
@@ -143,6 +146,8 @@ export class GiteaTracker implements IssueTracker {
           author: issueUser?.login ?? "",
         },
         model,
+        cloneUrl,
+        sender,
       };
     }
 
@@ -163,6 +168,8 @@ export class GiteaTracker implements IssueTracker {
           author: commentUser?.login ?? "",
         },
         model,
+        cloneUrl,
+        sender,
       };
     }
 
@@ -177,6 +184,8 @@ export class GiteaTracker implements IssueTracker {
           author: issueUser?.login ?? "",
         },
         model,
+        cloneUrl,
+        sender,
       };
     }
 
