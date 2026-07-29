@@ -103,3 +103,18 @@ export async function getSessionDaemonMap(): Promise<Map<string, SessionDaemonIn
     return new Map();
   }
 }
+
+export async function resolveDaemonEndpoint(daemonId: number): Promise<string | null> {
+  try {
+    const rows = await getDB().all<{ internal_endpoint: string | null }>(
+      `SELECT internal_endpoint FROM {{d_daemons}} WHERE id = ?`,
+      [daemonId],
+    );
+    const ep = rows[0]?.internal_endpoint;
+    if (!ep) return null;
+    return ep;
+  } catch (e) {
+    log.info(`coordination: resolve daemon ${daemonId} failed (${e instanceof Error ? e.message : String(e)})`);
+    return null;
+  }
+}

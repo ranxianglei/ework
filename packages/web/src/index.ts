@@ -6,7 +6,7 @@ import { homedir } from "os";
 import { loadConfig, DB_OVERRIDABLE, parseOverride, resolveTtsBackend } from "./config";
 import type { Config } from "./config";
 import { setConfig, initDB, getDB } from "./db";
-import { getActiveDaemons, listAllDaemons, getSessionDaemonMap } from "./coordination";
+import { getActiveDaemons, listAllDaemons, getSessionDaemonMap, resolveDaemonEndpoint } from "./coordination";
 import { testMysqlConnection, migrateSqliteToMysql, writeMysqlEnv, migrateMysqlToSqlite, writeSqliteEnv, migrateDaemonSqliteToMysql, generateMysqlDDL } from "./db-admin";
 import type { MysqlTargetOpts } from "./db-admin";
 import { checkAuth, makeAuthCookieHeader, clearAuthCookieHeader, loginHTML, sanitizeNext, ensureBootstrapAdmin, ensureBootstrapSystem, isReservedSystemLogin } from "./auth";
@@ -628,6 +628,18 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     const all = url.searchParams.get("all") === "1";
     const limit = Math.min(5000, Math.max(1, Number(url.searchParams.get("limit")) || 30));
     const daemonEp = url.searchParams.get("daemon");
+    const daemonIdParam = url.searchParams.get("daemon_id");
+    if (!daemonEp && daemonIdParam) {
+      const id = Number(daemonIdParam);
+      if (Number.isFinite(id) && id > 0) {
+        const ep = await resolveDaemonEndpoint(id);
+        if (ep) {
+          const client = new RemoteOpencodeClient(ep);
+          const { html: body } = await buildSessionView(client, sid, desc, cfg.collapseLines, limit, all);
+          return html(body);
+        }
+      }
+    }
     const client = daemonEp ? new RemoteOpencodeClient(daemonEp) : opencode;
     try {
       const { html: body } = await buildSessionView(client, sid, desc, cfg.collapseLines, limit, all);
@@ -651,7 +663,15 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
 
   if (url.pathname === "/file") {
     const rawPath = url.searchParams.get("path") ?? "";
-    const daemonParam = url.searchParams.get("daemon");
+    let daemonParam = url.searchParams.get("daemon");
+    const daemonIdParam = url.searchParams.get("daemon_id");
+    if (!daemonParam && daemonIdParam) {
+      const id = Number(daemonIdParam);
+      if (Number.isFinite(id) && id > 0) {
+        const ep = await resolveDaemonEndpoint(id);
+        if (ep) daemonParam = ep;
+      }
+    }
     if (daemonParam && !isLocalhost(daemonParam)) {
       try {
         const mode = url.searchParams.get("mode") ?? "tail";
