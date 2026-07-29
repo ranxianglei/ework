@@ -259,20 +259,14 @@ export class Engine {
     void this.recover();
   }
 
-  private daemonEndpoint(): string {
-    return this.cfg.daemon.endpoint || `${this.cfg.daemon.host}:${this.cfg.daemon.port}`;
-  }
-
   private workdirLink(workdir: string): string {
-    const ep = encodeURIComponent(this.daemonEndpoint());
     const p = encodeURIComponent(workdir);
-    return `[${workdir}](/file?path=${p}&daemon=${ep})`;
+    return `[${workdir}](/file?path=${p}&daemon_id=${this.daemonId})`;
   }
 
   private sessionRef(session: { id: string; opencodeSessionId?: string | null }): string {
     const ses = session.opencodeSessionId || session.id;
-    const ep = encodeURIComponent(this.daemonEndpoint());
-    return `[\`${ses}\`](/sessions/${encodeURIComponent(ses)}?daemon=${ep})`;
+    return `[\`${ses}\`](/sessions/${encodeURIComponent(ses)}?daemon_id=${this.daemonId})`;
   }
 
   /** Start the lease heartbeat. Must be called once after registerDaemon. */
