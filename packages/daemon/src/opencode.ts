@@ -259,6 +259,22 @@ export class Engine {
     void this.recover();
   }
 
+  private daemonEndpoint(): string {
+    return this.cfg.daemon.endpoint || `${this.cfg.daemon.host}:${this.cfg.daemon.port}`;
+  }
+
+  private workdirLink(workdir: string): string {
+    const ep = encodeURIComponent(this.daemonEndpoint());
+    const p = encodeURIComponent(workdir);
+    return `[${workdir}](/file?path=${p}&daemon=${ep})`;
+  }
+
+  private sessionRef(session: { id: string; opencodeSessionId?: string | null }): string {
+    const ses = session.opencodeSessionId || session.id;
+    const ep = encodeURIComponent(this.daemonEndpoint());
+    return `[\`${ses}\`](/sessions/${encodeURIComponent(ses)}?daemon=${ep})`;
+  }
+
   /** Start the lease heartbeat. Must be called once after registerDaemon. */
   startHeartbeat(intervalMs: number): void {
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
@@ -498,7 +514,7 @@ export class Engine {
     const workdir = await this.resolveWorkdir(session, issue);
     log.info(`engine: session "${session.name}" created for ${k}, workdir=${workdir}`);
 
-    await tracker.createComment(ref, `[system] 🔄 **${session.name}** picked up this issue.\n> session: \`${session.id}\` | workdir: \`${workdir}\``);
+    await tracker.createComment(ref, `[system] 🔄 **${session.name}** picked up this issue.\n> session: ${this.sessionRef(session)} | workdir: ${this.workdirLink(workdir)}`);
 
     const instructions = tracker.getTrackerInstructions(ref);
     const prompt = this.buildInitialPrompt(
@@ -580,7 +596,7 @@ export class Engine {
         );
 
         // Immediate ack
-        await tracker.createComment(ref, `[system] ✓ Message forwarded to **${session.name}**${this.running.has(this.sessionKey(session, issue)) ? " (running)" : ""}.\n> session: \`${session.id}\` | workdir: \`${workdir}\``);
+        await tracker.createComment(ref, `[system] ✓ Message forwarded to **${session.name}**${this.running.has(this.sessionKey(session, issue)) ? " (running)" : ""}.\n> session: ${this.sessionRef(session)} | workdir: ${this.workdirLink(workdir)}`);
 
         await this.enqueueOrRun(session, issue, prompt, comment.id, model);
       } else {
@@ -627,7 +643,7 @@ export class Engine {
         session.name, this.handleLargeContent(workdir, comment.body, `comment-${comment.id}.txt`),
         comment.author, issueData.title, workdir, instructions
       );
-      await tracker.createComment(ref, `[system] ✓ Message forwarded to **${session.name}**${this.running.has(this.sessionKey(session, issue)) ? " (running)" : ""}.\n> session: \`${session.id}\` | workdir: \`${workdir}\``);
+      await tracker.createComment(ref, `[system] ✓ Message forwarded to **${session.name}**${this.running.has(this.sessionKey(session, issue)) ? " (running)" : ""}.\n> session: ${this.sessionRef(session)} | workdir: ${this.workdirLink(workdir)}`);
       await this.enqueueOrRun(session, issue, prompt, comment.id, model);
     }
     } finally {
