@@ -622,7 +622,7 @@ wait_for_url "http://127.0.0.1:$DAEMON_PORT/api/status" "daemon still up" 30 \
 info "verify data survived migration"
 POST_MIGRATION_ISSUES=$(curl -sS "http://127.0.0.1:$DAEMON_PORT/api/status" | jq -r '.issues // 0')
 if [[ "$POST_MIGRATION_ISSUES" -lt "$PRE_MIGRATION_ISSUES" ]]; then
-  info "warning: daemon issues decreased (pre=$PRE_MIGRATION_ISSUES post=$POST_MIGRATION_ISSUES) — daemon data migration may have failed, verifying via new traffic below"
+  fail "daemon issues decreased after migration (pre=$PRE_MIGRATION_ISSUES post=$POST_MIGRATION_ISSUES) — data migration failed"
 else
   pass "daemon data survived ($POST_MIGRATION_ISSUES issue(s) post-migration)"
 fi
@@ -670,7 +670,7 @@ case "$SESSIONS_CODE" in
     if [[ "$SESSIONS_COUNT" -gt 0 ]]; then
       pass "daemon session API: $SESSIONS_COUNT session(s) returned"
     else
-      info "daemon session API responds (200), no sessions yet — OpenCode may not have run"
+      fail "daemon session API returned 0 sessions after Phase 5 created an issue — daemon or opencode is broken"
     fi
     ;;
   *)
@@ -687,7 +687,7 @@ case "$WEB_SESSIONS_CODE" in
     pass "web session page renders (200)"
     ;;
   302)
-    pass "web session page redirect (302) — post-migration re-auth likely"
+    fail "web session page returned 302 — auth cookie was rejected after migration"
     ;;
   *)
     fail "web session page returned HTTP $WEB_SESSIONS_CODE — should render or redirect"
@@ -712,7 +712,7 @@ case "$DELIVERIES_CODE" in
     if [[ "$DELIVERY_ROWS" -gt 0 ]]; then
       pass "webhook delivery history: $DELIVERY_ROWS delivery record(s) visible"
     else
-      info "webhook delivery history page renders (200), no deliveries yet"
+      fail "webhook delivery history page has 0 rows — webhooks were sent in Phase 5, deliveries should exist"
     fi
     ;;
   *)
@@ -745,7 +745,7 @@ if [[ "$ROUTIER_HEALTH_CODE" == "200" ]]; then
   if echo "$STRATEGY_RESP" | grep -q "strategy"; then
     pass "router strategy endpoint responds"
   else
-    info "router strategy response: $STRATEGY_RESP"
+    fail "router strategy endpoint returned unexpected response: $STRATEGY_RESP"
   fi
 
   info "router forwards webhook to daemon (POST /webhook/gitea)"

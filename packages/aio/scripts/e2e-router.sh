@@ -289,6 +289,8 @@ else
   assert_gt "$POST_KILL_ROUTES" 0 "≥1 route happened post-kill (anti-vacuous)"
   POST_KILL_D1=$(tail -n +"$((LOG_MARK+1))" "$ROUTER_LOG" 2>/dev/null | count_lines '"routing".*'"$D1_PORT")
   assert_eq "$POST_KILL_D1" 0 "no routes to dead daemon-1 (the preferred target)"
+  POST_KILL_FWD=$(tail -n +"$((LOG_MARK+1))" "$ROUTER_LOG" 2>/dev/null | count_lines '"forward result".*"ok":true')
+  assert_gt "$POST_KILL_FWD" 0 "≥1 forward succeeded post-kill (survivor received webhook)"
   kill_test_opencode
 fi
 
@@ -356,10 +358,15 @@ STRAT_NOW=$(curl --max-time 5 -sf "http://127.0.0.1:$ROUTER_PORT/api/strategy" 2
 assert_eq "$STRAT_NOW" "round-robin" "strategy config persisted (GET /api/strategy)"
 
 phase 9 "All-dead fallback (terminal)"
+FALLBACK_RECV="/tmp/e2e-fallback-received.log"
+: > "$FALLBACK_RECV"
+bun -e 'const{appendFileSync}=require("fs");Bun.serve({port:Number(process.argv[1]),fetch:()=>{appendFileSync(process.argv[2],"1\n");return new Response("ok")}})' "$D1_PORT" "$FALLBACK_RECV" 2>/dev/null &
+FALLBACK_PID=$!
+sleep 1
 ps aux | grep "ework-daemon-server" | grep -v grep | awk '{print $2}' | xargs -r kill 2>/dev/null || true
 pkill -f "opencode run.*e2e-router-test" 2>/dev/null || true
 sleep 2
-ok "killed all daemon processes"
+ok "killed all daemon processes (fallback listener started on :$D1_PORT)"
 warn "waiting 35s for cleanup timer + heartbeat expiry..."
 sleep 33
 ACTIVE_D=$(sqlite3 "$DAEMON_DB" "SELECT COUNT(*) FROM daemons WHERE status='active' AND last_heartbeat > strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-15 seconds');" 2>/dev/null || echo "?")
@@ -374,6 +381,9 @@ sleep 5
 FALLBACK_AFTER=$(count_lines 'fallback' "$ROUTER_LOG")
 FALLBACK_DELTA=$((FALLBACK_AFTER - FALLBACK_BEFORE))
 assert_gt "$FALLBACK_DELTA" 0 "router used fallback endpoint when all daemons dead"
+FALLBACK_RECV_COUNT=$(wc -l < "$FALLBACK_RECV" 2>/dev/null || echo 0)
+assert_gt "$FALLBACK_RECV_COUNT" 0 "fallback listener received the webhook (delivery confirmed)"
+kill "$FALLBACK_PID" 2>/dev/null || true
 
 echo ""
 echo "════════════════════════════════════════════"

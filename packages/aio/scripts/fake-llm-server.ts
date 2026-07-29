@@ -40,6 +40,12 @@ async function handleChatCompletion(req: Request): Promise<Response> {
   const isStream = body.stream ?? false;
   const hasTools = (body.tools?.length ?? 0) > 0;
 
+  const lastMsg = body.messages?.[body.messages.length - 1];
+  const msgText = typeof lastMsg?.content === "string" ? lastMsg.content : JSON.stringify(lastMsg?.content ?? "");
+  if (msgText.includes("FORCE_EMPTY_RESPONSE")) {
+    return emptyResponse(model, isStream);
+  }
+
   if (!hasTools) {
     return textResponse(model, "Acknowledged.", isStream);
   }
@@ -134,6 +140,26 @@ function textResponse(model: string, text: string, isStream: boolean): Response 
         finish_reason: "stop",
       }],
       usage: { prompt_tokens: 5, completion_tokens: 5, total_tokens: 10 },
+    });
+  }
+  return new Response("data: [DONE]\n\n", {
+    headers: { "content-type": "text/event-stream" },
+  });
+}
+
+function emptyResponse(model: string, isStream: boolean): Response {
+  if (!isStream) {
+    return Response.json({
+      id: `chatcmpl-fake-${crypto.randomUUID()}`,
+      object: "chat.completion",
+      created: Math.floor(Date.now() / 1000),
+      model,
+      choices: [{
+        index: 0,
+        message: { role: "assistant", content: "" },
+        finish_reason: "stop",
+      }],
+      usage: { prompt_tokens: 10, completion_tokens: 0, total_tokens: 10 },
     });
   }
   return new Response("data: [DONE]\n\n", {
