@@ -20,11 +20,10 @@ function issueRow(
   const href = `/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${it.number}`;
   const title = q ? highlightAll(it.title, q) : escapeHtml(it.title);
   const chips = labels.length
-    ? `<div class="row-labels">${labels.map((l) => labelChip(l, owner, repo, state)).join("")}</div>`
+    ? `<span class="row-labels">${labels.map((l) => labelChip(l, owner, repo, state)).join("")}</span>`
     : "";
   return `<a class="row" href="${escapeAttr(href)}">
-    <div class="row-title">${title}</div>
-    ${chips}
+    <div class="row-title">${title}${chips}</div>
     <div class="row-meta">#${it.number} · 💬 ${it.comment_count} · ${relTime(it.updated_at)}</div>
   </a>`;
 }
@@ -79,8 +78,8 @@ export async function buildIssueList(
 .row-title{font-weight:500;overflow-wrap:anywhere}
 .row-meta{color:var(--text-muted);font-size:12px;margin-top:.2rem}
 .empty{color:var(--text-muted);text-align:center;padding:2rem;font-size:13px}
-.row-labels{display:flex;flex-wrap:wrap;gap:.25rem;margin-top:.2rem}
-.issue-label{display:inline-block;padding:1px 7px;border-radius:10px;font-size:11px;font-weight:500;color:#fff;text-decoration:none;line-height:18px;white-space:nowrap}
+.row-labels{display:inline;gap:.2rem;margin-left:.4rem}
+.issue-label{display:inline-block;padding:0 5px;border-radius:6px;font-size:10px;font-weight:600;color:#fff;text-decoration:none;line-height:16px;white-space:nowrap;vertical-align:1px}
 .issue-label:hover{opacity:.85;text-decoration:none}
 .label-filter{font-size:13px;color:var(--text-muted);margin-bottom:.4rem}
 .label-filter strong{color:var(--text)}
