@@ -91,6 +91,68 @@ export async function runHookScript(script: string | undefined, workdir: string,
   }
 }
 
+const SYSTEM_PREFIX = "[system]";
+const RECENT_BOT_REPLY_THRESHOLD_MS = 5 * 60_000; // 5 minutes
+
+/**
+ * Determine whether any non-system bot reply exists that is causally after
+ * `promptTime` (when provided) or within a 5-minute absolute window (fallback).
+ * Exported for unit testing — the causal vs absolute distinction is the P0
+ * correctness fix for preempt/nudge false-done detection.
+ */
+export function hasRecentBotReply(
+  comments: TrackerComment[],
+  isBotUser: (author: string) => boolean,
+  promptTime?: number,
+): boolean {
+  if (promptTime) {
+    return comments.some(c => {
+      if (!isBotUser(c.author) || c.body.startsWith(SYSTEM_PREFIX)) return false;
+      if (!c.createdAt) return false;
+      return new Date(c.createdAt).getTime() > promptTime;
+    });
+  }
+  const now = Date.now();
+  return comments.some(c => {
+    if (!isBotUser(c.author) || c.body.startsWith(SYSTEM_PREFIX)) return false;
+    if (!c.createdAt) return true;
+    const age = now - new Date(c.createdAt).getTime();
+    return age < RECENT_BOT_REPLY_THRESHOLD_MS;
+  });
+}
+
+/**
+ * Query the opencode SQLite DB for a session's assistant-message output tokens.
+ * Returns `{hasOutput: true}` (safe default) when the DB can't be opened or
+ * the session is undefined — this means the retry path is only triggered when
+ * we have POSITIVE evidence of 0-token output.
+ * Exported for unit testing.
+ */
+export async function checkSessionOutput(
+  dbPath: string,
+  opencodeSessionId: string | undefined,
+): Promise<{ hasOutput: boolean; tokenCount: number }> {
+  if (!opencodeSessionId) return { hasOutput: true, tokenCount: 0 };
+  let db: Database;
+  try {
+    db = new Database(dbPath, { readonly: true });
+  } catch {
+    return { hasOutput: true, tokenCount: 0 };
+  }
+  try {
+    const row = db.prepare(
+      "SELECT COUNT(*) AS n, COALESCE(SUM(CAST(json_extract(data,'$.tokens.output') AS INT)), 0) AS tokens " +
+      "FROM message WHERE session_id = ? AND json_extract(data,'$.role') = 'assistant'"
+    ).get(opencodeSessionId) as { n: number; tokens: number } | null;
+    if (!row) return { hasOutput: true, tokenCount: 0 };
+    return { hasOutput: row.n > 0 && row.tokens > 0, tokenCount: row.tokens };
+  } catch {
+    return { hasOutput: true, tokenCount: 0 };
+  } finally {
+    db.close();
+  }
+}
+
 /**
  * Default TakeoverStrategy: deterministic per-issue workdir under
  * `<baseWorkdir>/<owner>--<repo>/<issueId>/<sessionName>`, with a best-effort
@@ -423,12 +485,8 @@ export class Engine {
     return remainMin > 0 ? `${hours}h ${remainMin}m` : `${hours}h`;
   }
 
-  /** System comments are posted by the daemon itself (acks, progress, reports). They are NOT AI replies. */
-  private static SYSTEM_PREFIX = "[system]";
-  private static RECENT_BOT_REPLY_THRESHOLD_MS = 5 * 60_000; // 5 minutes
-
   private isSystemComment(comment: TrackerComment): boolean {
-    return comment.body.startsWith(Engine.SYSTEM_PREFIX);
+    return comment.body.startsWith(SYSTEM_PREFIX);
   }
 
   private countAIReplies(comments: TrackerComment[], tracker: IssueTracker): number {
@@ -436,25 +494,7 @@ export class Engine {
   }
 
   private hasRecentBotReply(comments: TrackerComment[], tracker: IssueTracker, promptTime?: number): boolean {
-    // Causal check: if we know when this prompt was delivered, look for any
-    // bot reply CREATED AFTER that time. This is the correct signal — "did the
-    // AI reply to THIS prompt?" — and avoids false "done" when a previous
-    // round's reply is still within an absolute time window.
-    if (promptTime) {
-      return comments.some(c => {
-        if (!tracker.isBotUser(c.author) || this.isSystemComment(c)) return false;
-        if (!c.createdAt) return false; // no timestamp → can't confirm it's after prompt
-        return new Date(c.createdAt).getTime() > promptTime;
-      });
-    }
-    // Fallback: absolute 5-minute window (for stuck-check that has no prompt time)
-    const now = Date.now();
-    return comments.some(c => {
-      if (!tracker.isBotUser(c.author) || this.isSystemComment(c)) return false;
-      if (!c.createdAt) return true;
-      const age = now - new Date(c.createdAt).getTime();
-      return age < Engine.RECENT_BOT_REPLY_THRESHOLD_MS;
-    });
+    return hasRecentBotReply(comments, (a) => tracker.isBotUser(a), promptTime);
   }
 
   private lastBotReply(comments: TrackerComment[], tracker: IssueTracker): TrackerComment | undefined {
@@ -462,25 +502,7 @@ export class Engine {
   }
 
   private async checkSessionOutput(opencodeSessionId: string | undefined): Promise<{ hasOutput: boolean; tokenCount: number }> {
-    if (!opencodeSessionId) return { hasOutput: true, tokenCount: 0 };
-    let db: Database;
-    try {
-      db = new Database(this.cfg.opencode.dbPath, { readonly: true });
-    } catch {
-      return { hasOutput: true, tokenCount: 0 };
-    }
-    try {
-      const row = db.prepare(
-        "SELECT COUNT(*) AS n, COALESCE(SUM(CAST(json_extract(data,'$.tokens.output') AS INT)), 0) AS tokens " +
-        "FROM message WHERE session_id = ? AND json_extract(data,'$.role') = 'assistant'"
-      ).get(opencodeSessionId) as { n: number; tokens: number } | null;
-      if (!row) return { hasOutput: true, tokenCount: 0 };
-      return { hasOutput: row.n > 0 && row.tokens > 0, tokenCount: row.tokens };
-    } catch {
-      return { hasOutput: true, tokenCount: 0 };
-    } finally {
-      db.close();
-    }
+    return checkSessionOutput(this.cfg.opencode.dbPath, opencodeSessionId);
   }
 
   // ─── Event Dispatch ───

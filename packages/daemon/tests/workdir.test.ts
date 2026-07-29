@@ -157,6 +157,22 @@ describe("runHookScript", () => {
     }
   });
 
+  test("injects EWORK_SENDER env var into script environment", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ewenv-sender-"));
+    try {
+      await runHookScript(
+        'echo "sender=$EWORK_SENDER" > sender.txt',
+        dir,
+        "init",
+        { EWORK_OWNER: "acme", EWORK_REPO: "widget", EWORK_ISSUE: "42", EWORK_SESSION: "s1", EWORK_WORKDIR: dir, EWORK_SENDER: "alice" },
+      );
+      const content = readFileSync(join(dir, "sender.txt"), "utf8").trim();
+      expect(content).toBe("sender=alice");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("kills hung scripts within timeout bound", async () => {
     const start = Date.now();
     await runHookScript("sleep 30", "/tmp", "init", {}, 500);
