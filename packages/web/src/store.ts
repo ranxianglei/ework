@@ -138,6 +138,22 @@ export async function ensureUser(login: string, kind: UserKind = "human"): Promi
   };
 }
 
+export async function provisionUser(
+  login: string,
+  opts: { kind?: UserKind; isAdmin?: boolean },
+): Promise<UserRow> {
+  const user = await ensureUser(login, opts.kind ?? "human");
+  if (opts.isAdmin && !user.is_admin) {
+    const db = getDB();
+    await db.run("UPDATE {{users}} SET is_admin = 1, updated_at = ? WHERE login = ?", [
+      now(),
+      login,
+    ]);
+    return { ...user, is_admin: 1 };
+  }
+  return user;
+}
+
 export async function getProject(owner: string, name: string): Promise<ProjectRow | null> {
   return (await getDB().get<ProjectRow>("SELECT * FROM {{projects}} WHERE owner = ? AND name = ?", [owner, name])) ?? null;
 }

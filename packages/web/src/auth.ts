@@ -1,5 +1,6 @@
 import type { Config } from "./config";
 import { getUserByLogin, ensureUser, verifyPat, type UserRow } from "./store";
+import { runAuthHook } from "./auth-hook";
 
 // Per-user token-cookie auth. Cookie value is HMAC-signed and carries login +
 // issued-at, so the server is stateless (no session table). Two cookie formats
@@ -133,6 +134,18 @@ export async function checkAuth(req: Request, cfg: Config, ip?: string | null): 
       const user = await verifyPat(token, ip);
       if (user) return { ok: true, user };
     }
+  }
+
+  // Internal auth hook (daemon / machine-to-machine — permanent credentials).
+  if (cfg.internalAuthHook) {
+    const user = await runAuthHook(cfg.internalAuthHook, req);
+    if (user) return { ok: true, user };
+  }
+
+  // User auth hook (human users — may expire, e.g. SSO/OAuth sessions).
+  if (cfg.userAuthHook) {
+    const user = await runAuthHook(cfg.userAuthHook, req);
+    if (user) return { ok: true, user };
   }
 
   return { ok: false, user: null };

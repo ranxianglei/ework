@@ -79,6 +79,8 @@ export const configSchema = z.object({
   daemonWebhookUrl: z.string().default(""),
   daemonWebhookSecret: z.string().default(""),
   routerAdminToken: z.string().default(""),
+  internalAuthHook: z.string().default(""),
+  userAuthHook: z.string().default(""),
   // Default "provider/model" string passed to `opencode run --model <X>`.
   // Empty = let opencode pick per its own opencode.json + env. ework-daemon
   // pushes this (or the per-project override) on every spawn to defend
@@ -178,7 +180,9 @@ export async function loadConfig(): Promise<Config> {
     daemonBotLogin: process.env.WORK_DAEMON_BOT_LOGIN ?? "",
   daemonWebhookUrl: process.env.WORK_DAEMON_WEBHOOK_URL ?? "",
   daemonWebhookSecret: process.env.WORK_DAEMON_WEBHOOK_SECRET ?? "",
-  routerAdminToken: process.env.WORK_ROUTER_ADMIN_TOKEN ?? "",
+    routerAdminToken: process.env.WORK_ROUTER_ADMIN_TOKEN ?? "",
+    internalAuthHook: process.env.WORK_INTERNAL_AUTH_HOOK ?? "",
+    userAuthHook: process.env.WORK_USER_AUTH_HOOK ?? "",
     defaultModel: db.defaultModel ?? process.env.WORK_DEFAULT_MODEL,
     autowireActive: process.env.WORK_AUTOWIRE_ACTIVE !== "false",
     webhookMaxConcurrent: Number(process.env.WORK_WEBHOOK_MAX_CONCURRENT ?? "6"),
