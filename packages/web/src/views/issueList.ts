@@ -1,14 +1,30 @@
 import { THEME_CSS, escapeHtml, escapeAttr, containsCI, highlightAll, tabNavHTML } from "../render/layout";
-import { getProject, listIssues, type IssueWithMeta } from "../store";
+import { getProject, listIssues, listLabelsForIssues, type IssueWithMeta, type LabelRow } from "../store";
 import { relTime } from "../render/components";
 
 export const LIST_PAGE_SIZE = 50;
 
-function issueRow(it: IssueWithMeta, owner: string, repo: string, q: string): string {
+function labelChip(label: LabelRow, owner: string, repo: string, state: string): string {
+  const href = `/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues?state=${state}&label=${encodeURIComponent(label.name)}`;
+  return `<a class="issue-label" href="${escapeAttr(href)}" style="background:${escapeAttr(label.color)}" title="${escapeAttr(label.description ?? "")}">${escapeHtml(label.name)}</a>`;
+}
+
+function issueRow(
+  it: IssueWithMeta,
+  owner: string,
+  repo: string,
+  q: string,
+  state: string,
+  labels: LabelRow[],
+): string {
   const href = `/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${it.number}`;
   const title = q ? highlightAll(it.title, q) : escapeHtml(it.title);
+  const chips = labels.length
+    ? `<div class="row-labels">${labels.map((l) => labelChip(l, owner, repo, state)).join("")}</div>`
+    : "";
   return `<a class="row" href="${escapeAttr(href)}">
     <div class="row-title">${title}</div>
+    ${chips}
     <div class="row-meta">#${it.number} · 💬 ${it.comment_count} · ${relTime(it.updated_at)}</div>
   </a>`;
 }
@@ -18,13 +34,15 @@ export async function buildIssueList(
   repo: string,
   state: "open" | "closed" | "all",
   writesEnabled: boolean,
-  q: string
+  q: string,
+  label: string = "",
 ): Promise<string> {
   const project = await getProject(owner, repo);
   if (!project) {
     return notFoundProject(owner, repo);
   }
-  const issues = await listIssues(project.id, { state, q, limit: LIST_PAGE_SIZE });
+  const issues = await listIssues(project.id, { state, q, label, limit: LIST_PAGE_SIZE });
+  const labelMap = await listLabelsForIssues(issues.map((it) => it.id));
   const matchesFirst = q
     ? [...issues].sort((a, b) => Number(containsCI(b.title, q)) - Number(containsCI(a.title, q)))
     : issues;
@@ -32,11 +50,15 @@ export async function buildIssueList(
   const closedActive = state === "closed" ? " active" : "";
   const allActive = state === "all" ? " active" : "";
   const qParam = q ? `&q=${encodeURIComponent(q)}` : "";
+  const labelParam = label ? `&label=${encodeURIComponent(label)}` : "";
+  const labelFilterHint = label
+    ? `<div class="label-filter">标签: <strong>${escapeHtml(label)}</strong> <a href="/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues?state=${state}${qParam}" class="label-clear">✕</a></div>`
+    : "";
   const newBtn = writesEnabled
     ? `<a class="new-btn" href="/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/new">+ 新建</a>`
     : "";
   const rows = matchesFirst.length
-    ? matchesFirst.map((it) => issueRow(it, owner, repo, q)).join("")
+    ? matchesFirst.map((it) => issueRow(it, owner, repo, q, state, labelMap.get(it.id) ?? [])).join("")
     : `<div class="empty">暂无工单</div>`;
   const searchVal = escapeAttr(q);
   return `<!doctype html>
@@ -57,6 +79,13 @@ export async function buildIssueList(
 .row-title{font-weight:500;overflow-wrap:anywhere}
 .row-meta{color:var(--text-muted);font-size:12px;margin-top:.2rem}
 .empty{color:var(--text-muted);text-align:center;padding:2rem;font-size:13px}
+.row-labels{display:flex;flex-wrap:wrap;gap:.25rem;margin-top:.2rem}
+.issue-label{display:inline-block;padding:1px 7px;border-radius:10px;font-size:11px;font-weight:500;color:#fff;text-decoration:none;line-height:18px;white-space:nowrap}
+.issue-label:hover{opacity:.85;text-decoration:none}
+.label-filter{font-size:13px;color:var(--text-muted);margin-bottom:.4rem}
+.label-filter strong{color:var(--text)}
+.label-clear{color:var(--text-muted);text-decoration:none;margin-left:.3rem}
+.label-clear:hover{color:var(--text)}
 </style></head><body>
 <header class="topbar">
   <a href="/" style="color:var(--header-text)">🏠</a>
@@ -71,11 +100,12 @@ ${tabNavHTML("issues")}
     <button type="submit" class="new-btn" style="background:var(--bg-muted);color:var(--text)">搜索</button>
   </form>
   <div class="tabs-sub">
-    <a class="tab${openActive}" href="/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues?state=open${qParam}">Open</a>
-    <a class="tab${closedActive}" href="/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues?state=closed${qParam}">Closed</a>
-    <a class="tab${allActive}" href="/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues?state=all${qParam}">All</a>
+    <a class="tab${openActive}" href="/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues?state=open${qParam}${labelParam}">Open</a>
+    <a class="tab${closedActive}" href="/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues?state=closed${qParam}${labelParam}">Closed</a>
+    <a class="tab${allActive}" href="/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues?state=all${qParam}${labelParam}">All</a>
     ${newBtn}
   </div>
+  ${labelFilterHint}
   <div class="rows">${rows}</div>
 </main>
 </body></html>`;

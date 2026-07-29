@@ -1,24 +1,35 @@
 import { THEME_CSS, escapeHtml, escapeAttr, containsCI, highlightAll, tabNavHTML } from "../render/layout";
-import { listAllIssues, type IssueWithMeta } from "../store";
+import { listAllIssues, listLabelsForIssues, type IssueWithMeta, type LabelRow } from "../store";
 import { relTime } from "../render/components";
 
 export const FEED_PAGE_SIZE = 50;
 
-function issueRow(it: IssueWithMeta, q: string): string {
+function labelChip(label: LabelRow, owner: string, repo: string, state: string): string {
+  const href = `/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues?state=${state}&label=${encodeURIComponent(label.name)}`;
+  return `<a class="issue-label" href="${escapeAttr(href)}" style="background:${escapeAttr(label.color)}" title="${escapeAttr(label.description ?? "")}">${escapeHtml(label.name)}</a>`;
+}
+
+function issueRow(it: IssueWithMeta, q: string, state: string, labels: LabelRow[]): string {
   const href = `/${encodeURIComponent(it.project_owner)}/${encodeURIComponent(it.project_name)}/issues/${it.number}`;
   const title = q ? highlightAll(it.title, q) : escapeHtml(it.title);
   const projectStr = `${escapeHtml(it.project_owner)}<span style="opacity:.55">/</span>${escapeHtml(it.project_name)}`;
+  const chips = labels.length
+    ? `<div class="row-labels">${labels.map((l) => labelChip(l, it.project_owner, it.project_name, state)).join("")}</div>`
+    : "";
   return `<a class="row" href="${escapeAttr(href)}">
     <div class="row-title">${title}</div>
+    ${chips}
     <div class="row-meta">${projectStr} · #${it.number} · 💬 ${it.comment_count} · ${relTime(it.updated_at)}</div>
   </a>`;
 }
 
 export async function buildIssuesFeed(
   state: "open" | "closed" | "all",
-  q: string
+  q: string,
+  label: string = "",
 ): Promise<string> {
-  const issues = await listAllIssues({ state, q, limit: FEED_PAGE_SIZE });
+  const issues = await listAllIssues({ state, q, label, limit: FEED_PAGE_SIZE });
+  const labelMap = await listLabelsForIssues(issues.map((it) => it.id));
   const matchesFirst = q
     ? [...issues].sort((a, b) => Number(containsCI(b.title, q)) - Number(containsCI(a.title, q)))
     : issues;
@@ -26,8 +37,11 @@ export async function buildIssuesFeed(
   const closedActive = state === "closed" ? " active" : "";
   const allActive = state === "all" ? " active" : "";
   const qParam = q ? `&q=${encodeURIComponent(q)}` : "";
+  const labelFilterHint = label
+    ? `<div class="label-filter">标签: <strong>${escapeHtml(label)}</strong></div>`
+    : "";
   const rows = matchesFirst.length
-    ? matchesFirst.map((it) => issueRow(it, q)).join("")
+    ? matchesFirst.map((it) => issueRow(it, q, state, labelMap.get(it.id) ?? [])).join("")
     : `<div class="empty">暂无工单</div>`;
   return `<!doctype html>
 <html lang="zh"><head><meta charset="utf-8">
@@ -46,6 +60,11 @@ export async function buildIssuesFeed(
 .row-title{font-weight:500;overflow-wrap:anywhere}
 .row-meta{color:var(--text-muted);font-size:12px;margin-top:.2rem}
 .empty{color:var(--text-muted);text-align:center;padding:2rem;font-size:13px}
+.row-labels{display:flex;flex-wrap:wrap;gap:.25rem;margin-top:.2rem}
+.issue-label{display:inline-block;padding:1px 7px;border-radius:10px;font-size:11px;font-weight:500;color:#fff;text-decoration:none;line-height:18px;white-space:nowrap}
+.issue-label:hover{opacity:.85;text-decoration:none}
+.label-filter{font-size:13px;color:var(--text-muted);margin-bottom:.4rem}
+.label-filter strong{color:var(--text)}
 </style></head><body>
 <header class="topbar"><span style="font-weight:600">📦 ework</span></header>
 ${tabNavHTML("issues")}
@@ -60,6 +79,7 @@ ${tabNavHTML("issues")}
     <a class="tab${closedActive}" href="/issues?state=closed${qParam}">Closed</a>
     <a class="tab${allActive}" href="/issues?state=all${qParam}">All</a>
   </div>
+  ${labelFilterHint}
   <div class="rows">${rows}</div>
 </main>
 </body></html>`;

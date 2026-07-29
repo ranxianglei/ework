@@ -611,8 +611,9 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
   if (url.pathname === "/issues") {
     const state = parseState(url.searchParams.get("state"));
     const q = url.searchParams.get("q")?.trim() ?? "";
+    const label = url.searchParams.get("label")?.trim() ?? "";
     try {
-      return html(await buildIssuesFeed(state, q));
+      return html(await buildIssuesFeed(state, q, label));
     } catch (e) {
       return html(errorPage("加载失败", errMsg(e)), e instanceof StoreError ? e.status : 500);
     }
@@ -1891,8 +1892,9 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     if (!(owner && repo)) return html(errorPage("404", "bad path"), 404);
     const state = parseState(url.searchParams.get("state"));
     const q = url.searchParams.get("q")?.trim() ?? "";
+    const label = url.searchParams.get("label")?.trim() ?? "";
     try {
-      return html(await buildIssueList(owner, repo, state, cfg.writesEnabled, q));
+      return html(await buildIssueList(owner, repo, state, cfg.writesEnabled, q, label));
     } catch (e) {
       return html(errorPage("加载失败", errMsg(e)), e instanceof StoreError ? e.status : 500);
     }

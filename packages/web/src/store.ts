@@ -330,6 +330,7 @@ export async function getIssueWithMeta(projectId: number, number: number): Promi
 export interface ListIssuesOpts {
   state?: "open" | "closed" | "all";
   q?: string;
+  label?: string;
   limit?: number;
 }
 
@@ -350,6 +351,11 @@ export async function listIssues(projectId: number, opts: ListIssuesOpts = {}): 
     sql += " AND (i.title LIKE ? ESCAPE '\\' OR i.body LIKE ? ESCAPE '\\')";
     const like = `%${q.replace(/[%_]/g, (m) => "\\" + m)}%`;
     args.push(like, like);
+  }
+  const label = (opts.label ?? "").trim();
+  if (label) {
+    sql += " AND EXISTS (SELECT 1 FROM {{issue_labels}} il JOIN {{labels}} l ON l.id = il.label_id WHERE il.issue_id = i.id AND l.name = ?)";
+    args.push(label);
   }
   sql += " ORDER BY i.updated_at DESC LIMIT ?";
   args.push(limit);
@@ -373,6 +379,11 @@ export async function listAllIssues(opts: ListIssuesOpts = {}): Promise<IssueWit
     sql += " AND (i.title LIKE ? ESCAPE '\\' OR i.body LIKE ? ESCAPE '\\' OR p.owner LIKE ? ESCAPE '\\' OR p.name LIKE ? ESCAPE '\\')";
     const like = `%${q.replace(/[%_]/g, (m) => "\\" + m)}%`;
     args.push(like, like, like, like);
+  }
+  const label = (opts.label ?? "").trim();
+  if (label) {
+    sql += " AND EXISTS (SELECT 1 FROM {{issue_labels}} il JOIN {{labels}} l ON l.id = il.label_id WHERE il.issue_id = i.id AND l.name = ?)";
+    args.push(label);
   }
   sql += " ORDER BY i.updated_at DESC LIMIT ?";
   args.push(limit);
@@ -642,6 +653,43 @@ export async function listLabelsForIssue(issueId: number): Promise<LabelRow[]> {
      WHERE il.issue_id = ? ORDER BY l.name`,
     [issueId]
   );
+}
+
+export async function listLabelsForIssues(issueIds: number[]): Promise<Map<number, LabelRow[]>> {
+  const result = new Map<number, LabelRow[]>();
+  if (issueIds.length === 0) return result;
+  const placeholders = issueIds.map(() => "?").join(",");
+  const rows = await getDB().all<{
+    issue_id: number;
+    label_id: number;
+    name: string;
+    color: string;
+    description: string | null;
+    exclusive: number;
+    is_archived: number;
+  }>(
+    `SELECT il.issue_id, l.id AS label_id, l.name, l.color, l.description, l.exclusive, l.is_archived
+     FROM {{issue_labels}} il JOIN {{labels}} l ON l.id = il.label_id
+     WHERE il.issue_id IN (${placeholders})
+     ORDER BY l.name`,
+    issueIds
+  );
+  for (const r of rows) {
+    const issueId = r.issue_id;
+    const label: LabelRow = {
+      id: r.label_id,
+      project_id: 0,
+      name: r.name,
+      color: r.color,
+      description: r.description ?? "",
+      exclusive: r.exclusive,
+      is_archived: r.is_archived,
+    };
+    const list = result.get(issueId);
+    if (list) list.push(label);
+    else result.set(issueId, [label]);
+  }
+  return result;
 }
 
 export async function getLabel(projectId: number, id: number): Promise<LabelRow | null> {
