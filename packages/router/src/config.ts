@@ -20,6 +20,7 @@ const EnvSchema = z.object({
   ROUTER_FORWARD_TIMEOUT_MS: z.coerce.number().default(30_000),
   ROUTER_FALLBACK_ENDPOINT: z.string().default(""),
   ROUTER_LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
+  ROUTER_ADMIN_TOKEN: z.string().default(""),
 });
 
 export type Config = z.infer<typeof EnvSchema>;

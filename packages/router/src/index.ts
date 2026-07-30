@@ -240,13 +240,23 @@ async function handleReply(req: Request, _cfg: Config): Promise<Response> {
   }
 }
 
-async function handleStrategy(req: Request): Promise<Response> {
+async function handleStrategy(req: Request, cfg: { ROUTER_ADMIN_TOKEN: string }): Promise<Response> {
   if (req.method === "GET") {
     return new Response(JSON.stringify(getStrategyConfig()), {
       headers: { "Content-Type": "application/json" },
     });
   }
   if (req.method === "POST") {
+    const token = cfg.ROUTER_ADMIN_TOKEN;
+    if (token) {
+      const auth = req.headers.get("authorization") || "";
+      if (auth !== `Bearer ${token}`) {
+        return new Response(JSON.stringify({ ok: false, error: "unauthorized" }), {
+          status: 401,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+    }
     try {
       const body = await req.json() as RouteStrategyConfig;
       setStrategyConfig(body);
@@ -292,7 +302,7 @@ export async function runServer(): Promise<void> {
         return handleReply(req, cfg);
       }
       if (url.pathname === "/api/strategy") {
-        return handleStrategy(req);
+        return handleStrategy(req, cfg);
       }
       if (url.pathname === "/api/daemons") {
         const daemons = await getAllDaemons(cfg);
