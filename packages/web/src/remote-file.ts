@@ -118,7 +118,7 @@ export async function browseRemoteFile(
     throw new RemoteFileError(err.error ?? `daemon returned ${readResp.status}`, readResp.status);
   }
   const data = (await readResp.json()) as FileContent;
-  return { html: renderFileContent(data, endpoint, daemonLabel, viewerLogin) };
+  return { html: renderFileContent(data, rawPath, endpoint, daemonLabel, viewerLogin) };
 }
 
 function renderDirListing(
@@ -179,6 +179,7 @@ ${tabNavHTML("sessions", user)}
 
 function renderFileContent(
   data: FileContent,
+  rawPath: string,
   endpoint: string,
   daemonLabel: string,
   viewerLogin?: string
@@ -187,16 +188,16 @@ function renderFileContent(
   const daemonParam = `&daemon=${enc(endpoint)}`;
   const user = viewerLogin ? { login: viewerLogin, is_admin: 0 } : undefined;
 
-  const ext = (data.path.split(".").pop() || "").toLowerCase();
+  const ext = (rawPath.split(".").pop() || "").toLowerCase();
   const isMd = ext === "md" || ext === "markdown";
-  const lang = extToLang(data.path);
+  const lang = extToLang(rawPath);
   const fullText = data.rows.map((r) => r.t).join("\n");
   const shownBytes = data.rows.reduce((s, r) => s + r.t.length + 1, 0);
 
   let body: string;
   if (isMd) {
     body = `<div class="md-render">${renderMarkdown(fullText, "")}</div>`;
-  } else if (lang && shownBytes <= 100000) {
+  } else if (lang && shownBytes <= 256000) {
     const nums = data.rows.map((r) => r.n).join("\n");
     body = `<div class="fv-code"><pre class="fv-gutter">${escapeHtml(nums)}</pre><pre class="fv-src"><code class="hljs language-${escapeHtml(lang)}">${hljsHighlight(fullText, lang)}</code></pre></div>`;
   } else {
@@ -210,6 +211,18 @@ function renderFileContent(
 <title>ework-web · ${escapeHtml(data.path)}</title>
 <link rel="stylesheet" href="/static/highlight.css">
 <style>${THEME_CSS}
+.hljs{color:var(--text);background:transparent}
+.hljs-comment,.hljs-quote{color:var(--text-muted);font-style:italic}
+.hljs-keyword,.hljs-selector-tag,.hljs-built_in,.hljs-type{color:#d73a49;font-weight:600}
+.hljs-string,.hljs-attr,.hljs-template-tag,.hljs-addition{color:#032f62}
+.hljs-number,.hljs-literal,.hljs-variable,.hljs-template-variable{color:#005cc5}
+.hljs-title,.hljs-section,.hljs-name,.hljs-function .hljs-title{color:#6f42c1;font-weight:600}
+.hljs-tag{color:var(--text-muted)}
+.hljs-attribute{color:#005cc5}
+.hljs-regexp,.hljs-link{color:#032f62}
+.hljs-deletion{color:#b31d28;background-color:#ffeef0}
+.hljs-addition{background-color:#f0fff4}
+@media(prefers-color-scheme:dark){.hljs-keyword,.hljs-selector-tag,.hljs-built_in,.hljs-type{color:#ff7b72}.hljs-string,.hljs-attr,.hljs-template-tag{color:#a5d6ff}.hljs-number,.hljs-literal,.hljs-variable{color:#79c0ff}.hljs-title,.hljs-section,.hljs-name,.hljs-function .hljs-title{color:#d2a8ff}.hljs-comment,.hljs-quote{color:#8b949e}.hljs-deletion{color:#ffa198;background:#67060c}.hljs-addition{background:#033a16}}
 .nav{display:flex;align-items:center;gap:.5rem;padding:.55rem 1rem;background:var(--header-bg);color:var(--header-text);font-size:13px}
 .nav a{color:var(--header-text);opacity:.95}
 .wrap{max-width:1100px;margin:0 auto;padding:1rem}
