@@ -234,10 +234,17 @@ async function readCapped(stream: ReadableStream<Uint8Array> | null, cap: number
 }
 
 function stripNonJsonPreamble(s: string): string | null {
-  const i = s.indexOf("[");
-  const j = s.indexOf("{");
-  if (i === -1 && j === -1) return null;
-  if (i === -1) return s.slice(j);
-  if (j === -1) return s.slice(i);
-  return s.slice(Math.min(i, j));
+  const lines = s.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = (lines[i] ?? "").trimStart();
+    if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) continue;
+    const candidate = lines.slice(i).join("\n");
+    try {
+      JSON.parse(candidate);
+      return candidate;
+    } catch {
+      continue;
+    }
+  }
+  return null;
 }
