@@ -153,6 +153,23 @@ export async function checkSessionOutput(
   }
 }
 
+export async function opencodeSessionExists(dbPath: string, sessionId: string): Promise<boolean> {
+  let db: Database;
+  try {
+    db = new Database(dbPath, { readonly: true });
+  } catch {
+    return false;
+  }
+  try {
+    const row = db.prepare("SELECT 1 FROM session WHERE id = ? LIMIT 1").get(sessionId);
+    return !!row;
+  } catch {
+    return false;
+  } finally {
+    db.close();
+  }
+}
+
 /**
  * Default TakeoverStrategy: deterministic per-issue workdir under
  * `<baseWorkdir>/<owner>--<repo>/<issueId>/<sessionName>`, with a best-effort
@@ -884,6 +901,11 @@ export class Engine {
     if (!resumeSessionId) {
       const fromStrategy = await this.takeover.resumeOpenCodeSession(session);
       if (fromStrategy) resumeSessionId = fromStrategy;
+    }
+    if (resumeSessionId && !(await opencodeSessionExists(this.cfg.opencode.dbPath, resumeSessionId))) {
+      log.warn(`stale opencode session ${resumeSessionId} not found in db, starting fresh`);
+      resumeSessionId = undefined;
+      await this.store.updateSession(session.id, { opencodeSessionId: undefined });
     }
     if (resumeSessionId) {
       args.push("--session", resumeSessionId);
