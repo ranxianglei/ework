@@ -5,6 +5,22 @@
 import { getDB } from "./db";
 import { createHash } from "node:crypto";
 
+let _visibilityChecked = false;
+let _hasVisibilityColumn = true;
+
+async function visibilitySupported(): Promise<boolean> {
+  if (_visibilityChecked) return _hasVisibilityColumn;
+  _visibilityChecked = true;
+  try {
+    await getDB().get("SELECT visibility FROM {{projects}} LIMIT 0");
+    _hasVisibilityColumn = true;
+  } catch {
+    _hasVisibilityColumn = false;
+    console.warn("[store] projects.visibility column missing — treating all projects as public");
+  }
+  return _hasVisibilityColumn;
+}
+
 export type UserKind = "human" | "bot" | "system";
 
 export interface UserRow {
@@ -181,12 +197,15 @@ export async function listProjectsWithCounts(
 ): Promise<ProjectWithCounts[]> {
   const isAdmin = viewer?.is_admin === 1;
   const login = viewer?.login;
-  const visibilityFilter = isAdmin
+  const hasVis = isAdmin ? true : await visibilitySupported();
+  const visibilityFilter = !hasVis
     ? ""
-    : login
-      ? ` AND (p.visibility != 'private' OR EXISTS (SELECT 1 FROM {{project_members}} pm WHERE pm.project_id = p.id AND pm.user_login = ?))`
-      : ` AND p.visibility != 'private'`;
-  const args = !isAdmin && login ? [login] : [];
+    : isAdmin
+      ? ""
+      : login
+        ? ` AND (p.visibility != 'private' OR EXISTS (SELECT 1 FROM {{project_members}} pm WHERE pm.project_id = p.id AND pm.user_login = ?))`
+        : ` AND p.visibility != 'private'`;
+  const args = hasVis && !isAdmin && login ? [login] : [];
   return await getDB().all<ProjectWithCounts>(
     `SELECT p.*,
        COALESCE(SUM(CASE WHEN i.state = 'open' THEN 1 ELSE 0 END), 0) AS open_count,
@@ -404,7 +423,7 @@ export async function listAllIssues(opts: ListIssuesOpts = {}): Promise<IssueWit
     sql += " AND EXISTS (SELECT 1 FROM {{issue_labels}} il JOIN {{labels}} l ON l.id = il.label_id WHERE il.issue_id = i.id AND l.name = ?)";
     args.push(label);
   }
-  if (!opts.viewerIsAdmin) {
+  if (!opts.viewerIsAdmin && await visibilitySupported()) {
     sql += " AND (p.visibility != 'private'";
     if (opts.viewerLogin) {
       sql += " OR EXISTS (SELECT 1 FROM {{project_members}} pm WHERE pm.project_id = p.id AND pm.user_login = ?)";

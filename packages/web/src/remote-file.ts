@@ -50,7 +50,8 @@ async function fetchDaemon(
   apiPath: string,
   params: Record<string, string>
 ): Promise<Response> {
-  const url = new URL(`${endpoint}${apiPath}`);
+  const base = /^https?:\/\//.test(endpoint) ? endpoint : `http://${endpoint}`;
+  const url = new URL(`${base}${apiPath}`);
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
   const resp = await fetch(url.toString(), { signal: AbortSignal.timeout(10_000) });
   return resp;

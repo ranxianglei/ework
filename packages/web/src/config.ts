@@ -64,8 +64,8 @@ export const configSchema = z.object({
   collapseLines: z.coerce.number().int().positive().default(16),
   fileRoots: z
     .string()
-    .transform((s) => s.split(",").map((x) => x.trim()).filter(Boolean))
-    .default("/tmp"),
+    .default("/tmp")
+    .transform((s) => s.split(",").map((x) => x.trim()).filter(Boolean)),
   fileMaxLines: z.coerce.number().int().positive().default(2000),
   fileMaxBytes: z.coerce.number().int().positive().default(512 * 1024),
   translateUrl: z.string().default(""),
