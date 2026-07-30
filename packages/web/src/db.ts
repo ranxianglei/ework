@@ -301,7 +301,8 @@ function translateForMysql(sql: string): string {
   return sql
     .replace(/INSERT OR IGNORE INTO/g, "INSERT IGNORE INTO")
     .replace(/ON CONFLICT\((\w+)\) DO UPDATE SET/g, "ON DUPLICATE KEY UPDATE")
-    .replace(/excluded\.(\w+)/g, "VALUES($1)");
+    .replace(/excluded\.(\w+)/g, "VALUES($1)")
+    .replace(/LIKE \? ESCAPE '\\'/g, "LIKE ?");
 }
 
 async function migrateMysqlSurrogateId(pool: Pool): Promise<void> {

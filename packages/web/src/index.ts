@@ -27,7 +27,7 @@ import { buildAdminTokensPage } from "./views/adminTokens";
 import { buildSessionList, buildSessionView, renderNewMessages, renderBatchHTML } from "./views/sessionLog";
 import { buildFileView, FileViewError, readFileSince, serveRawFile } from "./fileview";
 import { translateText, translateTextStream, TranslateError } from "./translate";
-import { rateLimit } from "./ratelimit";
+import { rateLimit, clearRateLimit } from "./ratelimit";
 import {
   StoreError,
   getProject,
@@ -185,12 +185,19 @@ async function autoWireAllProjects(origin: string): Promise<void> {
 void autoWireAllProjects(`http://${cfg.host}:${cfg.port}`);
 
 const SEC_HEADERS: Record<string, string> = {
-  "content-security-policy": `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`,
+  "content-security-policy": buildCsp(cfg),
   "x-content-type-options": "nosniff",
   "x-frame-options": "DENY",
   "referrer-policy": "same-origin",
   "permissions-policy": "()",
 };
+
+function buildCsp(cfg: Config): string {
+  const origins = cfg.publicOrigins.join(" ");
+  const formAction = origins ? `'self' ${origins}` : "'self'";
+  const connectSrc = origins ? `'self' ${origins}` : "'self'";
+  return `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src ${connectSrc}; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action ${formAction}`;
+}
 
 const hlCss = loadHighlightCss();
 
@@ -483,14 +490,18 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     if (req.method === "POST") {
       const form = await req.formData().catch(() => new FormData());
       const next = sanitizeNext(String(form.get("next") ?? "/"));
-      if (!rateLimit(`login:${ip}`, 5, 5 / (15 * 60))) {
-        return html(loginHTML(next, "尝试过多，15 分钟后再试", cfg), 429);
-      }
       const login = String(form.get("login") ?? "").trim();
       const password = String(form.get("password") ?? "");
       const token = String(form.get("token") ?? "").trim();
 
-      // Token wins over login/password if both supplied (migration path).
+      const rlKey = `login:${ip}:${login || token || "?"}`;
+      if (!rateLimit(rlKey, 5, 5 / (15 * 60))) {
+        return new Response(loginHTML(next, "尝试过多，15 分钟后再试", cfg), {
+          status: 429,
+          headers: { "content-type": "text/html; charset=utf-8", "retry-after": "900" },
+        });
+      }
+
       let resolvedLogin: string | null = null;
       if (token && token === cfg.authToken) {
         resolvedLogin = cfg.operatorLogin;
@@ -508,6 +519,7 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
       }
 
       if (resolvedLogin) {
+        clearRateLimit(rlKey);
         const setCookie = await makeAuthCookieHeader(cfg, resolvedLogin);
         return new Response(null, {
           status: 302,

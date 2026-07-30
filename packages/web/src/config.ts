@@ -93,6 +93,13 @@ export const configSchema = z.object({
     if (!Number.isFinite(n) || n < 1 || n > 64) return 6;
     return Math.floor(n);
   }, z.number().int().min(1).max(64)),
+  // Space-separated list of origins (e.g. "https://ework-web.taobao.net http://ework-web.taobao.net")
+  // injected into CSP form-action + connect-src. For reverse-proxy/gateway deployments
+  // where the browser sees a different scheme/host than the app's 'self'.
+  publicOrigins: z
+    .string()
+    .default("")
+    .transform((s) => s.split(/\s+/).filter(Boolean)),
 });
 
 export type Config = z.infer<typeof configSchema>;
@@ -188,6 +195,7 @@ export async function loadConfig(): Promise<Config> {
     defaultModel: db.defaultModel ?? process.env.WORK_DEFAULT_MODEL,
     autowireActive: process.env.WORK_AUTOWIRE_ACTIVE !== "false",
     webhookMaxConcurrent: Number(process.env.WORK_WEBHOOK_MAX_CONCURRENT ?? "6"),
+    publicOrigins: process.env.WORK_PUBLIC_ORIGINS ?? "",
   });
 }
 
