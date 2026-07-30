@@ -693,13 +693,10 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
       const status = e instanceof OpencodeError ? e.status : 500;
       if (status === 404 && /^ses_[0-9A-Za-z]{8,}/.test(sid)) {
         return html(errorPage(
-          "会话尚未写入数据库",
-          `会话 ID ${sid} 在 opencode.db 里找不到。\n\n` +
-          `常见原因：daemon 把尚未完成的 opencode run 的 session ID 写进了评论（早期捕获），\n` +
-          `但 opencode 进程因 LLM 鉴权失败 / git clone 失败 / 其他错误退出前没把这条 session\n` +
-          `持久化到 DB。\n\n` +
-          `排查：docker logs ework-aio 看 opencode 子进程的报错；确认 OPENCODE_AI_API_KEY 已配置\n` +
-          `或 ~/.config/opencode/auth.json 存在。`
+          "找不到会话",
+          `会话 ID ${sid} 在 opencode 数据库中不存在。\n\n` +
+          `可能原因：opencode 进程异常退出、session 尚未持久化、或 daemon 连接问题。\n\n` +
+          `请检查 daemon 日志或确认 session ID 正确。`
         ), 404);
       }
       return html(errorPage(status === 404 ? "找不到会话" : "加载失败", errMsg(e)), status);

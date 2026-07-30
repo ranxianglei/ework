@@ -416,16 +416,16 @@ export class MultiDaemonOpencodeClient implements OpencodeClientInterface {
   async exportSession(id: string): Promise<SessionExport> {
     try {
       return await Promise.any(this.clients.map((c) => c.exportSession(id)));
-    } catch {
-      throw new OpencodeError(`session ${id} not found on any daemon`, 404);
+    } catch (e) {
+      throw pickErrorFromAggregate(e, id);
     }
   }
 
   async exportSessionRaw(id: string): Promise<string> {
     try {
       return await Promise.any(this.clients.map((c) => c.exportSessionRaw(id)));
-    } catch {
-      throw new OpencodeError(`session ${id} not found on any daemon`, 404);
+    } catch (e) {
+      throw pickErrorFromAggregate(e, id);
     }
   }
 
@@ -448,6 +448,18 @@ export function createOpencodeClient(cfg: Config, daemonEndpoint?: string): Open
     return new RemoteOpencodeClient(daemonEndpoint);
   }
   return new OpencodeClient(cfg);
+}
+
+function pickErrorFromAggregate(e: unknown, id: string): OpencodeError {
+  if (e instanceof AggregateError) {
+    const errors = e.errors as unknown[];
+    const non404 = errors.find(
+      (err) => err instanceof OpencodeError && err.status !== 404,
+    ) as OpencodeError | undefined;
+    if (non404) return non404;
+  }
+  if (e instanceof OpencodeError) return e;
+  return new OpencodeError(`session ${id} not found on any daemon`, 404);
 }
 
 async function readCapped(stream: ReadableStream<Uint8Array> | null, maxBytes: number): Promise<string> {
