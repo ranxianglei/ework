@@ -53,6 +53,8 @@ import {
   listAllPatsWithUsers,
   canWriteProject,
   canAdminProject,
+  canReadProject,
+  updateProjectVisibility,
   ensureProjectBootstrapAdmin,
   addProjectMember,
   setProjectMemberRole,
@@ -359,6 +361,7 @@ const REPO_WEBHOOKS_RE = /^\/([^/]+)\/([^/]+)\/settings\/webhooks$/;
 const REPO_MEMBERS_RE = /^\/([^/]+)\/([^/]+)\/settings\/members$/;
 const REPO_MEMBER_ACTION_RE = /^\/([^/]+)\/([^/]+)\/settings\/members\/([^/]+)\/(role|remove)$/;
 const REPO_MEMBER_ADD_RE = /^\/([^/]+)\/([^/]+)\/settings\/members\/add$/;
+const REPO_VISIBILITY_RE = /^\/([^/]+)\/([^/]+)\/settings\/visibility$/;
 const REPO_UPSTREAMS_RE = /^\/([^/]+)\/([^/]+)\/settings\/upstreams$/;
 const REPO_MODEL_RE = /^\/([^/]+)\/([^/]+)\/settings\/model$/;
 const REPO_LABELS_RE = /^\/([^/]+)\/([^/]+)\/settings\/labels$/;
@@ -613,7 +616,7 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     const q = url.searchParams.get("q")?.trim() ?? "";
     const label = url.searchParams.get("label")?.trim() ?? "";
     try {
-      return html(await buildIssuesFeed(state, q, label));
+      return html(await buildIssuesFeed(state, q, label, ctx.user));
     } catch (e) {
       return html(errorPage("加载失败", errMsg(e)), e instanceof StoreError ? e.status : 500);
     }
@@ -1731,6 +1734,25 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
       }
     }
 
+    const visMatch = url.pathname.match(REPO_VISIBILITY_RE);
+    if (visMatch) {
+      const [, owner, repo] = visMatch;
+      if (!(owner && repo)) return html(errorPage("bad path", ""), 400);
+      const project = await getProject(owner, repo);
+      if (!project) return html(errorPage("项目不存在", ""), 404);
+      const back = `${url.origin}/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/settings/members`;
+      if (!(await canAdminProject(project.id, ctx.user))) {
+        return Response.redirect(`${back}?err=${encodeURIComponent("无权限")}`, 303);
+      }
+      const fd = await req.formData();
+      const visibility = fd.get("visibility");
+      if (visibility !== "public" && visibility !== "private") {
+        return Response.redirect(`${back}?err=${encodeURIComponent("无效的可见性")}`, 303);
+      }
+      await updateProjectVisibility(project.id, visibility);
+      return Response.redirect(`${back}?ok=1&ok_msg=${encodeURIComponent(`可见性已更新为 ${visibility === "public" ? "公开" : "私有"}`)}`, 303);
+    }
+
     const whAction = url.pathname.match(WH_ACTION_RE);
     if (whAction) {
       const [, idStr, action] = whAction;
@@ -1900,6 +1922,9 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     if (!(owner && repo && numStr)) return html(errorPage("404", "bad path"), 404);
     const number = Number(numStr);
     try {
+      const project = await getProject(owner, repo);
+      if (!project) return html(errorPage("404", "项目不存在"), 404);
+      if (!(await canReadProject(project.id, ctx.user))) return html(errorPage("404", "项目不存在"), 404);
       const { html: body } = await buildIssueThread(cfg, owner, repo, number, ctx.user?.login);
       return html(body);
     } catch (e) {
@@ -1912,6 +1937,9 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
   if (list) {
     const [, owner, repo] = list;
     if (!(owner && repo)) return html(errorPage("404", "bad path"), 404);
+    const project = await getProject(owner, repo);
+    if (!project) return html(errorPage("404", "项目不存在"), 404);
+    if (!(await canReadProject(project.id, ctx.user))) return html(errorPage("404", "项目不存在"), 404);
     const state = parseState(url.searchParams.get("state"));
     const q = url.searchParams.get("q")?.trim() ?? "";
     const label = url.searchParams.get("label")?.trim() ?? "";

@@ -117,6 +117,9 @@ function migrateProjectsTable(db: Database): void {
   if (!have.has("model")) {
     db.exec(applyPrefix("ALTER TABLE {{projects}} ADD COLUMN model TEXT NOT NULL DEFAULT ''"));
   }
+  if (!have.has("visibility")) {
+    db.exec(applyPrefix("ALTER TABLE {{projects}} ADD COLUMN visibility TEXT NOT NULL DEFAULT 'public'"));
+  }
 }
 
 function migrateIssuesTable(db: Database): void {
@@ -338,6 +341,18 @@ async function migrateMysqlSurrogateId(pool: Pool): Promise<void> {
   }
 }
 
+async function migrateMysqlProjectsVisibility(pool: Pool): Promise<void> {
+  const [cols] = await pool.query(
+    applyPrefix("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '{{projects}}' AND COLUMN_NAME = 'visibility'")
+  );
+  if (Array.isArray(cols) && cols.length > 0) return;
+  try {
+    await pool.query(applyPrefix("ALTER TABLE {{projects}} ADD COLUMN visibility VARCHAR(16) NOT NULL DEFAULT 'public'"));
+  } catch (e) {
+    console.warn("[db] MySQL projects visibility column add failed:", (e as Error).message);
+  }
+}
+
 class MysqlDriver implements AsyncDatabase {
   readonly dialect = "mysql" as const;
   private readonly pool: Pool;
@@ -381,6 +396,7 @@ class MysqlDriver implements AsyncDatabase {
         }
       }
       await migrateMysqlSurrogateId(pool);
+      await migrateMysqlProjectsVisibility(pool);
     }
     return new MysqlDriver(pool);
   }

@@ -26,8 +26,13 @@ export async function buildIssuesFeed(
   state: "open" | "closed" | "all",
   q: string,
   label: string = "",
+  viewer?: { login: string; is_admin: number } | null,
 ): Promise<string> {
-  const issues = await listAllIssues({ state, q, label, limit: FEED_PAGE_SIZE });
+  const issues = await listAllIssues({
+    state, q, label, limit: FEED_PAGE_SIZE,
+    viewerLogin: viewer?.login,
+    viewerIsAdmin: viewer?.is_admin === 1,
+  });
   const labelMap = await listLabelsForIssues(issues.map((it) => it.id));
   const matchesFirst = q
     ? [...issues].sort((a, b) => Number(containsCI(b.title, q)) - Number(containsCI(a.title, q)))

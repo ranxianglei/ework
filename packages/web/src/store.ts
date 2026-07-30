@@ -36,6 +36,7 @@ export interface ProjectRow {
   description: string;
   upstream_urls: string;
   model: string;
+  visibility: string;
   created_at: string;
   updated_at: string;
 }
@@ -175,15 +176,27 @@ export interface ProjectWithCounts extends ProjectRow {
   total_count: number;
 }
 
-export async function listProjectsWithCounts(): Promise<ProjectWithCounts[]> {
+export async function listProjectsWithCounts(
+  viewer?: { login: string; is_admin: number } | null,
+): Promise<ProjectWithCounts[]> {
+  const isAdmin = viewer?.is_admin === 1;
+  const login = viewer?.login;
+  const visibilityFilter = isAdmin
+    ? ""
+    : login
+      ? ` AND (p.visibility != 'private' OR EXISTS (SELECT 1 FROM {{project_members}} pm WHERE pm.project_id = p.id AND pm.user_login = ?))`
+      : ` AND p.visibility != 'private'`;
+  const args = !isAdmin && login ? [login] : [];
   return await getDB().all<ProjectWithCounts>(
     `SELECT p.*,
        COALESCE(SUM(CASE WHEN i.state = 'open' THEN 1 ELSE 0 END), 0) AS open_count,
        COUNT(i.id) AS total_count
      FROM {{projects}} p
      LEFT JOIN {{issues}} i ON i.project_id = p.id
+     WHERE 1=1${visibilityFilter}
      GROUP BY p.id
-     ORDER BY p.updated_at DESC`
+     ORDER BY p.updated_at DESC`,
+    args,
   );
 }
 
@@ -209,6 +222,10 @@ export async function createProject(owner: string, name: string, description: st
 
 export async function touchProject(projectId: number): Promise<void> {
   await getDB().run("UPDATE {{projects}} SET updated_at = ? WHERE id = ?", [now(), projectId]);
+}
+
+export async function updateProjectVisibility(projectId: number, visibility: "public" | "private"): Promise<void> {
+  await getDB().run("UPDATE {{projects}} SET visibility = ?, updated_at = ? WHERE id = ?", [visibility, now(), projectId]);
 }
 
 const MAX_UPSTREAM_URLS = 10;
@@ -332,6 +349,8 @@ export interface ListIssuesOpts {
   q?: string;
   label?: string;
   limit?: number;
+  viewerLogin?: string;
+  viewerIsAdmin?: boolean;
 }
 
 export async function listIssues(projectId: number, opts: ListIssuesOpts = {}): Promise<IssueWithMeta[]> {
@@ -384,6 +403,14 @@ export async function listAllIssues(opts: ListIssuesOpts = {}): Promise<IssueWit
   if (label) {
     sql += " AND EXISTS (SELECT 1 FROM {{issue_labels}} il JOIN {{labels}} l ON l.id = il.label_id WHERE il.issue_id = i.id AND l.name = ?)";
     args.push(label);
+  }
+  if (!opts.viewerIsAdmin) {
+    sql += " AND (p.visibility != 'private'";
+    if (opts.viewerLogin) {
+      sql += " OR EXISTS (SELECT 1 FROM {{project_members}} pm WHERE pm.project_id = p.id AND pm.user_login = ?)";
+      args.push(opts.viewerLogin);
+    }
+    sql += ")";
   }
   sql += " ORDER BY i.updated_at DESC LIMIT ?";
   args.push(limit);
@@ -1206,6 +1233,16 @@ export async function canWriteProject(projectId: number, user: { login: string; 
 export async function canAdminProject(projectId: number, user: { login: string; is_admin: number } | null): Promise<boolean> {
   const r = await getRoleOnProject(projectId, user);
   return r === "admin";
+}
+
+export async function canReadProject(projectId: number, user: { login: string; is_admin: number } | null): Promise<boolean> {
+  if (!user) return false;
+  if (user.is_admin === 1) return true;
+  const project = await getProjectById(projectId);
+  if (!project) return false;
+  if (project.visibility !== "private") return true;
+  const r = await getRoleOnProject(projectId, user);
+  return r !== null;
 }
 
 export async function addProjectMember(projectId: number, userLogin: string, role: ProjectRole): Promise<ProjectMembership> {

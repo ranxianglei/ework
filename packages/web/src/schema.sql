@@ -30,6 +30,9 @@ CREATE TABLE IF NOT EXISTS {{projects}} (
   -- `opencode run --model <X>` by ework-daemon. Empty = inherit global
   -- defaultModel from the config table.
   model         TEXT NOT NULL DEFAULT '',
+  -- 'public' = any logged-in user can read; 'private' = requires project
+  -- membership (reader+). Enforced by canReadProject().
+  visibility  TEXT NOT NULL DEFAULT 'public' CHECK (visibility IN ('public','private')),
   created_at  TEXT NOT NULL,
   updated_at  TEXT NOT NULL,
   UNIQUE (owner, name)

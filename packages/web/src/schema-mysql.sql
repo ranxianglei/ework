@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS {{projects}} (
   description   VARCHAR(2048) NOT NULL DEFAULT '',
   upstream_urls VARCHAR(4096) NOT NULL DEFAULT '[]',
   model         VARCHAR(128) NOT NULL DEFAULT '',
+  visibility    VARCHAR(16) NOT NULL DEFAULT 'public',
   created_at    VARCHAR(40) NOT NULL,
   updated_at    VARCHAR(40) NOT NULL,
   UNIQUE (owner, name)

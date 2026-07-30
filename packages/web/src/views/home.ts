@@ -33,7 +33,7 @@ export async function buildHome(
   viewer: UserRow | null,
   flash: { kind: "ok" | "err"; msg: string } | null = null
 ): Promise<string> {
-  const projects = await listProjectsWithCounts();
+  const projects = await listProjectsWithCounts(viewer);
   const cards = await Promise.all(projects.map((p) => projectCard(p, viewer)));
   const list = projects.length
     ? cards.join("")

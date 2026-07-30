@@ -31,6 +31,7 @@ import {
   removeReaction,
   listReactionsFor,
   canWriteProject,
+  canReadProject,
   type UserRow,
 } from "./store";
 import {
@@ -122,7 +123,7 @@ export async function handleGiteaApi(
     const limitRaw = Number(url.searchParams.get("limit") ?? 50);
     const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 200) : 50;
     try {
-      const rows = await listAllIssues({ q, state, limit });
+      const rows = await listAllIssues({ q, state, limit, viewerLogin: user.login, viewerIsAdmin: user.is_admin === 1 });
       const body = [];
       for (const row of rows) {
         const project = await getProject(row.project_owner, row.project_name);
@@ -144,6 +145,7 @@ export async function handleGiteaApi(
     if (!(owner && repo)) return giteaError(404, "not found");
     const project = await getProject(owner, repo);
     if (!project) return giteaError(404, "repository not found");
+    if (!(await canReadProject(project.id, user))) return giteaError(404, "repository not found");
     return { status: 200, body: buildRepository(project, origin) };
   }
 
@@ -187,6 +189,7 @@ export async function handleGiteaApi(
       if (!issue) return giteaError(404, "issue not found");
 
       if (req.method === "GET") {
+        if (!(await canReadProject(project.id, user))) return giteaError(404, "repository not found");
         return { status: 200, body: buildIssuePayload(issue, project, await countComments(issue.id), origin) };
       }
       if (req.method === "PATCH") {
@@ -227,6 +230,7 @@ export async function handleGiteaApi(
       if (!issue) return giteaError(404, "issue not found");
 
       if (req.method === "GET") {
+        if (!(await canReadProject(project.id, user))) return giteaError(404, "repository not found");
         const comments = await listCommentsForIssue(issue.id);
         return {
           status: 200,
@@ -269,6 +273,7 @@ export async function handleGiteaApi(
     try {
       const project = await getProject(owner, repo);
       if (!project) return giteaError(404, "repository not found");
+      if (!(await canReadProject(project.id, user))) return giteaError(404, "repository not found");
 
       if (req.method === "GET") {
         const comment = await getComment(cid);
@@ -306,6 +311,7 @@ export async function handleGiteaApi(
     try {
       const project = await getProject(owner, repo);
       if (!project) return giteaError(404, "repository not found");
+      if (!(await canReadProject(project.id, user))) return giteaError(404, "repository not found");
 
       if (req.method === "GET") {
         return { status: 200, body: await reactionsList(cid, origin) };

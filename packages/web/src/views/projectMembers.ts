@@ -107,6 +107,21 @@ ${tabNavHTML("projects")}
 ${projectSettingsTabsHTML(project.owner, project.name, "members")}
 ${flashHtml}
 
+<form class="card" method="POST" action="${escapeAttr(`/${encodeURIComponent(project.owner)}/${encodeURIComponent(project.name)}/settings/visibility`)}}">
+<h2>可见性</h2>
+<div class="form-grid">
+<div>
+<label for="vis">项目可见性</label>
+<select id="vis" name="visibility">
+<option value="public"${project.visibility === "public" ? " selected" : ""}>🌐 公开 — 所有登录用户可见</option>
+<option value="private"${project.visibility === "private" ? " selected" : ""}>🔒 私有 — 仅项目成员可见</option>
+</select>
+</div>
+</div>
+<div class="hint">公开 = 任何登录用户都能查看 issue 和评论；私有 = 需要项目成员（reader+）权限。Bot 用户已自动获得 writer 角色，不受影响。</div>
+<button class="primary" type="submit">保存</button>
+</form>
+
 <div class="card">
 <h2>当前成员（${members.length}）</h2>
 ${rowsHtml}

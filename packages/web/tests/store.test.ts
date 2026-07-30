@@ -15,6 +15,10 @@ import {
   listCommentsPage,
   postComment,
   setIssueState,
+  canReadProject,
+  canWriteProject,
+  addProjectMember,
+  updateProjectVisibility,
 } from "../src/store";
 
 beforeAll(async () => {
@@ -358,5 +362,46 @@ describe("getProject", () => {
 
   test("returns null for missing", async () => {
     expect(await getProject("nobody", "nothing")).toBeNull();
+  });
+});
+
+describe("canReadProject", () => {
+  test("public project: any logged-in user can read", async () => {
+    const p = await seedProject();
+    await ensureUser("reader");
+    expect(await canReadProject(p.id, { login: "reader", is_admin: 0 })).toBe(true);
+  });
+
+  test("public project: null user (unauthenticated) cannot read", async () => {
+    const p = await seedProject();
+    expect(await canReadProject(p.id, null)).toBe(false);
+  });
+
+  test("site admin can always read", async () => {
+    const p = await seedProject();
+    await updateProjectVisibility(p.id, "private");
+    expect(await canReadProject(p.id, { login: "root", is_admin: 1 })).toBe(true);
+  });
+
+  test("private project: non-member cannot read", async () => {
+    const p = await seedProject();
+    await updateProjectVisibility(p.id, "private");
+    await ensureUser("outsider");
+    expect(await canReadProject(p.id, { login: "outsider", is_admin: 0 })).toBe(false);
+  });
+
+  test("private project: member (reader) can read", async () => {
+    const p = await seedProject();
+    await updateProjectVisibility(p.id, "private");
+    await ensureUser("member");
+    await addProjectMember(p.id, "member", "reader");
+    expect(await canReadProject(p.id, { login: "member", is_admin: 0 })).toBe(true);
+  });
+
+  test("canWriteProject: reader cannot write", async () => {
+    const p = await seedProject();
+    await ensureUser("ro");
+    await addProjectMember(p.id, "ro", "reader");
+    expect(await canWriteProject(p.id, { login: "ro", is_admin: 0 })).toBe(false);
   });
 });
