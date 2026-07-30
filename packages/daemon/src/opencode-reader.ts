@@ -70,8 +70,74 @@ export class OpencodeReader {
   }
 
   async exportSession(id: string): Promise<unknown> {
+    try {
+      const fromDB = this.exportSessionFromDB(id);
+      if (fromDB) return fromDB;
+    } catch {
+      // DB read failed (schema drift, locked, etc.) — fall back to CLI
+    }
     const raw = await this.runJSON(["export", id]);
     return raw;
+  }
+
+  private exportSessionFromDB(id: string): unknown | null {
+    let db: Database;
+    try {
+      db = new Database(this.dbPath, { readonly: true });
+    } catch {
+      return null;
+    }
+    try {
+      const srow = db
+        .prepare("SELECT id, title, directory, version, time_created, time_updated FROM session WHERE id = ?")
+        .get(id) as { id: string; title: string; directory: string; version: string; time_created: number; time_updated: number } | null;
+      if (!srow) return null;
+
+      const mrows = db
+        .prepare("SELECT id, data FROM message WHERE session_id = ? ORDER BY time_created, id")
+        .all(id) as Array<{ id: string; data: string }>;
+      const prows = db
+        .prepare("SELECT message_id, data FROM part WHERE session_id = ? ORDER BY message_id, id")
+        .all(id) as Array<{ message_id: string; data: string }>;
+
+      const partsByMsg = new Map<string, unknown[]>();
+      for (const p of prows) {
+        let pd: unknown;
+        try { pd = JSON.parse(p.data); } catch { continue; }
+        if (!pd || typeof pd !== "object") continue;
+        const arr = partsByMsg.get(p.message_id);
+        if (arr) arr.push(pd); else partsByMsg.set(p.message_id, [pd]);
+      }
+
+      const messages: unknown[] = [];
+      for (const m of mrows) {
+        let md: Record<string, unknown>;
+        try { md = JSON.parse(m.data); } catch { continue; }
+        const info: Record<string, unknown> = { id: m.id, role: md.role };
+        if (md.agent) info.agent = md.agent;
+        const modelID = typeof md.modelID === "string" ? md.modelID : (typeof md.model === "string" ? md.model : undefined);
+        if (modelID) info.modelID = modelID;
+        const tRaw = md.time && typeof md.time === "object" ? (md.time as Record<string, unknown>) : null;
+        if (tRaw && typeof tRaw.created === "number") info.time = { created: tRaw.created };
+        if (md.tokens) info.tokens = md.tokens;
+        messages.push({ info, parts: partsByMsg.get(m.id) ?? [] });
+      }
+
+      return {
+        info: {
+          id: srow.id,
+          title: srow.title || "(untitled)",
+          directory: srow.directory ?? "",
+          version: srow.version ?? "",
+          time: { created: srow.time_created, updated: srow.time_updated },
+        },
+        messages,
+      };
+    } catch {
+      return null;
+    } finally {
+      db.close();
+    }
   }
 
   async exportSessionRaw(id: string): Promise<string> {
