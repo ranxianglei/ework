@@ -1,6 +1,6 @@
 import { loadConfig, type Config } from "./config.ts";
-import { initDB, closeDB, getActiveDaemons, getAllDaemons, markStaleDaemonsDead, releaseOrphanedSessions } from "./db.ts";
-import { route, setStrategyConfig, getStrategyConfig } from "./strategy.ts";
+import { initDB, closeDB, getActiveDaemons, getAllDaemons, markStaleDaemonsDead, releaseOrphanedSessions, getIssueOwnerDaemonId } from "./db.ts";
+import { route, setStrategyConfig, getStrategyConfig, resolveGroupConfig } from "./strategy.ts";
 import type { RouteContext, RouteDecision } from "./types.ts";
 
 function log(level: string, msg: string, fields?: Record<string, unknown>): void {
@@ -102,7 +102,44 @@ async function handleWebhook(req: Request, cfg: Config): Promise<Response> {
     });
   }
 
-  const decision: RouteDecision = route(daemons, ctx, cfg);
+  const repoKey = ctx.repository
+    ? `${ctx.repository.owner ?? ""}/${ctx.repository.name ?? ""}`
+    : "";
+  const issueNumber = ctx.issue?.number;
+
+  let decision: RouteDecision;
+  if (repoKey && issueNumber !== undefined) {
+    const ownerId = await getIssueOwnerDaemonId(cfg, repoKey, issueNumber);
+    if (ownerId !== null) {
+      const ownerDaemon = daemons.find((d) => d.id === ownerId) ?? null;
+      if (ownerDaemon) {
+        log("info", "owner-affinity routing", {
+          daemon: ownerId,
+          issue: issueNumber,
+          repo: repoKey,
+        });
+        decision = {
+          daemon: ownerDaemon,
+          reason: `owner-affinity (daemon ${ownerId})`,
+          candidates: [ownerDaemon],
+        };
+        const gc = resolveGroupConfig(repoKey);
+        if (gc) decision.groupConfig = gc;
+      } else {
+        log("warn", "issue owner not in active daemons, falling back to strategy", {
+          ownerId,
+          issue: issueNumber,
+          repo: repoKey,
+        });
+        decision = route(daemons, ctx, cfg);
+      }
+    } else {
+      decision = route(daemons, ctx, cfg);
+    }
+  } else {
+    decision = route(daemons, ctx, cfg);
+  }
+
   if (!decision.daemon) {
     log("warn", "routing failed", { reason: decision.reason, candidates: decision.candidates.length });
     return new Response(JSON.stringify({ ok: false, error: decision.reason, routed: false }), {

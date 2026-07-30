@@ -139,18 +139,15 @@ export async function getAllDaemons(cfg: Config): Promise<DaemonInfo[]> {
 export async function markStaleDaemonsDead(cfg: Config): Promise<number> {
   const daemonPrefix = cfg.DAEMON_TABLE_PREFIX;
   const staleThreshold = new Date(Date.now() - cfg.ROUTER_STALE_THRESHOLD_MS).toISOString();
+  const sql = `UPDATE {{${daemonPrefix}daemons}} SET status = 'dead' WHERE status = 'active' AND last_heartbeat < ?`;
   try {
     if (pool) {
-      const [result] = await pool.query(
-        `UPDATE {{${daemonPrefix}daemons}} SET status = 'dead' WHERE status = 'active' AND last_heartbeat < ?`,
-        [staleThreshold],
-      );
+      const [result] = await pool.query(applyPrefix(sql, process.env.WORK_DB_PREFIX ?? ""), [staleThreshold]);
       return (result as { affectedRows: number }).affectedRows || 0;
     }
     if (sqliteDb) {
-      const r = sqliteDb.prepare(
-        applyPrefix(`UPDATE {{${daemonPrefix}daemons}} SET status = 'dead' WHERE status = 'active' AND last_heartbeat < ?`, process.env.WORK_DB_PREFIX ?? ""),
-      ).run(staleThreshold as never);
+      const r = sqliteDb.prepare(applyPrefix(sql, process.env.WORK_DB_PREFIX ?? ""))
+        .run(staleThreshold as never);
       return Number(r.changes) || 0;
     }
   } catch (err) {
@@ -161,25 +158,37 @@ export async function markStaleDaemonsDead(cfg: Config): Promise<number> {
 
 export async function releaseOrphanedSessions(cfg: Config): Promise<number> {
   const daemonPrefix = cfg.DAEMON_TABLE_PREFIX;
+  const sql = `UPDATE {{${daemonPrefix}op_sessions}} SET owner_daemon_id = NULL, state = 'pending'
+     WHERE owner_daemon_id IN (SELECT id FROM {{${daemonPrefix}daemons}} WHERE status = 'dead')
+     AND state = 'running'`;
   try {
     if (pool) {
-      const [result] = await pool.query(
-        `UPDATE {{${daemonPrefix}op_sessions}} SET owner_daemon_id = NULL, state = 'pending'
-         WHERE owner_daemon_id IN (SELECT id FROM {{${daemonPrefix}daemons}} WHERE status = 'dead')
-         AND state = 'running'`,
-      );
+      const [result] = await pool.query(applyPrefix(sql, process.env.WORK_DB_PREFIX ?? ""));
       return (result as { affectedRows: number }).affectedRows || 0;
     }
     if (sqliteDb) {
-      const r = sqliteDb.prepare(
-        applyPrefix(`UPDATE {{${daemonPrefix}op_sessions}} SET owner_daemon_id = NULL, state = 'pending'
-         WHERE owner_daemon_id IN (SELECT id FROM {{${daemonPrefix}daemons}} WHERE status = 'dead')
-         AND state = 'running'`, process.env.WORK_DB_PREFIX ?? ""),
-      ).run();
+      const r = sqliteDb.prepare(applyPrefix(sql, process.env.WORK_DB_PREFIX ?? "")).run();
       return Number(r.changes) || 0;
     }
   } catch (err) {
     console.warn("[ework-router] releaseOrphanedSessions: failed:", err);
   }
   return 0;
+}
+
+export async function getIssueOwnerDaemonId(cfg: Config, scopeKey: string, issueId: number): Promise<number | null> {
+  const daemonPrefix = cfg.DAEMON_TABLE_PREFIX;
+  try {
+    const rows = await query<{ owner_daemon_id: number | null }>(
+      `SELECT owner_daemon_id FROM {{${daemonPrefix}issues}}
+       WHERE tracker_scope_key = ? AND tracker_issue_id = ?
+       LIMIT 1`,
+      [scopeKey, String(issueId)],
+    );
+    const ownerId = rows[0]?.owner_daemon_id;
+    return ownerId ?? null;
+  } catch (err) {
+    console.warn("[ework-router] getIssueOwnerDaemonId: query failed:", err);
+    return null;
+  }
 }
