@@ -321,6 +321,7 @@ export class Engine {
   private groupConfigs = new Map<string, GroupConfig>();
   private cloneUrls = new Map<string, string>();
   private senders = new Map<string, string>();
+  private envInitialized = new Set<string>();
 
   private static MAX_INLINE_SIZE = 4000;
   private static MAX_NUDGE_ROUNDS = 1;
@@ -886,6 +887,10 @@ export class Engine {
     const workdir = await this.resolveWorkdir(session, issue);
 
     const gc = this.groupConfigFor(issue);
+    if (gc?.envInitScript && !this.envInitialized.has(workdir)) {
+      await runHookScript(gc.envInitScript, workdir, `envInitScript for ${k}`, this.hookEnvFor(issue, session, workdir));
+      this.envInitialized.add(workdir);
+    }
     if (gc?.initScript) {
       await runHookScript(gc.initScript, workdir, `initScript for ${k}`, this.hookEnvFor(issue, session, workdir));
     }
