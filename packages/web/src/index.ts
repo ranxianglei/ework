@@ -642,11 +642,31 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     if (!daemonEp && daemonIdParam) {
       const id = Number(daemonIdParam);
       if (Number.isFinite(id) && id > 0) {
-        const ep = await resolveDaemonEndpoint(id);
+        const sessionMap = await getSessionDaemonMap();
+        const mapped = sessionMap.get(sid);
+        const effectiveId = mapped && mapped.daemonId !== id ? mapped.daemonId : id;
+        if (mapped && mapped.daemonId !== id) {
+          log.info(`session ${sid}: URL daemon_id=${id} but DB says daemon ${mapped.daemonId}, redirecting`);
+        }
+        const ep = await resolveDaemonEndpoint(effectiveId);
         if (ep) {
           const client = new RemoteOpencodeClient(ep);
-          const { html: body } = await buildSessionView(client, sid, desc, cfg.collapseLines, limit, all);
-          return html(body);
+          try {
+            const { html: body } = await buildSessionView(client, sid, desc, cfg.collapseLines, limit, all);
+            return html(body);
+          } catch (e) {
+            const status = e instanceof OpencodeError ? e.status : 500;
+            if (status === 404) {
+              return html(errorPage(
+                "会话不在该 daemon 上",
+                `会话 ${sid} 在 daemon ${effectiveId} (${ep}) 上找不到 (HTTP ${status})。\n\n` +
+                `URL 指定的 daemon_id=${id}，数据库映射的 daemon=${mapped?.daemonId ?? "无"}。\n` +
+                `可能原因：daemon 重启后 ID 变化，或会话在另一个 daemon 上创建。\n\n` +
+                `可用 daemon 列表见 /sessions 页面。`,
+              ), 404);
+            }
+            throw e;
+          }
         }
       }
     }
@@ -682,7 +702,9 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
         if (ep) daemonParam = ep;
       }
     }
-    if (daemonParam && !isLocalhost(daemonParam)) {
+    // daemon_id explicit → always browse via daemon API (multi-daemon localhost setup would 404 on local FS)
+    const daemonIdExplicit = url.searchParams.has("daemon_id");
+    if (daemonParam && (!isLocalhost(daemonParam) || daemonIdExplicit)) {
       try {
         const mode = url.searchParams.get("mode") ?? "tail";
         const order = url.searchParams.get("order") ?? "desc";

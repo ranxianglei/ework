@@ -6,7 +6,7 @@ export const FEED_PAGE_SIZE = 50;
 
 function labelChip(label: LabelRow, owner: string, repo: string, state: string): string {
   const href = `/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues?state=${state}&label=${encodeURIComponent(label.name)}`;
-  return `<a class="issue-label" href="${escapeAttr(href)}" style="background:${escapeAttr(label.color)}" title="${escapeAttr(label.description ?? "")}">${escapeHtml(label.name)}</a>`;
+  return `<a class="issue-label" href="${escapeAttr(href)}" style="--lc:${escapeAttr(label.color)}" title="${escapeAttr(label.description ?? "")}">${escapeHtml(label.name)}</a>`;
 }
 
 function issueRow(it: IssueWithMeta, q: string, state: string, labels: LabelRow[]): string {
@@ -59,9 +59,10 @@ export async function buildIssuesFeed(
 .row-title{font-weight:500;overflow-wrap:anywhere}
 .row-meta{color:var(--text-muted);font-size:12px;margin-top:.2rem}
 .empty{color:var(--text-muted);text-align:center;padding:2rem;font-size:13px}
-.row-labels{display:inline;gap:.2rem;margin-left:.4rem}
-.issue-label{display:inline-block;padding:0 5px;border-radius:6px;font-size:10px;font-weight:600;color:#fff;text-decoration:none;line-height:16px;white-space:nowrap;vertical-align:1px}
-.issue-label:hover{opacity:.85;text-decoration:none}
+  .row-labels{display:inline;margin-left:.3rem}
+  .issue-label{display:inline;color:var(--text-muted);font-size:11px;text-decoration:none;margin-left:.35rem;white-space:nowrap}
+  .issue-label::before{content:"";display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--lc);margin-right:2px;vertical-align:middle}
+  .issue-label:hover{color:var(--text);text-decoration:underline}
 .label-filter{font-size:13px;color:var(--text-muted);margin-bottom:.4rem}
 .label-filter strong{color:var(--text)}
 </style></head><body>
