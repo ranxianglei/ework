@@ -102,6 +102,7 @@ class FakeTracker implements IssueTracker {
   async deleteComment(): Promise<void> {}
   async listComments(): Promise<TrackerComment[]> { return [...this.comments]; }
   async closeIssue(): Promise<void> {}
+  async updateStatus(): Promise<void> {}
   async setReaction(): Promise<void> {}
 
   getTrackerInstructions(_ref: TrackerRef): TrackerInstructions {

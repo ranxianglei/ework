@@ -13,7 +13,7 @@ export interface TrackerRef {
 }
 
 /** Parsed, tracker-agnostic webhook event */
-export type TrackerEventType = "issue_opened" | "comment_created" | "issue_closed";
+export type TrackerEventType = "issue_opened" | "comment_created" | "issue_closed" | "status_changed";
 
 export interface TrackerEvent {
   type: TrackerEventType;
@@ -39,6 +39,7 @@ export interface TrackerEvent {
   // Webhook sender (who triggered the event). Forwarded to the daemon's
   // task context so the AI knows who it's responding to.
   sender?: string;
+  status?: { from: string; to: string; detail?: string };
 }
 
 /** Tracker-agnostic comment */
@@ -130,6 +131,7 @@ export interface IssueTracker {
   deleteComment(ref: TrackerRef, commentId: string): Promise<void>;
   listComments(ref: TrackerRef): Promise<TrackerComment[]>;
   closeIssue(ref: TrackerRef): Promise<void>;
+  updateStatus(ref: TrackerRef, status: string, detail?: string): Promise<void>;
 
   setReaction(ref: TrackerRef, commentId: string, content: string, remove?: boolean): Promise<void>;
 

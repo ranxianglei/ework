@@ -65,6 +65,12 @@ export class GiteaTracker implements IssueTracker {
     );
   }
 
+  async updateStatus(ref: TrackerRef, status: string, detail?: string) {
+    await this.client.updateIssueStatus(
+      this.owner(ref), this.repo(ref), Number(ref.issueId), status, detail
+    );
+  }
+
   async setReaction(ref: TrackerRef, commentId: string, content: string, remove = false) {
     if (remove) {
       await this.client.removeCommentReaction(
@@ -185,6 +191,26 @@ export class GiteaTracker implements IssueTracker {
         },
         model,
         cloneUrl,
+        sender,
+      };
+    }
+
+    if (action === "status_changed") {
+      const status = payload.status as { from?: string; to?: string; detail?: string } | undefined;
+      return {
+        type: "status_changed" as const,
+        ref,
+        issue: {
+          title: issue.title as string,
+          body: (issue.body as string) ?? "",
+          state: (issue.state as string) ?? "open",
+          author: issueUser?.login ?? "",
+        },
+        status: {
+          from: status?.from ?? "",
+          to: status?.to ?? "",
+          detail: status?.detail,
+        },
         sender,
       };
     }

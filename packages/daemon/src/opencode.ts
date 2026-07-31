@@ -579,6 +579,11 @@ export class Engine {
         return this.handleCommented(ref, scopeKey, issueData, event.comment!, tracker, event.model);
       case "issue_closed":
         return this.handleClosed(ref, scopeKey, tracker);
+      case "status_changed": {
+        const to = event.status?.to;
+        if (to === "halted") return this.handleHalted(ref, scopeKey, tracker);
+        return;
+      }
     }
   }
 
@@ -629,6 +634,7 @@ export class Engine {
     log.info(`engine: session "${session.name}" created for ${k}, workdir=${workdir}`);
 
     await tracker.createComment(ref, `[system] 🔄 **${session.name}** picked up this issue.\n> session: ${this.sessionRef(session)} | workdir: ${this.workdirLink(workdir)}`);
+    void tracker.updateStatus(ref, "processing");
 
     const instructions = tracker.getTrackerInstructions(ref);
     const prompt = this.buildInitialPrompt(
@@ -813,6 +819,36 @@ export class Engine {
     this.senders.delete(gcKey);
 
     log.info(`engine: issue closed, ${sessions.length} sessions paused for ${scopeKey}#${ref.issueId}`);
+    void tracker.updateStatus(ref, "completed");
+  }
+
+  private async handleHalted(
+    ref: TrackerRef,
+    scopeKey: string,
+    tracker: IssueTracker
+  ) {
+    const issue = await this.store.findIssue(ref.trackerType, scopeKey, ref.issueId);
+    if (!issue) return;
+    this.stopObserver(issue.id);
+    const sessions = await this.store.getSessionsForIssue(issue.id);
+    for (const session of sessions) {
+      const k = this.sessionKey(session, issue);
+      const proc = this.processes.get(k);
+      if (proc) {
+        this.stopping.add(k);
+        try { this.killProcessTree(proc.pid, "SIGTERM"); } catch { /* already dead */ }
+      }
+      this.clearRuntimeState(k);
+      const msgs = await this.store.getMessagesForSession(session.id);
+      for (const msg of msgs) {
+        if (msg.status === "pending" || msg.status === "running") {
+          await this.store.updateMessageStatus(msg.id, "interrupted", "halted by user");
+        }
+      }
+      await this.store.updateSession(session.id, { state: "idle", opencodePid: undefined });
+    }
+    log.info(`engine: issue halted, ${sessions.length} sessions killed for ${scopeKey}#${ref.issueId}`);
+    try { await tracker.createComment(ref, "[system] ⏸️ AI processing halted by user."); } catch { /* tracker unavailable */ }
   }
 
   private clearRuntimeState(k: string) {

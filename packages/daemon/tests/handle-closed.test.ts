@@ -94,6 +94,7 @@ class FakeTracker implements IssueTracker {
   async deleteComment(): Promise<void> {}
   async listComments(): Promise<TrackerComment[]> { return []; }
   async closeIssue(): Promise<void> {}
+  async updateStatus(): Promise<void> {}
   async setReaction(): Promise<void> {}
   getTrackerInstructions(): TrackerInstructions {
     return { clone: "git clone fake", issueRef: "fake/ref" };

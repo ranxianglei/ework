@@ -63,6 +63,23 @@ export class GiteaClient {
     }, true);
   }
 
+  async updateIssueStatus(
+    owner: string,
+    repo: string,
+    issueNumber: number,
+    status: string,
+    detail?: string
+  ): Promise<void> {
+    try {
+      await this.request("POST", `/repos/${owner}/${repo}/issues/${issueNumber}/status`, {
+        status,
+        detail,
+      }, true);
+    } catch {
+      // Status callback is best-effort — don't block processing on API failure.
+    }
+  }
+
   async editComment(
     owner: string,
     repo: string,
