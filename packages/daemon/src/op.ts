@@ -299,6 +299,14 @@ export class Store {
     return row ? rowToMessage(row) : undefined;
   }
 
+  async getGlobalPendingMessages(limit: number): Promise<Message[]> {
+    const rows = await getDB().all<MessageRow>(
+      "SELECT * FROM {{messages}} WHERE status = 'pending' ORDER BY created_at ASC LIMIT ?",
+      [limit]
+    );
+    return rows.map(rowToMessage);
+  }
+
   async updateMessageStatus(id: string, status: Message["status"], error?: string): Promise<void> {
     const row = await getDB().get<MessageRow>("SELECT * FROM {{messages}} WHERE uid = ?", [id]);
     const attempts = row ? row.attempts + (status === "failed" ? 1 : 0) : 0;

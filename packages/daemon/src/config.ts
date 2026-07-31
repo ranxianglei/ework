@@ -36,6 +36,7 @@ export const configSchema = z.object({
   }),
   work: z.object({
     capacity: z.coerce.number().int().positive().default(4),
+    maxConcurrent: z.coerce.number().int().positive().default(4),
     heartbeatMs: z.coerce.number().int().positive().default(10_000),
     leaseTtlMs: z.coerce.number().int().positive().default(60_000),
   }),
@@ -85,8 +86,10 @@ const TEST_DEFAULTS = {
 };
 
 function readWorkSection() {
+  const capacity = process.env.WORK_DAEMON_CAPACITY ? Number(process.env.WORK_DAEMON_CAPACITY) : 4;
   return {
-    capacity: process.env.WORK_DAEMON_CAPACITY ? Number(process.env.WORK_DAEMON_CAPACITY) : 4,
+    capacity,
+    maxConcurrent: process.env.WORK_MAX_CONCURRENT ? Number(process.env.WORK_MAX_CONCURRENT) : capacity,
     heartbeatMs: process.env.WORK_DAEMON_HEARTBEAT_MS ? Number(process.env.WORK_DAEMON_HEARTBEAT_MS) : 10_000,
     leaseTtlMs: process.env.WORK_DAEMON_LEASE_TTL_MS ? Number(process.env.WORK_DAEMON_LEASE_TTL_MS) : 60_000,
   };

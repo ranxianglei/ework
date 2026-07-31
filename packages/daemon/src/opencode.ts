@@ -889,6 +889,11 @@ export class Engine {
       return;
     }
 
+    if (this.running.size >= this.cfg.work.maxConcurrent) {
+      log.info(`engine: concurrency limit reached (${this.running.size}/${this.cfg.work.maxConcurrent}), message ${msg.id.slice(0, 8)} queued for ${k}`);
+      return;
+    }
+
     // Not running — execute directly
     await this.executeMessage(k, session, issue, msg);
   }
@@ -1267,13 +1272,38 @@ export class Engine {
     if (nextMsg) {
       const current = await this.store.getSession(session.id);
       if (current && current.state !== "idle") {
-        await this.dequeueOrIdle(k, current, issue, nextMsg);
-        return;
+        if (this.running.size >= this.cfg.work.maxConcurrent) {
+          log.info(`engine: concurrency limit (${this.running.size}/${this.cfg.work.maxConcurrent}), keeping msg ${nextMsg.id.slice(0, 8)} pending for ${k}`);
+        } else {
+          await this.dequeueOrIdle(k, current, issue, nextMsg);
+          return;
+        }
       }
     }
 
     this.clearRuntimeState(k);
     await this.store.updateSession(session.id, { state: "idle" });
+
+    void this.drainGlobalPending();
+  }
+
+  private async drainGlobalPending(): Promise<void> {
+    const slotsAvailable = this.cfg.work.maxConcurrent - this.running.size;
+    if (slotsAvailable <= 0) return;
+    const pending = await this.store.getGlobalPendingMessages(slotsAvailable);
+    for (const msg of pending) {
+      if (this.running.size >= this.cfg.work.maxConcurrent) break;
+      const session = await this.store.getSession(msg.sessionId);
+      if (!session || session.state === "running") continue;
+      const issue = await this.store.getIssue(session.issueId);
+      if (!issue || issue.state === "closed") continue;
+      const k = this.sessionKey(session, issue);
+      if (this.running.has(k)) continue;
+      const won = await this.store.claimMessage(msg.id);
+      if (!won) continue;
+      log.info(`engine: drainGlobalPending picked up msg ${msg.id.slice(0, 8)} for ${k}`);
+      await this.dequeueOrIdle(k, session, issue, msg);
+    }
   }
 
   private async dequeueOrIdle(k: string, session: OpSession, issue: Issue, msg: Message) {
