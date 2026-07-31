@@ -169,7 +169,7 @@ export function renderLayout(props: LayoutProps, inner: string, initialItems: st
     if (!m) return "";
     return `<span class="ai-badge ${m.cls}">${m.label}</span>`;
   })();
-  const haltBtnHtml = props.writesEnabled !== false && props.aiStatus === "processing"
+  const haltBtnHtml = props.writesEnabled !== false && props.aiStatus !== "halted"
     ? `<button type="button" id="haltBtn" class="halt-btn" title="停止 AI 处理">⏹ 停止</button>`
     : "";
   return `<!doctype html>

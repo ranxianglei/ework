@@ -60,7 +60,7 @@ export interface WebhookDeliveryRow {
   created_at: string;
 }
 
-const DEFAULT_EVENTS: WebhookEventName[] = ["issues", "issue_comment"];
+const DEFAULT_EVENTS: WebhookEventName[] = ["issues", "issue_comment", "status_changed"];
 const MAX_RESPONSE_LOG_BYTES = 8192;
 const HTTP_TIMEOUT_MS = 10_000;
 const RETRY_DELAYS_MS = [0, 2_000, 8_000];
@@ -112,7 +112,7 @@ function parseEvents(events: unknown): WebhookEventName[] {
   try {
     const arr = JSON.parse(events) as unknown[];
     const valid = arr.filter(
-      (v): v is WebhookEventName => v === "issues" || v === "issue_comment"
+      (v): v is WebhookEventName => v === "issues" || v === "issue_comment" || v === "status_changed"
     );
     return valid.length > 0 ? valid : DEFAULT_EVENTS;
   } catch {
@@ -121,6 +121,20 @@ function parseEvents(events: unknown): WebhookEventName[] {
 }
 
 // ─── CRUD ────────────────────────────────────────────────────
+
+export async function migrateWebhookEvents(): Promise<void> {
+  const rows = await getDB().all<WebhookRow>("SELECT * FROM {{webhooks}}");
+  for (const wh of rows) {
+    const current = parseEvents(wh.events);
+    if (!current.includes("status_changed")) {
+      const updated = [...current, "status_changed"];
+      await getDB().run("UPDATE {{webhooks}} SET events = ? WHERE id = ?", [
+        JSON.stringify(updated),
+        wh.id,
+      ]);
+    }
+  }
+}
 
 export async function listWebhooks(projectId: number): Promise<WebhookRow[]> {
   return await getDB().all<WebhookRow>("SELECT * FROM {{webhooks}} WHERE project_id = ? ORDER BY id", [projectId]);
@@ -273,6 +287,7 @@ interface PayloadIssue {
   pull_request: null;
   repository: PayloadRepository;
   user: PayloadUser;
+  ai_status?: string;
 }
 
 interface PayloadComment {
@@ -404,6 +419,7 @@ function buildIssue(
     pull_request: null,
     repository: buildRepository(project, origin, model),
     user: buildUser(issue.author, origin),
+    ai_status: issue.ai_status ?? "",
   };
 }
 

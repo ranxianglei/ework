@@ -89,6 +89,7 @@ import {
   emitCommentEvent,
   emitStatusChanged,
   emitPingEvent,
+  migrateWebhookEvents,
   listWebhooks,
   createWebhook,
   deleteWebhook,
@@ -156,7 +157,7 @@ async function autoWireDaemon(projectId: number, origin: string): Promise<void> 
           project_id: projectId,
           url: target,
           secret: cfg.daemonWebhookSecret,
-          events: ["issues", "issue_comment"],
+          events: ["issues", "issue_comment", "status_changed"],
         });
         void emitPingEvent(projectId, origin);
       }
@@ -185,6 +186,7 @@ async function autoWireAllProjects(origin: string): Promise<void> {
 }
 
 void autoWireAllProjects(`http://${cfg.host}:${cfg.port}`);
+void migrateWebhookEvents().catch((e) => log.warn("migrateWebhookEvents failed", { err: e as Error }));
 
 const SEC_HEADERS: Record<string, string> = {
   "content-security-policy": buildCsp(cfg),
@@ -1729,8 +1731,8 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
         const url_ = String(form.get("url") ?? "").trim();
         const secret = String(form.get("secret") ?? "");
         const events = form.getAll("events") as string[];
-        const validEvents = (events.length > 0 ? events : ["issues", "issue_comment"])
-          .filter((e): e is WebhookEventName => e === "issues" || e === "issue_comment");
+        const validEvents = (events.length > 0 ? events : ["issues", "issue_comment", "status_changed"])
+          .filter((e): e is WebhookEventName => e === "issues" || e === "issue_comment" || e === "status_changed");
         const wh = await createWebhook({
           project_id: project.id,
           url: url_,

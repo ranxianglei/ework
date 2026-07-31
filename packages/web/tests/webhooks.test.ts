@@ -76,9 +76,9 @@ describe("parseEvents", () => {
   });
 
   test("handles invalid JSON by returning default events", () => {
-    expect(_internal.parseEvents(undefined)).toEqual(["issues", "issue_comment"]);
-    expect(_internal.parseEvents("not-json")).toEqual(["issues", "issue_comment"]);
-    expect(_internal.parseEvents('["unknown_event"]')).toEqual(["issues", "issue_comment"]);
+    expect(_internal.parseEvents(undefined)).toEqual(["issues", "issue_comment", "status_changed"]);
+    expect(_internal.parseEvents("not-json")).toEqual(["issues", "issue_comment", "status_changed"]);
+    expect(_internal.parseEvents('["unknown_event"]')).toEqual(["issues", "issue_comment", "status_changed"]);
   });
 });
 
