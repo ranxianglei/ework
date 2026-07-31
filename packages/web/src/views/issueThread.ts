@@ -131,7 +131,6 @@ export async function buildIssueThread(
       labels: labels.map((l) => ({ id: l.id, name: l.name, color: l.color })),
       canEditLabels: cfg.writesEnabled !== false,
       aiStatus: issue.ai_status ?? "",
-      statusHook: cfg.statusHook ?? "",
     },
     safeJsonEmbed(payload),
     displayViews.map((v) => renderCommentCard(v, cfg)).join("")

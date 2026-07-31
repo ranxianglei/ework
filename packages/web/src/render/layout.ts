@@ -17,7 +17,6 @@ export interface LayoutProps {
   labels?: { id: number; name: string; color: string }[];
   canEditLabels?: boolean;
   aiStatus?: string;
-  statusHook?: string;
 }
 
 export const THEME_CSS = `
