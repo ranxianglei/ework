@@ -35,6 +35,7 @@ export async function buildIssueList(
   writesEnabled: boolean,
   q: string,
   label: string = "",
+  viewer?: { login: string; is_admin: number } | null,
 ): Promise<string> {
   const project = await getProject(owner, repo);
   if (!project) {
@@ -92,7 +93,7 @@ export async function buildIssueList(
   <span style="opacity:.5">/</span>
   <a href="/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues" style="color:var(--header-text)">${escapeHtml(owner)}<span style="opacity:.55">/</span>${escapeHtml(repo)}</a>
 </header>
-${tabNavHTML("issues")}
+${tabNavHTML("issues", viewer ? { login: viewer.login, is_admin: viewer.is_admin } : undefined)}
 <main class="list-wrap">
   <form class="search" method="GET" action="/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues">
     <input type="text" name="q" value="${searchVal}" placeholder="搜索标题/正文…">

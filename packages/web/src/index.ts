@@ -638,7 +638,7 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     const q = url.searchParams.get("q")?.trim() ?? "";
     try {
       const daemonMap = await getSessionDaemonMap();
-      const { html: body } = await buildSessionList(opencode, q, daemonMap);
+      const { html: body } = await buildSessionList(opencode, q, daemonMap, ctx.user);
       return html(body);
     } catch (e) {
       return html(errorPage("加载失败", errMsg(e)), e instanceof OpencodeError ? e.status : 502);
@@ -1953,7 +1953,7 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     const q = url.searchParams.get("q")?.trim() ?? "";
     const label = url.searchParams.get("label")?.trim() ?? "";
     try {
-      return html(await buildIssueList(owner, repo, state, cfg.writesEnabled, q, label));
+      return html(await buildIssueList(owner, repo, state, cfg.writesEnabled, q, label, ctx.user));
     } catch (e) {
       return html(errorPage("加载失败", errMsg(e)), e instanceof StoreError ? e.status : 500);
     }

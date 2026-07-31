@@ -72,7 +72,7 @@ export async function buildIssuesFeed(
 .label-filter strong{color:var(--text)}
 </style></head><body>
 <header class="topbar"><span style="font-weight:600">📦 ework</span></header>
-${tabNavHTML("issues")}
+${tabNavHTML("issues", viewer ? { login: viewer.login, is_admin: viewer.is_admin } : undefined)}
 <main class="feed-wrap">
   <form class="search" method="GET" action="/issues">
     <input type="text" name="q" value="${escapeAttr(q)}" placeholder="搜索全部项目的标题/正文/项目名…">

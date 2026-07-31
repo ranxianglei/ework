@@ -71,7 +71,7 @@ export async function buildHome(
 .flash.err{background:rgba(248,81,73,.12);color:#f85149;border-color:rgba(248,81,73,.4)}
 </style></head><body>
 <header class="topbar"><span style="font-weight:600">📦 ework</span></header>
-${tabNavHTML("projects")}
+${tabNavHTML("projects", viewer ? { login: viewer.login, is_admin: viewer.is_admin } : undefined)}
 <main class="home-wrap">
   ${flashHtml}
   <div class="section">

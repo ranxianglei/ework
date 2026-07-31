@@ -32,7 +32,7 @@ button{padding:.5rem 1rem;border:0;border-radius:6px;background:var(--accent);co
 .hint{color:var(--text-muted);font-size:12px;line-height:1.5;margin-top:.5rem}
 </style></head><body>
 <header class="topbar"><span style="font-weight:600">👤 我的账户</span></header>
-${tabNavHTML("projects")}
+${tabNavHTML("projects", { login: user.login, is_admin: user.is_admin })}
 <main class="wrap">
 <h1>${escapeHtml(user.login)}${adminBadge}${user.is_active ? "" : ' <span class="badge inactive">未激活</span>'}</h1>
 ${lastUpdated}
@@ -130,7 +130,7 @@ button.primary{padding:.5rem 1rem;border:0;border-radius:6px;background:var(--gr
 .admin-nav a:hover{border-color:var(--accent)}
 </style></head><body>
 <header class="topbar"><span style="font-weight:600">👥 用户管理</span></header>
-${tabNavHTML("projects")}
+${tabNavHTML("projects", { login: viewer.login, is_admin: viewer.is_admin })}
 <main class="wrap">
 <h1>用户</h1>
 ${flashHtml}

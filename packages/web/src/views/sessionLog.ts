@@ -13,6 +13,7 @@ export async function buildSessionList(
   client: OpencodeClientInterface,
   q: string,
   daemonMap?: Map<string, SessionDaemonInfo>,
+  viewer?: { login: string; is_admin: number } | null,
 ): Promise<{ html: string }> {
   let sessions = await client.listSessions(LIST_LIMIT);
   if (daemonMap) {
@@ -48,7 +49,7 @@ export async function buildSessionList(
 .empty{padding:2rem;text-align:center;color:var(--text-muted)}
 </style></head><body>
 <header class="nav" style="display:flex;align-items:center;gap:.5rem;padding:.55rem 1rem;background:var(--header-bg);color:var(--header-text);font-size:13px"><a href="/" style="color:var(--header-text)">🏠 ework-web</a><span style="opacity:.8"> · OpenCode 会话 ${sessions.length}</span></header>
-${tabNavHTML("sessions")}
+${tabNavHTML("sessions", viewer ? { login: viewer.login, is_admin: viewer.is_admin } : undefined)}
 <form class="sbar" method="get" action="/sessions">
   <input name="q" value="${escapeAttr(q)}" placeholder="按标题或会话 ID 搜索…" autocomplete="off">
 </form>
