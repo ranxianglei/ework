@@ -1,4 +1,4 @@
-import { THEME_CSS, escapeHtml, escapeAttr, containsCI, highlightAll, tabNavHTML } from "../render/layout";
+import { THEME_CSS, escapeHtml, escapeAttr, containsCI, highlightAll, tabNavHTML, aiStatusBadge } from "../render/layout";
 import { listAllIssues, listLabelsForIssues, type IssueWithMeta, type LabelRow } from "../store";
 import { relTime } from "../render/components";
 
@@ -16,9 +16,10 @@ function issueRow(it: IssueWithMeta, q: string, state: string, labels: LabelRow[
   const chips = labels.length
     ? `<span class="row-labels">${labels.map((l) => labelChip(l, it.project_owner, it.project_name, state)).join("")}</span>`
     : "";
+  const aiBadge = aiStatusBadge(it.ai_status);
   return `<a class="row" href="${escapeAttr(href)}">
     <div class="row-title">${title}${chips}</div>
-    <div class="row-meta">${projectStr} · #${it.number} · 💬 ${it.comment_count} · ${relTime(it.updated_at)}</div>
+    <div class="row-meta">${projectStr} · #${it.number} · 💬 ${it.comment_count} · ${relTime(it.updated_at)}${aiBadge ? ` · ${aiBadge}` : ""}</div>
   </a>`;
 }
 
