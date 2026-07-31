@@ -191,17 +191,18 @@ function renderFileContent(
   const ext = (rawPath.split(".").pop() || "").toLowerCase();
   const isMd = ext === "md" || ext === "markdown";
   const lang = extToLang(rawPath);
-  const fullText = data.rows.map((r) => r.t).join("\n");
-  const shownBytes = data.rows.reduce((s, r) => s + r.t.length + 1, 0);
+  const sorted = [...data.rows].sort((a, b) => a.n - b.n);
+  const fullText = sorted.map((r) => r.t).join("\n");
+  const shownBytes = sorted.reduce((s, r) => s + r.t.length + 1, 0);
 
   let body: string;
   if (isMd) {
     body = `<div class="md-render">${renderMarkdown(fullText, "")}</div>`;
   } else if (lang && shownBytes <= 256000) {
-    const nums = data.rows.map((r) => r.n).join("\n");
+    const nums = sorted.map((r) => r.n).join("\n");
     body = `<div class="fv-code"><pre class="fv-gutter">${escapeHtml(nums)}</pre><pre class="fv-src"><code class="hljs language-${escapeHtml(lang)}">${hljsHighlight(fullText, lang)}</code></pre></div>`;
   } else {
-    body = `<pre class="fv-plain"><code>${data.rows.map((r) => `<span class="ln"><span class="lnn">${r.n}</span><span class="lnc">${escapeHtml(r.t)}</span></span>`).join("")}</code></pre>`;
+    body = `<pre class="fv-plain"><code>${sorted.map((r) => `<span class="ln"><span class="lnn">${r.n}</span><span class="lnc">${escapeHtml(r.t)}</span></span>`).join("")}</code></pre>`;
   }
 
   return `<!doctype html>
