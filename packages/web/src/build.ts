@@ -3,7 +3,7 @@ import { join } from "path";
 
 const STATIC = join(__dirname, "static");
 let m = 0;
-for (const f of ["app.js", "session.js", "file.js", "tts.js", "highlight.css"]) {
+for (const f of ["app.js", "session.js", "file.js", "tts.js", "highlight.css", "label-picker.js", "project-labels.js", "daemon-groups.js", "db-wizard.js", "daemon-mgr.js"]) {
   try {
     const s = statSync(join(STATIC, f));
     if (s.mtimeMs > m) m = s.mtimeMs;

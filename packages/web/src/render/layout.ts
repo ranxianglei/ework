@@ -141,7 +141,7 @@ export function renderLayout(props: LayoutProps, inner: string, initialItems: st
   const repoIssuesHref = `/${encodeURIComponent(repoOwner ?? "")}/${encodeURIComponent(repoName ?? "")}/issues`;
   const op = props.operatorLogin ?? "operator";
   const labelsHtml = (props.labels ?? []).length
-    ? props.labels!.map((l) => `<span class="issue-label" style="border-color:${escapeAttr(l.color)};color:${escapeAttr(l.color)}">${escapeHtml(l.name)}</span>`).join("")
+    ? props.labels!.map((l) => `<a class="issue-label" href="${repoIssuesHref}?state=all&label=${encodeURIComponent(l.name)}" style="border-color:${escapeAttr(l.color)};color:${escapeAttr(l.color)}">${escapeHtml(l.name)}</a>`).join("")
     : "";
   const labelPickerBtn = props.canEditLabels
     ? `<button type="button" class="label-edit-btn" id="labelEditBtn" title="管理标签">🏷️</button>`

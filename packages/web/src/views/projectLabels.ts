@@ -1,4 +1,5 @@
 import { THEME_CSS, escapeHtml, escapeAttr } from "../render/layout";
+import { BUILD_ID } from "../build";
 import { projectSettingsTabsHTML } from "./projectUpstreams";
 import { listLabels, type ProjectRow, type UserRow, type LabelRow } from "../store";
 
@@ -58,7 +59,6 @@ export async function buildProjectLabelsPage(
   const flashHtml = flash ? `<div class="flash ${flash.kind}">${escapeHtml(flash.msg)}</div>` : "";
   const createAction = `/${encodeURIComponent(project.owner)}/${encodeURIComponent(project.name)}/settings/labels/add`;
   const paletteHtml = PALETTE.map((c) => `<button type="button" class="swatch" data-color="${c}" style="background:${c}" aria-label="${c}"></button>`).join("");
-  const labelsJson = JSON.stringify(labels.map((l) => ({ id: l.id, name: l.name, color: l.color, description: l.description, exclusive: l.exclusive, is_archived: l.is_archived })));
 
   return `<!doctype html>
 <html lang="zh"><head><meta charset="utf-8">
@@ -157,34 +157,7 @@ ${rowsHtml}
     </div>
   </form>
 </dialog>
-<script>
-const LABELS = ${labelsJson};
-const palette = ${JSON.stringify(PALETTE)};
-function bindSwatches(container, colorInput){
-  container.innerHTML = palette.map(c => '<button type="button" class="swatch" data-color="'+c+'" style="background:'+c+'" aria-label="'+c+'"></button>').join('');
-  const sync = ()=>{ container.querySelectorAll('.swatch').forEach(b=>b.classList.toggle('sel', b.dataset.color.toLowerCase()===colorInput.value.toLowerCase())); };
-  sync();
-  container.addEventListener('click', e=>{ const b=e.target.closest('.swatch'); if(!b)return; colorInput.value=b.dataset.color; sync(); });
-  colorInput.addEventListener('input', sync);
-}
-bindSwatches(document.getElementById('palette'), document.getElementById('f-color'));
-const dlg=document.getElementById('dlg'), ef=document.getElementById('edit-form'), dp=document.getElementById('dlg-palette');
-let dlgColor;
-document.addEventListener('click', e=>{
-  const btn=e.target.closest('[data-edit-btn]');
-  if(!btn)return;
-  const id=Number(btn.dataset.editBtn);
-  const l=LABELS.find(x=>x.id===id); if(!l)return;
-  ef.action=btn.form.action;
-  ef.querySelector('[name=name]').value=l.name;
-  ef.querySelector('[name=color]').value=l.color;
-  dlgColor=ef.querySelector('[name=color]');
-  ef.querySelector('[name=description]').value=l.description;
-  ef.querySelector('[name=exclusive]').checked=l.exclusive===1;
-  bindSwatches(dp, dlgColor);
-  dlg.showModal();
-});
-document.getElementById('dlg-cancel').addEventListener('click', ()=>dlg.close());
-</script>
+<script type="application/json" id="label-data">${JSON.stringify({ labels: labels.map((l) => ({ id: l.id, name: l.name, color: l.color, description: l.description, exclusive: l.exclusive, is_archived: l.is_archived })), palette: PALETTE })}</script>
+<script src="/static/project-labels.js?v=${BUILD_ID}" defer></script>
 </body></html>`;
 }

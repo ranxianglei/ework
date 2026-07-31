@@ -467,6 +467,7 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
   if (url.pathname === "/static/daemon-mgr.js") return staticAsset("daemon-mgr.js", "text/javascript; charset=utf-8", req);
   if (url.pathname === "/static/daemon-groups.js") return staticAsset("daemon-groups.js", "text/javascript; charset=utf-8", req);
   if (url.pathname === "/static/label-picker.js") return staticAsset("label-picker.js", "text/javascript; charset=utf-8", req);
+  if (url.pathname === "/static/project-labels.js") return staticAsset("project-labels.js", "text/javascript; charset=utf-8", req);
   if (url.pathname === "/static/session.js") return staticAsset("session.js", "text/javascript; charset=utf-8", req);
   if (url.pathname === "/static/file.js") return staticAsset("file.js", "text/javascript; charset=utf-8", req);
   if (url.pathname === "/static/tts.js") return staticAsset("tts.js", "text/javascript; charset=utf-8", req);
@@ -1837,7 +1838,7 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
       const project = await getProject(owner, repo);
       if (!project) return html(errorPage("项目不存在", ""), 404);
       const back = `${url.origin}/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/settings/labels`;
-      if (!(await canAdminProject(project.id, ctx.user))) {
+      if (!(await canWriteProject(project.id, ctx.user))) {
         return Response.redirect(`${back}?err=${encodeURIComponent("无权限")}`, 303);
       }
       const form = await req.formData().catch(() => new FormData());
