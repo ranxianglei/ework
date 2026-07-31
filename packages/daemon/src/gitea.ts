@@ -75,8 +75,8 @@ export class GiteaClient {
         status,
         detail,
       }, true);
-    } catch {
-      // Status callback is best-effort — don't block processing on API failure.
+    } catch (e) {
+      console.warn("[gitea] updateIssueStatus failed:", (e as Error).message);
     }
   }
 

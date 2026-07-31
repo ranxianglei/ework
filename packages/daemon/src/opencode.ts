@@ -561,6 +561,11 @@ export class Engine {
       return;
     }
 
+    if (issueData.ai_status === "halted" && (event.type === "issue_opened" || event.type === "comment_created")) {
+      log.info(`engine: issue halted — skipping ${event.type} for ${ref.trackerType}:${scopeKey}#${ref.issueId}`);
+      return;
+    }
+
     const issueMapKey = `${ref.trackerType}:${scopeKey}#${ref.issueId}`;
     if (groupConfig) {
       this.groupConfigs.set(issueMapKey, groupConfig);
@@ -1163,6 +1168,7 @@ export class Engine {
     if (exitCode === null) {
       log.info(`engine: spawn failed for ${k}, skipping completion check`);
       await this.store.updateSession(session.id, { opencodePid: undefined });
+      void tracker.updateStatus(ref, "failed", "spawn failed");
       await this.deactivateIfIdle(k, session, issue);
       return;
     }
@@ -1185,6 +1191,7 @@ export class Engine {
       this.nudgeRounds.delete(k);
       this.emptyResponseRounds.delete(k);
       await this.persistRuntimeState(session.id);
+      void tracker.updateStatus(ref, "");
     } else {
       const sessionOutput = await this.checkSessionOutput(session.opencodeSessionId);
       const emptyRound = this.emptyResponseRounds.get(k) ?? 0;
@@ -1207,6 +1214,7 @@ export class Engine {
         this.emptyResponseRounds.delete(k);
         this.nudgeRounds.delete(k);
         await tracker.createComment(ref, `[system] ❌ **${session.name}** 模型返回空响应（0 token），已重试 ${emptyRound} 次。请检查模型配置或稍后重试。`).catch(() => {});
+        void tracker.updateStatus(ref, "failed", "empty model response");
       } else {
         const nudgeRound = this.nudgeRounds.get(k) ?? 0;
         if (exitCode === 0 && nudgeRound < Engine.MAX_NUDGE_ROUNDS) {
@@ -1225,6 +1233,7 @@ export class Engine {
         this.nudgeRounds.delete(k);
         const detail = exitCode === 0 ? "ran but did not post a reply" : `crashed (exit ${exitCode})`;
         await tracker.createComment(ref, `[system] ❌ **${session.name}** ${detail}. Try posting again or @${session.name} to retry.`).catch(() => {});
+        void tracker.updateStatus(ref, "failed", detail);
       }
     }
 

@@ -23,6 +23,7 @@ export interface TrackerEvent {
     body: string;
     state: string;
     author: string;
+    ai_status?: string;
   };
   comment?: {
     id: string;

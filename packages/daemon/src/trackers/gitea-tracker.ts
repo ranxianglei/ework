@@ -140,6 +140,7 @@ export class GiteaTracker implements IssueTracker {
     };
 
     const issueUser = issue.user as Record<string, string>;
+    const aiStatus = typeof issue.ai_status === "string" ? issue.ai_status : "";
 
     if (action === "opened" || action === "reopened") {
       return {
@@ -150,6 +151,7 @@ export class GiteaTracker implements IssueTracker {
           body: (issue.body as string) ?? "",
           state: (issue.state as string) ?? "open",
           author: issueUser?.login ?? "",
+          ai_status: aiStatus,
         },
         model,
         cloneUrl,
@@ -167,6 +169,7 @@ export class GiteaTracker implements IssueTracker {
           body: (issue.body as string) ?? "",
           state: (issue.state as string) ?? "open",
           author: issueUser?.login ?? "",
+          ai_status: aiStatus,
         },
         comment: {
           id: String(comment.id),
@@ -188,6 +191,7 @@ export class GiteaTracker implements IssueTracker {
           body: (issue.body as string) ?? "",
           state: "closed",
           author: issueUser?.login ?? "",
+          ai_status: aiStatus,
         },
         model,
         cloneUrl,
@@ -205,6 +209,7 @@ export class GiteaTracker implements IssueTracker {
           body: (issue.body as string) ?? "",
           state: (issue.state as string) ?? "open",
           author: issueUser?.login ?? "",
+          ai_status: aiStatus,
         },
         status: {
           from: status?.from ?? "",
