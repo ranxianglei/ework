@@ -32,7 +32,7 @@ import {
   type CommentRow,
 } from "./store";
 
-export type WebhookEventName = "issues" | "issue_comment";
+export type WebhookEventName = "issues" | "issue_comment" | "status_changed";
 export type IssueAction = "opened" | "closed" | "reopened";
 
 export interface WebhookRow {
@@ -287,6 +287,7 @@ interface PayloadComment {
 }
 
 interface IssueEventPayload {
+  event_id?: string;
   action: IssueAction;
   issue: PayloadIssue;
   repository: PayloadRepository;
@@ -297,11 +298,22 @@ interface IssueEventPayload {
 }
 
 interface CommentEventPayload {
+  event_id?: string;
   action: "created";
   issue: PayloadIssue;
   comment: PayloadComment;
   repository: PayloadRepository;
   sender: PayloadUser;
+}
+
+interface StatusChangedPayload {
+  event_id: string;
+  action: "status_changed";
+  issue: PayloadIssue;
+  repository: PayloadRepository;
+  sender: PayloadUser;
+  status: { from: string; to: string };
+  detail?: string;
 }
 
 function buildUser(login: string, origin: string): PayloadUser {
@@ -615,6 +627,7 @@ export async function emitIssueEvent(
     const model = resolveModel(project.model, globalDefault);
     const labels = await toPayloadLabels(issueId);
     const payload = buildIssuePayload(issue, project, commentCount, action, origin, model, labels);
+    (payload as IssueEventPayload).event_id = randomUUID();
     const rawBody = JSON.stringify(payload);
     await fanOut(projectId, "issues", rawBody);
   } catch (e) {
@@ -645,6 +658,7 @@ export async function emitCommentEvent(
     const model = resolveModel(project.model, globalDefault);
     const labels = await toPayloadLabels(issueId);
     const payload = buildCommentPayload(issue, comment, project, commentCount, origin, model, labels);
+    (payload as CommentEventPayload).event_id = randomUUID();
     const rawBody = JSON.stringify(payload);
     await fanOut(projectId, "issue_comment", rawBody);
   } catch (e) {
@@ -653,6 +667,46 @@ export async function emitCommentEvent(
       projectId,
       issueId,
       commentId,
+    });
+  }
+}
+
+export async function emitStatusChanged(
+  projectId: number,
+  issueId: number,
+  from: string,
+  to: string,
+  actor: string,
+  origin: string,
+  detail?: string
+): Promise<void> {
+  try {
+    const project = await getProjectById(projectId);
+    if (!project) return;
+    const issue = await getIssueById(issueId);
+    if (!issue) return;
+    const commentCount = await countCommentsSafe(issueId);
+    const repo = buildRepository(project, origin);
+    const sender = buildUser(actor, origin);
+    const issuePayload = buildIssue(issue, project, commentCount, origin);
+    const payload: StatusChangedPayload = {
+      event_id: randomUUID(),
+      action: "status_changed",
+      issue: issuePayload,
+      repository: repo,
+      sender,
+      status: { from, to },
+      detail,
+    };
+    const rawBody = JSON.stringify(payload);
+    await fanOut(projectId, "status_changed", rawBody);
+  } catch (e) {
+    log.error("webhook: emitStatusChanged failed", {
+      err: e as Error,
+      projectId,
+      issueId,
+      from,
+      to,
     });
   }
 }

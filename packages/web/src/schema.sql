@@ -63,6 +63,8 @@ CREATE TABLE IF NOT EXISTS {{issues}} (
   -- NULL when open; stamped on close, cleared on reopen. Backfill-safe because
   -- migrateIssuesTable ADDs the column idempotently for legacy DBs.
   closed_at  TEXT,
+  -- AI processing status: '' (none) | 'processing' | 'halted' | 'completed' | 'failed'
+  ai_status  TEXT NOT NULL DEFAULT '',
   UNIQUE (project_id, number)
 );
 CREATE INDEX IF NOT EXISTS issues_project_state_updated

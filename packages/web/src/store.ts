@@ -73,6 +73,7 @@ export interface IssueRow {
   created_at: string;
   updated_at: string;
   closed_at: string | null;
+  ai_status: string;
 }
 
 export interface IssueWithMeta extends IssueRow {
@@ -496,6 +497,15 @@ export async function setIssueState(
     const row = await getDB().get<{ project_id: number }>("SELECT project_id FROM {{issues}} WHERE id = ?", [issueId]);
     await getDB().run("UPDATE {{projects}} SET updated_at = ? WHERE id = ?", [ts, row!.project_id]);
   });
+}
+
+export async function updateIssueAiStatus(issueId: number, status: string): Promise<void> {
+  await getDB().run("UPDATE {{issues}} SET ai_status = ? WHERE id = ?", [status, issueId]);
+}
+
+export async function getIssueAiStatus(issueId: number): Promise<string> {
+  const row = await getDB().get<{ ai_status: string }>("SELECT ai_status FROM {{issues}} WHERE id = ?", [issueId]);
+  return row?.ai_status ?? "";
 }
 
 export interface IssuePatch {

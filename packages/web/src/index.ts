@@ -37,6 +37,7 @@ import {
   createProject,
   postComment,
   setIssueState,
+  updateIssueAiStatus,
   createAttachment,
   getAttachment,
   verifyUserPassword,
@@ -86,6 +87,7 @@ import {
 import {
   emitIssueEvent,
   emitCommentEvent,
+  emitStatusChanged,
   emitPingEvent,
   listWebhooks,
   createWebhook,
@@ -374,6 +376,7 @@ const REPO_MODEL_RE = /^\/([^/]+)\/([^/]+)\/settings\/model$/;
 const REPO_LABELS_RE = /^\/([^/]+)\/([^/]+)\/settings\/labels$/;
 const REPO_LABEL_ADD_RE = /^\/([^/]+)\/([^/]+)\/settings\/labels\/add$/;
 const REPO_LABEL_ACTION_RE = /^\/([^/]+)\/([^/]+)\/settings\/labels\/(\d+)\/(update|archive|unarchive|delete)$/;
+const REPO_ISSUE_HALT_RE = /^\/([^/]+)\/([^/]+)\/issues\/(\d+)\/(halt|resume)$/;
 const API_ISSUE_LABELS_RE = /^\/api\/([^/]+)\/([^/]+)\/issues\/(\d+)\/labels$/;
 const WH_ACTION_RE = /^\/__wh\/(\d+)\/(delete|toggle|test)$/;
 const SESSIONS_RE = /^\/sessions$/;
@@ -564,6 +567,26 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
   // /api/* routes since those would 404 on /api/v1/* paths. The shim reuses
   // the existing ctx.user (cookie or PAT auth already resolved above).
   if (url.pathname.startsWith("/api/v1/")) {
+    const evStatus = url.pathname.match(/^\/api\/v1\/repos\/([^/]+)\/([^/]+)\/issues\/(\d+)\/status$/);
+    if (evStatus && req.method === "POST") {
+      const [, owner, repo, numStr] = evStatus;
+      if (!(owner && repo && numStr)) return json({ error: "bad path" }, 400);
+      try {
+        const project = await getProject(owner, repo);
+        if (!project) return json({ error: "project not found" }, 404);
+        const issue = await getIssueWithMeta(project.id, Number(numStr));
+        if (!issue) return json({ error: "issue not found" }, 404);
+        const body = (await req.json().catch(() => ({}))) as { status?: string; detail?: string };
+        const newStatus = typeof body.status === "string" ? body.status : "";
+        const oldStatus = issue.ai_status ?? "";
+        if (newStatus === oldStatus) return json({ ok: true, status: newStatus, unchanged: true });
+        await updateIssueAiStatus(issue.id, newStatus);
+        void emitStatusChanged(project.id, issue.id, oldStatus, newStatus, ctx.user?.login ?? "daemon", url.origin, body.detail);
+        return json({ ok: true, status: newStatus });
+      } catch (e) {
+        return json({ error: errMsg(e) }, e instanceof StoreError ? e.status : 500);
+      }
+    }
     const result = await handleGiteaApi(req, url, { user: ctx.user });
     if (result) {
       if (result.body === null) {
@@ -1634,6 +1657,26 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
           void emitCommentEvent(project.id, issue.id, view.id, url.origin);
         }
         return json({ comment: view, closed, reopened });
+      } catch (e) {
+        return json({ error: errMsg(e) }, e instanceof StoreError ? e.status : 500);
+      }
+    }
+
+    const hp = url.pathname.match(REPO_ISSUE_HALT_RE);
+    if (hp) {
+      const [, owner, repo, numStr, action] = hp;
+      if (!(owner && repo && numStr && action)) return json({ error: "bad path" }, 400);
+      const number = Number(numStr);
+      try {
+        const project = await getProject(owner, repo);
+        if (!project) return json({ error: "project not found" }, 404);
+        const issue = await getIssueWithMeta(project.id, number);
+        if (!issue) return json({ error: "issue not found" }, 404);
+        const newStatus = action === "halt" ? "halted" : "";
+        const oldStatus = issue.ai_status ?? "";
+        await updateIssueAiStatus(issue.id, newStatus);
+        void emitStatusChanged(project.id, issue.id, oldStatus, newStatus, ctx.user!.login, url.origin);
+        return json({ ok: true, status: newStatus });
       } catch (e) {
         return json({ error: errMsg(e) }, e instanceof StoreError ? e.status : 500);
       }

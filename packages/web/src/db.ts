@@ -128,6 +128,9 @@ function migrateIssuesTable(db: Database): void {
   if (!have.has("closed_at")) {
     db.exec(applyPrefix("ALTER TABLE {{issues}} ADD COLUMN closed_at TEXT"));
   }
+  if (!have.has("ai_status")) {
+    db.exec(applyPrefix("ALTER TABLE {{issues}} ADD COLUMN ai_status TEXT NOT NULL DEFAULT ''"));
+  }
 }
 
 function migrateLabelsTable(db: Database): void {
@@ -354,6 +357,18 @@ async function migrateMysqlProjectsVisibility(pool: Pool): Promise<void> {
   }
 }
 
+async function migrateMysqlIssuesAiStatus(pool: Pool): Promise<void> {
+  const [cols] = await pool.query(
+    applyPrefix("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '{{issues}}' AND COLUMN_NAME = 'ai_status'")
+  );
+  if (Array.isArray(cols) && cols.length > 0) return;
+  try {
+    await pool.query(applyPrefix("ALTER TABLE {{issues}} ADD COLUMN ai_status VARCHAR(32) NOT NULL DEFAULT ''"));
+  } catch (e) {
+    console.warn("[db] MySQL issues ai_status column add failed:", (e as Error).message);
+  }
+}
+
 class MysqlDriver implements AsyncDatabase {
   readonly dialect = "mysql" as const;
   private readonly pool: Pool;
@@ -398,6 +413,7 @@ class MysqlDriver implements AsyncDatabase {
       }
       await migrateMysqlSurrogateId(pool);
       await migrateMysqlProjectsVisibility(pool);
+      await migrateMysqlIssuesAiStatus(pool);
     }
     return new MysqlDriver(pool);
   }

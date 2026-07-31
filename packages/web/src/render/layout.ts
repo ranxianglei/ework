@@ -16,6 +16,8 @@ export interface LayoutProps {
   ttsEnabled?: boolean;
   labels?: { id: number; name: string; color: string }[];
   canEditLabels?: boolean;
+  aiStatus?: string;
+  statusHook?: string;
 }
 
 export const THEME_CSS = `
@@ -128,6 +130,14 @@ header.topbar .num{opacity:.7}
 .lp-name{flex:1;overflow-wrap:anywhere}
 .lp-scope{font-size:10px;color:var(--text-muted)}
 .lp-empty{color:var(--text-muted);font-size:12px;padding:.6rem 0;text-align:center}
+.ai-badge{font-size:12px;padding:.1rem .5rem;border-radius:10px;font-weight:600}
+.ai-processing{background:#0969da;color:#fff;animation:ai-pulse 2s ease-in-out infinite}
+.ai-halted{background:#bf8700;color:#fff}
+.ai-completed{background:#1a7f37;color:#fff}
+.ai-failed{background:#cf222e;color:#fff}
+@keyframes ai-pulse{0%,100%{opacity:1}50%{opacity:.6}}
+.halt-btn{font-size:12px;padding:.15rem .6rem;border-radius:6px;border:1px solid var(--border);background:var(--bg-elev);color:#cf222e;cursor:pointer;font-weight:600}
+.halt-btn:hover{background:#cf222e;color:#fff}
 `;
 
 export function renderLayout(props: LayoutProps, inner: string, initialItems: string): string {
@@ -145,6 +155,22 @@ export function renderLayout(props: LayoutProps, inner: string, initialItems: st
     : "";
   const labelPickerBtn = props.canEditLabels
     ? `<button type="button" class="label-edit-btn" id="labelEditBtn" title="管理标签">🏷️</button>`
+    : "";
+  const aiBadgeHtml = (() => {
+    const s = props.aiStatus ?? "";
+    if (!s) return "";
+    const map: Record<string, { cls: string; label: string }> = {
+      processing: { cls: "ai-processing", label: "⚙️ 处理中" },
+      halted: { cls: "ai-halted", label: "⏸️ 已暂停" },
+      completed: { cls: "ai-completed", label: "✓ 已完成" },
+      failed: { cls: "ai-failed", label: "✗ 失败" },
+    };
+    const m = map[s];
+    if (!m) return "";
+    return `<span class="ai-badge ${m.cls}">${m.label}</span>`;
+  })();
+  const haltBtnHtml = props.writesEnabled !== false && props.aiStatus === "processing"
+    ? `<button type="button" id="haltBtn" class="halt-btn" title="停止 AI 处理">⏹ 停止</button>`
     : "";
   return `<!doctype html>
 <html lang="zh">
@@ -167,6 +193,7 @@ export function renderLayout(props: LayoutProps, inner: string, initialItems: st
   <h1>${escapeHtml(props.issueTitle)}</h1>
   <div class="meta-status">
     <span class="state-badge ${stateClass}">${stateLabel}</span>
+    ${aiBadgeHtml}${haltBtnHtml}
     ${labelsHtml}${labelPickerBtn}
     <span class="count" id="count">…</span>
     ${props.upstreamWebUrl ? `<a class="upstream-link" href="${escapeAttr(props.upstreamWebUrl)}" target="_blank" rel="noopener noreferrer" title="跳转到上游仓库">🔗 查看上游</a>` : ""}
@@ -198,6 +225,19 @@ ${props.writesEnabled !== false
 <script src="/static/app.js?v=${BUILD_ID}" defer></script>
 ${props.canEditLabels ? `<dialog id="labelDlg"><h3>标签</h3><div class="lp-list" id="lpList"></div><div class="lp-empty hidden" id="lpEmpty">该项目还没有标签。先到设置页创建。</div></dialog>
 <script src="/static/label-picker.js?v=${BUILD_ID}" defer></script>` : ""}
+${haltBtnHtml ? `<script>
+(function(){
+  var btn=document.getElementById("haltBtn");
+  if(!btn)return;
+  btn.addEventListener("click",function(){
+    if(!confirm("确认停止 AI 处理？"))return;
+    btn.disabled=true;btn.textContent="⏳ 停止中…";
+    fetch(window.location.pathname+"/halt",{method:"POST"}).then(function(r){return r.json()}).then(function(d){
+      if(d.ok){location.reload()}else{alert(d.error||"操作失败");btn.disabled=false;btn.textContent="⏹ 停止"}
+    }).catch(function(e){alert("网络错误: "+e);btn.disabled=false;btn.textContent="⏹ 停止"})
+  });
+})();
+</script>` : ""}
 </body>
 </html>`;
 }

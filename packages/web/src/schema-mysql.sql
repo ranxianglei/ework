@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS {{issues}} (
   created_at VARCHAR(40) NOT NULL,
   updated_at VARCHAR(40) NOT NULL,
   closed_at  VARCHAR(40) DEFAULT NULL,
+  ai_status  VARCHAR(32) NOT NULL DEFAULT '',
   UNIQUE (project_id, number),
   CONSTRAINT {{fk_issues_project}} FOREIGN KEY (project_id) REFERENCES {{projects}}(id) ON DELETE CASCADE,
   CONSTRAINT {{fk_issues_author}} FOREIGN KEY (author)     REFERENCES {{users}}(login)

@@ -130,6 +130,8 @@ export async function buildIssueThread(
       ttsEnabled: cfg.ttsBackends.some((b) => b.url && b.url.trim() !== ""),
       labels: labels.map((l) => ({ id: l.id, name: l.name, color: l.color })),
       canEditLabels: cfg.writesEnabled !== false,
+      aiStatus: issue.ai_status ?? "",
+      statusHook: cfg.statusHook ?? "",
     },
     safeJsonEmbed(payload),
     displayViews.map((v) => renderCommentCard(v, cfg)).join("")
