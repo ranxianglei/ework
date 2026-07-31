@@ -308,6 +308,7 @@ export class Engine {
   private processExitNudgeRounds = new Map<string, number>();
   private stuckNudgeRounds = new Map<string, number>();
   private currentPrompt = new Map<string, string>();
+  private paused = false;
 
   // Generation counter per session key — incremented on every execProcess call.
   // finishRun captures the generation at start and checks it after each await.
@@ -370,6 +371,22 @@ export class Engine {
 
   getDaemonId(): number {
     return this.daemonId;
+  }
+
+  async pause(): Promise<void> {
+    this.paused = true;
+    await this.store.markDaemonStatus(this.daemonId, "drained");
+    log.info(`engine: daemon ${this.daemonId} paused (drained) — new issues rejected, existing sessions continue`);
+  }
+
+  async resume(): Promise<void> {
+    this.paused = false;
+    await this.store.markDaemonStatus(this.daemonId, "active");
+    log.info(`engine: daemon ${this.daemonId} resumed (active)`);
+  }
+
+  isPaused(): boolean {
+    return this.paused;
   }
 
   /**
@@ -538,6 +555,11 @@ export class Engine {
     const { ref, issue: issueData } = event;
     const tracker = this.getTracker(ref.trackerType);
     const scopeKey = tracker.formatScopeKey(ref.scope);
+
+    if (this.paused && event.type === "issue_opened") {
+      log.info(`engine: paused — skipping issue_opened for ${ref.trackerType}:${scopeKey}#${ref.issueId}`);
+      return;
+    }
 
     const issueMapKey = `${ref.trackerType}:${scopeKey}#${ref.issueId}`;
     if (groupConfig) {
@@ -941,14 +963,13 @@ export class Engine {
     // (the operator's explicit config) instead of arbitrary env pollution.
     // Provider keys / Gitea vars are preserved (opencode + its plugin need
     // them); only the explicit model-override var is neutralized.
-    const childEnv = { ...process.env };
+    const childEnv = { ...process.env, ...this.hookEnvFor(issue, session, workdir) };
     if (!model) delete childEnv.OPENCODE_MODEL;
-    // Strip parent-session env vars so the child opencode reads its own
-    // opencode.json instead of inheriting a parent session's model/provider.
     delete childEnv.OPENCODE;
     delete childEnv.OPENCODE_PID;
     delete childEnv.OPENCODE_RUN_ID;
     delete childEnv.OPENCODE_PROCESS_ROLE;
+    for (const k of this.cfg.childEnvDeny) delete childEnv[k];
 
     try {
       const proc = spawn({

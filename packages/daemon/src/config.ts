@@ -64,6 +64,7 @@ export const configSchema = z.object({
     maxLines: z.coerce.number().int().positive().default(2000),
     maxBytes: z.coerce.number().int().positive().default(524288),
   }).default({ roots: [], maxLines: 2000, maxBytes: 524288 }),
+  childEnvDeny: z.array(z.string()).default([]),
 });
 
 export type Config = z.infer<typeof configSchema>;
@@ -145,6 +146,7 @@ export function loadConfig(): Config {
         thresholdMs: Number(process.env.DAEMON_STUCK_THRESHOLD_MS) || 30 * 60 * 1000,
         maxNudges: Number(process.env.DAEMON_MAX_STUCK_NUDGES) || 1,
       } : undefined,
+      childEnvDeny: (process.env.WORK_CHILD_ENV_DENY ?? "").split(",").map((s) => s.trim()).filter(Boolean),
     });
   }
 
@@ -188,5 +190,6 @@ export function loadConfig(): Config {
       maxLines: Number(process.env.WORK_FILE_MAX_LINES) || 2000,
       maxBytes: Number(process.env.WORK_FILE_MAX_BYTES) || 524288,
     },
+    childEnvDeny: (process.env.WORK_CHILD_ENV_DENY ?? "").split(",").map((s) => s.trim()).filter(Boolean),
   });
 }

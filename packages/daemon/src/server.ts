@@ -205,6 +205,15 @@ export function createServer(
       }
     }
 
+    if (pathname === "/api/admin/pause" && req.method === "POST") {
+      await engine.pause();
+      return json({ ok: true, paused: true });
+    }
+    if (pathname === "/api/admin/resume" && req.method === "POST") {
+      await engine.resume();
+      return json({ ok: true, paused: false });
+    }
+
     return json({ error: "not found" }, 404);
   }
 
