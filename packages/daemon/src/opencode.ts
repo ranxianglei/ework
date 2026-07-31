@@ -960,6 +960,12 @@ export class Engine {
         stdin: "ignore",
       });
 
+      if (this.generation.get(k) !== gen) {
+        log.warn(`engine: spawned pid=${proc.pid} but generation superseded — killing orphan for ${k}`);
+        try { this.killProcessTree(proc.pid); } catch { /* already dead */ }
+        return;
+      }
+
       this.processes.set(k, proc);
       this.lastOutputAt.set(k, Date.now());
       if (!this.startedAt.has(k)) {
