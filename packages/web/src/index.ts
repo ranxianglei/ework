@@ -1023,7 +1023,33 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
 
   const daemonIdRe = /^\/api\/daemons\/(\d+)$/;
   const daemonRestartRe = /^\/api\/daemons\/(\d+)\/restart$/;
+  const daemonPauseRe = /^\/api\/daemons\/(\d+)\/pause$/;
+  const daemonResumeRe = /^\/api\/daemons\/(\d+)\/resume$/;
   const daemonRemoveRe = /^\/api\/daemons\/(\d+)\/remove$/;
+
+  if (req.method === "POST" && (daemonPauseRe.test(url.pathname) || daemonResumeRe.test(url.pathname))) {
+    if (!ctx.user || ctx.user.is_admin !== 1) return json({ error: "admin required" }, 403);
+    const isPause = daemonPauseRe.test(url.pathname);
+    const match = url.pathname.match(isPause ? daemonPauseRe : daemonResumeRe);
+    const id = match ? Number(match[1]) : NaN;
+    if (!Number.isFinite(id)) return json({ error: "invalid id" }, 400);
+    const rows = await getDB().all<{ endpoint: string }>(
+      `SELECT internal_endpoint AS endpoint FROM {{d_daemons}} WHERE id = ?`, [id]
+    );
+    if (rows.length === 0) return json({ ok: false, error: "daemon not found" }, 404);
+    const ep = rows[0]!.endpoint;
+    const proto = ep.startsWith("http") ? "" : "http://";
+    try {
+      const upstream = await fetch(`${proto}${ep}/api/admin/${isPause ? "pause" : "resume"}`, { method: "POST" });
+      if (!upstream.ok) {
+        const body = await upstream.text().catch(() => "");
+        return json({ ok: false, error: `daemon returned ${upstream.status}: ${body.slice(0, 200)}` }, 502);
+      }
+    } catch (e) {
+      return json({ ok: false, error: `cannot reach daemon: ${errMsg(e)}` }, 502);
+    }
+    return json({ ok: true, paused: isPause });
+  }
 
   if (req.method === "POST" && daemonRestartRe.test(url.pathname)) {
     if (!ctx.user || ctx.user.is_admin !== 1) return json({ error: "admin required" }, 403);

@@ -55,7 +55,11 @@
       var stRaw = String(d.status || 'unknown').toLowerCase();
       var actions = '';
       if (stRaw === 'active') {
-        actions = '<button type="button" class="stop" data-id="' + d.id + '">停止</button>';
+        actions = '<button type="button" class="pause" data-id="' + d.id + '">暂停</button>' +
+          '<button type="button" class="stop" data-id="' + d.id + '">停止</button>';
+      } else if (stRaw === 'drained' || stRaw === 'paused') {
+        actions = '<button type="button" class="resume" data-id="' + d.id + '">恢复</button>' +
+          '<button type="button" class="remove" data-id="' + d.id + '">删除</button>';
       } else {
         actions = '<button type="button" class="restart" data-id="' + d.id + '">重启</button>' +
           '<button type="button" class="remove" data-id="' + d.id + '">删除</button>';
@@ -81,6 +85,8 @@
       });
     };
     bindBtn('button.stop', stopDaemon);
+    bindBtn('button.pause', pauseDaemon);
+    bindBtn('button.resume', resumeDaemon);
     bindBtn('button.restart', restartDaemon);
     bindBtn('button.remove', removeDaemon);
   }
@@ -136,6 +142,29 @@
     } finally {
       if (addBtn) addBtn.disabled = false;
     }
+  }
+
+  async function pauseDaemon(id) {
+    if (!confirm('确认暂停 daemon #' + id + '？\n暂停后不再接收新任务，已进行中的会话不受影响。')) return;
+    setResult('正在暂停 daemon #' + id + '…', 'loading');
+    try {
+      var res = await fetch('/api/daemons/' + id + '/pause', { method: 'POST' });
+      if (res.status === 401) { setResult('✗ 登录已过期，请刷新页面重新登录', 'err'); return; }
+      var data = await res.json();
+      if (data.ok) { setResult('✓ daemon #' + id + ' 已暂停', 'ok'); await loadDaemons(); }
+      else setResult('✗ ' + (data.error || '未知错误'), 'err');
+    } catch (e) { setResult('✗ ' + (e.message || String(e)), 'err'); }
+  }
+
+  async function resumeDaemon(id) {
+    setResult('正在恢复 daemon #' + id + '…', 'loading');
+    try {
+      var res = await fetch('/api/daemons/' + id + '/resume', { method: 'POST' });
+      if (res.status === 401) { setResult('✗ 登录已过期，请刷新页面重新登录', 'err'); return; }
+      var data = await res.json();
+      if (data.ok) { setResult('✓ daemon #' + id + ' 已恢复', 'ok'); await loadDaemons(); }
+      else setResult('✗ ' + (data.error || '未知错误'), 'err');
+    } catch (e) { setResult('✗ ' + (e.message || String(e)), 'err'); }
   }
 
   async function stopDaemon(id) {
