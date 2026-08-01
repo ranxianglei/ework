@@ -9,6 +9,7 @@ import type { IssueTracker, TrackerRef, TrackerEvent, TrackerComment, Issue, OpS
 import { formatKey, parseKey } from "./trackers/types";
 import type { RuntimeBackend, RuntimeHandle } from "./runtime/types";
 import { OpencodeBackend } from "./runtime/opencode-backend";
+import { PiBackend } from "./runtime/pi-backend";
 
 // ─── Types ───
 
@@ -279,12 +280,16 @@ export function pickLastActive(sessions: OpSession[]): OpSession | undefined {
 // ─── Engine ───
 
 export interface EngineOptions {
-  /** DB-allocated logical daemon id (from Store.registerDaemon). */
   daemonId: number;
-  /** Workdir + session-resume strategy; defaults to RecloneStrategy. */
   takeover?: TakeoverStrategy;
-  /** Runtime backend (opencode/pi); defaults to OpencodeBackend. */
   backend?: RuntimeBackend;
+}
+
+function createDefaultBackend(cfg: Config): RuntimeBackend {
+  if (cfg.runtime === "pi" && cfg.pi) {
+    return new PiBackend(cfg.pi.binary, cfg.pi.provider, cfg.pi.defaultModel, cfg.childEnvDeny);
+  }
+  return new OpencodeBackend(cfg.opencode.binary, cfg.opencode.dbPath, cfg.childEnvDeny);
 }
 
 export class Engine {
@@ -342,7 +347,7 @@ export class Engine {
     this.trackers = trackers;
     this.daemonId = opts.daemonId;
     this.takeover = opts.takeover ?? new RecloneStrategy(cfg);
-    this.backend = opts.backend ?? new OpencodeBackend(cfg.opencode.binary, cfg.opencode.dbPath, cfg.childEnvDeny);
+    this.backend = opts.backend ?? createDefaultBackend(cfg);
     this.startGlobalObserver();
     void this.recover();
   }
@@ -978,7 +983,7 @@ export class Engine {
       await this.store.updateSession(session.id, { opencodeSessionId: undefined });
     }
 
-    const model = msg.model || this.cfg.opencode.defaultModel;
+    const model = msg.model || (this.cfg.runtime === "pi" && this.cfg.pi ? this.cfg.pi.defaultModel : this.cfg.opencode.defaultModel);
     this.currentModel.set(k, model);
 
     if (msg.sourceCommentId) {

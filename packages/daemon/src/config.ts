@@ -28,12 +28,20 @@ export const configSchema = z.object({
   }),
   opencode: z.object({
     binary: z.string().default("opencode"),
-    baseWorkdir: z.string(),
+    baseWorkdir: z.string().default(
+      `${process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share")}/ework-aio/opencode-workdir`
+    ),
     dbPath: z.string().default(
       `${process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share")}/opencode/opencode.db`
     ),
     defaultModel: z.string().default(""),
   }),
+  pi: z.object({
+    binary: z.string().default("pi"),
+    provider: z.string().default("bailian"),
+    defaultModel: z.string().default(""),
+  }).optional(),
+  runtime: z.enum(["opencode", "pi"]).default("opencode"),
   work: z.object({
     capacity: z.coerce.number().int().positive().default(4),
     maxConcurrent: z.coerce.number().int().positive().default(4),
@@ -138,6 +146,12 @@ export function loadConfig(): Config {
         dbPath: process.env.OPENCODE_DB_PATH ?? `${process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share")}/opencode/opencode.db`,
         defaultModel: process.env.WORK_DEFAULT_MODEL ?? TEST_DEFAULTS.opencode.defaultModel,
       },
+      pi: {
+        binary: process.env.WORK_PI_BINARY ?? "pi",
+        provider: process.env.WORK_PI_PROVIDER ?? "bailian",
+        defaultModel: process.env.WORK_PI_DEFAULT_MODEL ?? process.env.WORK_DEFAULT_MODEL ?? "",
+      },
+      runtime: (process.env.WORK_RUNTIME ?? "opencode").trim().toLowerCase() as "opencode" | "pi",
       work: readWorkSection(),
       db: readDbSection(TEST_DEFAULTS.db.path),
       completionCheck: process.env.COMPLETION_CHECK_API_KEY ? {
@@ -175,6 +189,12 @@ export function loadConfig(): Config {
       dbPath: process.env.OPENCODE_DB_PATH ?? `${process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share")}/opencode/opencode.db`,
       defaultModel: process.env.WORK_DEFAULT_MODEL ?? "",
     },
+    pi: {
+      binary: process.env.WORK_PI_BINARY ?? "pi",
+      provider: process.env.WORK_PI_PROVIDER ?? "bailian",
+      defaultModel: process.env.WORK_PI_DEFAULT_MODEL ?? process.env.WORK_DEFAULT_MODEL ?? "",
+    },
+    runtime: (process.env.WORK_RUNTIME ?? "opencode").trim().toLowerCase() as "opencode" | "pi",
     work: readWorkSection(),
     db: readDbSection(PRODUCTION_DB_DEFAULT),
     completionCheck: process.env.COMPLETION_CHECK_API_KEY ? {
