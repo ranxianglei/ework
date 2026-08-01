@@ -230,25 +230,27 @@ export class Store {
     const existing = rowToSession(row);
     const updated = { ...existing, ...patch };
 
+    const sets: string[] = [];
+    const vals: (string | number | null)[] = [];
+    if (updated.state !== undefined) { sets.push("state = ?"); vals.push(updated.state); }
+    if (updated.opencodeSessionId !== undefined) { sets.push("opencode_session_id = ?"); vals.push(updated.opencodeSessionId ?? null); }
+    if (updated.opencodePid !== undefined) { sets.push("opencode_pid = ?"); vals.push(updated.opencodePid ?? null); }
+    if (updated.workdir !== undefined) { sets.push("workdir = ?"); vals.push(updated.workdir ?? null); }
+    if (updated.startedAt !== undefined) { sets.push("started_at = ?"); vals.push(updated.startedAt ?? null); }
+    if (updated.progressCommentId !== undefined) { sets.push("progress_comment_id = ?"); vals.push(updated.progressCommentId ?? null); }
+    if (updated.reactionCommentId !== undefined) { sets.push("reaction_comment_id = ?"); vals.push(updated.reactionCommentId ?? null); }
+    if (updated.currentPrompt !== undefined) { sets.push("current_prompt = ?"); vals.push(updated.currentPrompt ?? null); }
+    if (updated.lastOutputAt !== undefined) { sets.push("last_output_at = ?"); vals.push(updated.lastOutputAt != null ? new Date(updated.lastOutputAt).toISOString() : null); }
+    if (updated.nudgeRounds !== undefined) { sets.push("nudge_rounds = ?"); vals.push(updated.nudgeRounds); }
+    if (updated.stuckNudgeRounds !== undefined) { sets.push("stuck_nudge_rounds = ?"); vals.push(updated.stuckNudgeRounds); }
+    if (updated.generation !== undefined) { sets.push("generation = ?"); vals.push(updated.generation); }
+
+    if (sets.length === 0) return updated;
+
+    vals.push(id);
     await getDB().run(
-      `UPDATE {{op_sessions}} SET state = ?, opencode_session_id = ?, opencode_pid = ?, workdir = ?,
-       started_at = ?, progress_comment_id = ?, reaction_comment_id = ?, current_prompt = ?,
-       last_output_at = ?, nudge_rounds = ?, stuck_nudge_rounds = ?, generation = ? WHERE uid = ?`,
-      [
-        updated.state,
-        updated.opencodeSessionId ?? null,
-        updated.opencodePid ?? null,
-        updated.workdir ?? null,
-        updated.startedAt ?? null,
-        updated.progressCommentId ?? null,
-        updated.reactionCommentId ?? null,
-        updated.currentPrompt ?? null,
-        updated.lastOutputAt != null ? new Date(updated.lastOutputAt).toISOString() : null,
-        updated.nudgeRounds ?? 0,
-        updated.stuckNudgeRounds ?? 0,
-        updated.generation ?? 0,
-        id,
-      ]
+      `UPDATE {{op_sessions}} SET ${sets.join(", ")} WHERE uid = ?`,
+      vals
     );
     return updated;
   }
