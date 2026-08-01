@@ -1,4 +1,3 @@
-import { spawn, type Subprocess } from "bun";
 import { Database } from "bun:sqlite";
 import { mkdirSync, writeFileSync, readdirSync, existsSync } from "fs";
 import { join, resolve, isAbsolute } from "path";
@@ -8,6 +7,8 @@ import type { Config } from "./config";
 import type { Store } from "./op";
 import type { IssueTracker, TrackerRef, TrackerEvent, TrackerComment, Issue, OpSession, Message } from "./trackers/types";
 import { formatKey, parseKey } from "./trackers/types";
+import type { RuntimeBackend, RuntimeHandle } from "./runtime/types";
+import { OpencodeBackend } from "./runtime/opencode-backend";
 
 // ─── Types ───
 
@@ -282,6 +283,8 @@ export interface EngineOptions {
   daemonId: number;
   /** Workdir + session-resume strategy; defaults to RecloneStrategy. */
   takeover?: TakeoverStrategy;
+  /** Runtime backend (opencode/pi); defaults to OpencodeBackend. */
+  backend?: RuntimeBackend;
 }
 
 export class Engine {
@@ -290,10 +293,11 @@ export class Engine {
   private trackers: TrackerRegistry;
   private readonly daemonId: number;
   private readonly takeover: TakeoverStrategy;
+  private readonly backend: RuntimeBackend;
   private heartbeatTimer?: ReturnType<typeof setInterval>;
 
   // Runtime state keyed by session key (trackerType:scopeKey#issueId@sessionName)
-  private processes = new Map<string, Subprocess<"ignore", "pipe", "pipe">>();
+  private processes = new Map<string, RuntimeHandle>();
   private running = new Set<string>();
   private stopping = new Set<string>();
   private processingComments = new Set<string>();
@@ -338,6 +342,7 @@ export class Engine {
     this.trackers = trackers;
     this.daemonId = opts.daemonId;
     this.takeover = opts.takeover ?? new RecloneStrategy(cfg);
+    this.backend = opts.backend ?? new OpencodeBackend(cfg.opencode.binary, cfg.opencode.dbPath, cfg.childEnvDeny);
     this.startGlobalObserver();
     void this.recover();
   }
@@ -543,10 +548,6 @@ export class Engine {
 
   private lastBotReply(comments: TrackerComment[], tracker: IssueTracker): TrackerComment | undefined {
     return [...comments].reverse().find(c => tracker.isBotUser(c.author) && !this.isSystemComment(c));
-  }
-
-  private async checkSessionOutput(opencodeSessionId: string | undefined): Promise<{ hasOutput: boolean; tokenCount: number }> {
-    return checkSessionOutput(this.cfg.opencode.dbPath, opencodeSessionId);
   }
 
   // ─── Event Dispatch ───
@@ -966,129 +967,69 @@ export class Engine {
     const ref = this.sessionToRef(session, issue);
     const tracker = this.getTracker(issue.trackerType);
 
-    const args = [this.cfg.opencode.binary, "run", "--format", "json", "--dir", workdir];
-    // Prefer the captured session id (resume our own previous run). Otherwise
-    // ask the takeover strategy whether a resumable session exists elsewhere
-    // (e.g. NAS-backed). Default strategy returns null → fresh session.
     let resumeSessionId = session.opencodeSessionId;
     if (!resumeSessionId) {
       const fromStrategy = await this.takeover.resumeOpenCodeSession(session);
       if (fromStrategy) resumeSessionId = fromStrategy;
     }
-    if (resumeSessionId && !(await opencodeSessionExists(this.cfg.opencode.dbPath, resumeSessionId))) {
-      log.warn(`stale opencode session ${resumeSessionId} not found in db, starting fresh`);
+    if (resumeSessionId && !(await this.backend.sessionExists(resumeSessionId))) {
+      log.warn(`stale session ${resumeSessionId} not found in db, starting fresh`);
       resumeSessionId = undefined;
       await this.store.updateSession(session.id, { opencodeSessionId: undefined });
     }
-    if (resumeSessionId) {
-      args.push("--session", resumeSessionId);
-    }
-    // Resolve the model: explicit per-message > daemon default > omit.
-    // Without this, opencode's own default (influenced by plugin agent
-    // presets) can pick a non-existent model, causing ProviderModelNotFoundError.
+
     const model = msg.model || this.cfg.opencode.defaultModel;
     this.currentModel.set(k, model);
-    if (model) {
-      args.push("--model", model);
-    }
-    args.push(msg.content);
 
-    // Set eyes reaction on the source comment
     if (msg.sourceCommentId) {
-      try {
-        await tracker.setReaction(ref, msg.sourceCommentId, "eyes");
-      } catch { /* non-critical */ }
+      try { await tracker.setReaction(ref, msg.sourceCommentId, "eyes"); } catch { /* non-critical */ }
     }
+
+    const childEnv = { ...process.env, ...this.hookEnvFor(issue, session, workdir) };
 
     let exitCode: number | null = null;
 
-    // M-1: build the child env explicitly. When a model IS resolved we push
-    // --model above, so opencode ignores OPENCODE_MODEL anyway. When NO model
-    // is resolved we must not let a leaked OPENCODE_MODEL from our own env
-    // silently win — strip it so opencode falls back to its opencode.json
-    // (the operator's explicit config) instead of arbitrary env pollution.
-    // Provider keys / Gitea vars are preserved (opencode + its plugin need
-    // them); only the explicit model-override var is neutralized.
-    const childEnv = { ...process.env, ...this.hookEnvFor(issue, session, workdir) };
-    if (!model) delete childEnv.OPENCODE_MODEL;
-    delete childEnv.OPENCODE;
-    delete childEnv.OPENCODE_PID;
-    delete childEnv.OPENCODE_RUN_ID;
-    delete childEnv.OPENCODE_PROCESS_ROLE;
-    for (const k of this.cfg.childEnvDeny) delete childEnv[k];
-
     try {
-      const proc = spawn({
-        cmd: args,
-        cwd: workdir,
-        env: childEnv,
-        stdout: "pipe",
-        stderr: "pipe",
-        stdin: "ignore",
-      });
+      const handle = await this.backend.spawn(
+        {
+          workdir,
+          prompt: msg.content,
+          model: model || undefined,
+          resumeSessionId: resumeSessionId || undefined,
+          env: childEnv,
+        },
+        {
+          onOutput: () => { this.lastOutputAt.set(k, Date.now()); },
+          onSessionId: async (id: string) => {
+            if (!session.opencodeSessionId) {
+              await this.store.updateSession(session.id, { opencodeSessionId: id });
+              session.opencodeSessionId = id;
+              log.info(`engine: captured sessionID=${id.slice(0, 8)} for ${k} (early persist)`);
+            }
+          },
+        },
+      );
 
       if (this.generation.get(k) !== gen) {
-        log.warn(`engine: spawned pid=${proc.pid} but generation superseded — killing orphan for ${k}`);
-        try { this.killProcessTree(proc.pid); } catch { /* already dead */ }
+        log.warn(`engine: spawned pid=${handle.pid} but generation superseded — killing orphan for ${k}`);
+        try { this.killProcessTree(handle.pid); } catch { /* already dead */ }
         return;
       }
 
-      this.processes.set(k, proc);
+      this.processes.set(k, handle);
       this.lastOutputAt.set(k, Date.now());
-      if (!this.startedAt.has(k)) {
-        this.startedAt.set(k, Date.now());
-      }
+      if (!this.startedAt.has(k)) this.startedAt.set(k, Date.now());
       this.currentPrompt.set(k, msg.content);
 
-      // Persist PID for crash recovery
-      await this.store.updateSession(session.id, { opencodePid: proc.pid });
+      await this.store.updateSession(session.id, { opencodePid: handle.pid });
       await this.persistRuntimeState(session.id);
 
-      log.info(`engine: spawned pid=${proc.pid} for ${k}`);
+      log.info(`engine: spawned pid=${handle.pid} for ${k} (backend=${this.backend.name})`);
 
-      // Read stdout to capture session ID
-      let opencodeSessionId: string | null = null;
-      const stderrPromise = new Response(proc.stderr).text();
-      const reader = proc.stdout.getReader();
-      const decoder = new TextDecoder();
-      let lineBuf = "";
+      exitCode = await handle.exited;
+      const stderr = await handle.stderrText;
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        this.lastOutputAt.set(k, Date.now());
-
-        if (!opencodeSessionId) {
-          lineBuf += decoder.decode(value, { stream: true });
-          const lines = lineBuf.split("\n");
-          lineBuf = lines.pop()!;
-          for (const line of lines) {
-            if (!line.trim()) continue;
-            try {
-              const ev = JSON.parse(line);
-              if (ev.sessionID) {
-                const sid: string = ev.sessionID;
-                opencodeSessionId = sid;
-                // Persist now, not at exit: a preempt/crash before exit must
-                // not lose the ID, otherwise the re-run opens a fresh session.
-                if (!session.opencodeSessionId) {
-                  await this.store.updateSession(session.id, { opencodeSessionId: sid });
-                  session.opencodeSessionId = sid;
-                  log.info(`engine: captured sessionID=${sid.slice(0, 8)} for ${k} (early persist)`);
-                }
-                break;
-              }
-            } catch { /* not json */ }
-          }
-        }
-      }
-
-      exitCode = await proc.exited;
-      const stderr = await stderrPromise;
-
-      // Detect preemption or force-stop: if our process is no longer in the map, another took over
-      if (this.processes.get(k) !== proc) {
+      if (this.processes.get(k) !== handle) {
         log.info(`engine: process replaced, skipping finishRun for ${k}`);
         this.stopping.delete(k);
         return;
@@ -1099,19 +1040,14 @@ export class Engine {
       await this.store.updateSession(session.id, { opencodePid: undefined });
 
       if (exitCode !== 0) {
-        log.error(`engine: pid=${proc.pid} exited ${exitCode} for ${k}`);
+        log.error(`engine: pid=${handle.pid} exited ${exitCode} for ${k}`);
         log.error(`  stderr: ${stderr.slice(0, 2000)}`);
         await this.store.updateMessageStatus(msg.id, "failed", `exit ${exitCode}: ${stderr.slice(0, 500)}`);
       } else {
-        log.info(`engine: pid=${proc.pid} completed for ${k}`);
-        if (stderr) log.warn(`engine: pid=${proc.pid} stderr on exit 0: ${stderr.slice(0, 500)}`);
-        if (!opencodeSessionId) log.warn(`engine: pid=${proc.pid} produced NO sessionID (no stdout output)`);
+        log.info(`engine: pid=${handle.pid} completed for ${k}`);
+        if (stderr) log.warn(`engine: pid=${handle.pid} stderr on exit 0: ${stderr.slice(0, 500)}`);
+        if (!session.opencodeSessionId) log.warn(`engine: pid=${handle.pid} produced NO sessionID (no stdout output)`);
         await this.store.updateMessageStatus(msg.id, "done");
-      }
-
-      // Save opencode session ID for continuity
-      if (opencodeSessionId && !session.opencodeSessionId) {
-        await this.store.updateSession(session.id, { opencodeSessionId });
       }
     } catch (err) {
       log.error(`engine: exec failed for ${k}:`, err);
@@ -1198,7 +1134,7 @@ export class Engine {
       await this.persistRuntimeState(session.id);
       void tracker.updateStatus(ref, "");
     } else {
-      const sessionOutput = await this.checkSessionOutput(session.opencodeSessionId);
+      const sessionOutput = await this.backend.getSessionOutputTokens(session.opencodeSessionId);
       const emptyRound = this.emptyResponseRounds.get(k) ?? 0;
 
       if (!sessionOutput.hasOutput && emptyRound < Engine.MAX_EMPTY_RESPONSE_ROUNDS) {
