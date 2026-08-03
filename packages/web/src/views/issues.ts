@@ -17,10 +17,10 @@ function issueRow(it: IssueWithMeta, q: string, state: string, labels: LabelRow[
     ? `<span class="row-labels">${labels.map((l) => labelChip(l, it.project_owner, it.project_name, state)).join("")}</span>`
     : "";
   const aiBadge = aiStatusBadge(it.ai_status);
-  return `<a class="row" href="${escapeAttr(href)}">
+  return `<div class="row" data-href="${escapeAttr(href)}">
     <div class="row-title">${title}${chips}</div>
     <div class="row-meta">${projectStr} · #${it.number} · 💬 ${it.comment_count} · ${relTime(it.updated_at)}${aiBadge ? ` · ${aiBadge}` : ""}</div>
-  </a>`;
+  </div>`;
 }
 
 export async function buildIssuesFeed(
@@ -87,7 +87,7 @@ ${tabNavHTML("issues", viewer ? { login: viewer.login, is_admin: viewer.is_admin
   </div>
   ${labelFilterHint}
   <div class="rows">${rows}</div>
-<script>document.addEventListener("click",e=>{const t=e.target.closest(".issue-label");if(!t)return;e.preventDefault();e.stopPropagation();location.href=t.dataset.href})</script>
+<script>document.addEventListener("click",function(e){var l=e.target.closest(".issue-label");if(l){e.preventDefault();e.stopPropagation();location.href=l.dataset.href;return}var r=e.target.closest(".row[data-href]");if(r){location.href=r.dataset.href}})</script>
 </main>
 </body></html>`;
 }

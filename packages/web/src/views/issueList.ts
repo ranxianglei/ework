@@ -23,10 +23,10 @@ function issueRow(
     ? `<span class="row-labels">${labels.map((l) => labelChip(l, owner, repo, state)).join("")}</span>`
     : "";
   const aiBadge = aiStatusBadge(it.ai_status);
-  return `<a class="row" href="${escapeAttr(href)}">
+  return `<div class="row" data-href="${escapeAttr(href)}">
     <div class="row-title">${title}${chips}</div>
     <div class="row-meta">#${it.number} · 💬 ${it.comment_count} · ${relTime(it.updated_at)}${aiBadge ? ` · ${aiBadge}` : ""}</div>
-  </a>`;
+  </div>`;
 }
 
 export async function buildIssueList(
@@ -109,7 +109,7 @@ ${tabNavHTML("issues", viewer ? { login: viewer.login, is_admin: viewer.is_admin
   </div>
   ${labelFilterHint}
   <div class="rows">${rows}</div>
-<script>document.addEventListener("click",e=>{const t=e.target.closest(".issue-label");if(!t)return;e.preventDefault();e.stopPropagation();location.href=t.dataset.href})</script>
+<script>document.addEventListener("click",function(e){var l=e.target.closest(".issue-label");if(l){e.preventDefault();e.stopPropagation();location.href=l.dataset.href;return}var r=e.target.closest(".row[data-href]");if(r){location.href=r.dataset.href}})</script>
 </main>
 </body></html>`;
 }
