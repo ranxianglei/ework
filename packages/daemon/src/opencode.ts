@@ -562,8 +562,8 @@ export class Engine {
     const tracker = this.getTracker(ref.trackerType);
     const scopeKey = tracker.formatScopeKey(ref.scope);
 
-    if (this.paused && event.type === "issue_opened") {
-      log.info(`engine: paused — skipping issue_opened for ${ref.trackerType}:${scopeKey}#${ref.issueId}`);
+    if (this.paused && (event.type === "issue_opened" || event.type === "comment_created")) {
+      log.info(`engine: paused — skipping ${event.type} for ${ref.trackerType}:${scopeKey}#${ref.issueId}`);
       return;
     }
 
@@ -796,13 +796,11 @@ export class Engine {
 
     // Kill all running processes for this issue's sessions
     const sessions = await this.store.getSessionsForIssue(issue.id);
+    let killedCount = 0;
     for (const session of sessions) {
       const k = this.sessionKey(session, issue);
-      const proc = this.processes.get(k);
-      if (proc) {
-        this.stopping.add(k);
-        try { this.killProcessTree(proc.pid, "SIGTERM"); } catch { /* already dead */ }
-      }
+      const killed = await this.killSessionProcess(session, k);
+      if (killed) killedCount++;
       this.clearRuntimeState(k);
       const msgs = await this.store.getMessagesForSession(session.id);
       for (const msg of msgs) {
@@ -829,7 +827,7 @@ export class Engine {
     this.cloneUrls.delete(gcKey);
     this.senders.delete(gcKey);
 
-    log.info(`engine: issue closed, ${sessions.length} sessions paused for ${scopeKey}#${ref.issueId}`);
+    log.info(`engine: issue closed, ${killedCount}/${sessions.length} sessions killed for ${scopeKey}#${ref.issueId}`);
     void tracker.updateStatus(ref, "completed");
   }
 
@@ -842,13 +840,11 @@ export class Engine {
     if (!issue) return;
     this.stopObserver(issue.id);
     const sessions = await this.store.getSessionsForIssue(issue.id);
+    let killedCount = 0;
     for (const session of sessions) {
       const k = this.sessionKey(session, issue);
-      const proc = this.processes.get(k);
-      if (proc) {
-        this.stopping.add(k);
-        try { this.killProcessTree(proc.pid, "SIGTERM"); } catch { /* already dead */ }
-      }
+      const killed = await this.killSessionProcess(session, k);
+      if (killed) killedCount++;
       this.clearRuntimeState(k);
       const msgs = await this.store.getMessagesForSession(session.id);
       for (const msg of msgs) {
@@ -858,7 +854,7 @@ export class Engine {
       }
       await this.store.updateSession(session.id, { state: "idle", opencodePid: undefined });
     }
-    log.info(`engine: issue halted, ${sessions.length} sessions killed for ${scopeKey}#${ref.issueId}`);
+    log.info(`engine: issue halted, ${killedCount}/${sessions.length} sessions killed for ${scopeKey}#${ref.issueId}`);
     try { await tracker.createComment(ref, "[system] ⏸️ AI processing halted by user."); } catch { /* tracker unavailable */ }
   }
 
@@ -876,6 +872,36 @@ export class Engine {
     this.stuckNudgeRounds.delete(k);
     this.currentPrompt.delete(k);
     this.generation.delete(k);
+  }
+
+  private async killSessionProcess(session: OpSession, k: string): Promise<boolean> {
+    const handle = this.processes.get(k);
+    if (handle) {
+      this.stopping.add(k);
+      try { this.killProcessTree(handle.pid, "SIGTERM"); } catch { /* already dead */ }
+      this.processes.delete(k);
+      return true;
+    }
+
+    const pid = session.opencodePid;
+    if (!pid) return false;
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return false;
+    }
+
+    log.info(`engine: killing orphaned pid=${pid} for ${k} (cross-restart)`);
+    this.stopping.add(k);
+    try {
+      this.killProcessTree(pid, "SIGTERM");
+      for (let i = 0; i < 30; i++) {
+        await new Promise(r => setTimeout(r, 100));
+        try { process.kill(pid, 0); } catch { break; }
+      }
+      try { process.kill(pid, "SIGKILL"); } catch { /* dead */ }
+    } catch { /* already dead */ }
+    return true;
   }
 
   // ─── Preemptive Scheduler ───
@@ -1393,16 +1419,20 @@ export class Engine {
   }
 
   private async runObserverCycle() {
-    // Multi-machine: periodically release stale owners so we can adopt their
-    // work, and only iterate issues/sessions this daemon owns.
     try {
       await this.store.releaseDeadOwners(this.cfg.work.leaseTtlMs);
     } catch (err) {
       log.error("engine: releaseDeadOwners failed:", (err as Error).message);
     }
 
-    const ownedIssues = (await this.store.listOwnedIssues(this.daemonId))
-      .filter((i) => this.observedIssues.has(i.id));
+    let ownedIssues;
+    try {
+      ownedIssues = (await this.store.listOwnedIssues(this.daemonId))
+        .filter((i) => this.observedIssues.has(i.id));
+    } catch (err) {
+      log.error("engine: listOwnedIssues failed:", (err as Error).message);
+      return;
+    }
 
     for (const issue of ownedIssues) {
       try {

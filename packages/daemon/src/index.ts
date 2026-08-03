@@ -88,6 +88,13 @@ async function boot() {
   process.on("SIGTERM", () => shutdown("SIGTERM"));
   process.on("SIGINT", () => shutdown("SIGINT"));
 
+  process.on("unhandledRejection", (reason) => {
+    log.error("unhandledRejection (continuing):", reason);
+  });
+  process.on("uncaughtException", (err) => {
+    log.error("uncaughtException (continuing):", err);
+  });
+
   const activeCount = (await store.listActiveIssues()).length;
   log.info(`\n${isTest ? "🧪" : "✅"} ework-daemon ready at http://${server.hostname}:${server.port}/webhook`);
   log.info(`   Configure Gitea webhook to POST to /webhook/gitea`);
