@@ -420,6 +420,21 @@ export class Store {
     );
   }
 
+  async getDaemonCapacity(daemonId: number): Promise<number | null> {
+    const row = await getDB().get<{ capacity: number }>(
+      "SELECT capacity FROM {{daemons}} WHERE id = ?",
+      [daemonId]
+    );
+    return row ? row.capacity : null;
+  }
+
+  async updateDaemonCapacity(daemonId: number, capacity: number): Promise<void> {
+    await getDB().run(
+      "UPDATE {{daemons}} SET capacity = ? WHERE id = ?",
+      [capacity, daemonId]
+    );
+  }
+
   async markDaemonStatus(daemonId: number, status: "active" | "drained" | "dead"): Promise<void> {
     await getDB().run(
       "UPDATE {{daemons}} SET status = ? WHERE id = ?",

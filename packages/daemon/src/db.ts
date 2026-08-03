@@ -18,6 +18,30 @@ import { createPool, type Pool, type PoolConnection, type ResultSetHeader } from
 import { mkdirSync, readFileSync, existsSync } from "fs";
 import { dirname, join } from "path";
 import { homedir } from "os";
+import { log } from "./logger";
+
+const RETRYABLE_CODES = ["ETIMEDOUT", "ECONNRESET", "PROTOCOL_CONNECTION_LOST", "PROTOCOL_SEQUENCE_TIMEOUT", "EPIPE"];
+const MAX_DB_RETRIES = 2;
+const DB_RETRY_BASE_MS = 300;
+
+async function withDbRetry<T>(fn: () => Promise<T>, label: string): Promise<T> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= MAX_DB_RETRIES; attempt++) {
+    try {
+      return await fn();
+    } catch (e) {
+      lastErr = e;
+      const code = (e as { code?: string })?.code;
+      if (!code || !RETRYABLE_CODES.includes(code)) throw e;
+      if (attempt < MAX_DB_RETRIES) {
+        const delay = DB_RETRY_BASE_MS * Math.pow(2, attempt);
+        log.warn(`db: ${label} failed (${code}), retry ${attempt + 1}/${MAX_DB_RETRIES} in ${delay}ms`);
+        await new Promise((r) => setTimeout(r, delay));
+      }
+    }
+  }
+  throw lastErr;
+}
 
 // ---- public async interface (driver-agnostic) ----
 export interface DbRunResult {
@@ -224,21 +248,29 @@ class MysqlDriver implements AsyncDatabase {
   }
 
   async all<T = unknown>(sql: string, params: unknown[] = []): Promise<T[]> {
-    const [rows] = await this.conn.query(this.prepare(sql), params);
-    return rows as T[];
+    return withDbRetry(async () => {
+      const [rows] = await this.conn.query(this.prepare(sql), params);
+      return rows as T[];
+    }, "all");
   }
   async get<T = unknown>(sql: string, params: unknown[] = []): Promise<T | null> {
-    const [rows] = await this.conn.query(this.prepare(sql), params);
-    const arr = rows as T[];
-    return arr[0] ?? null;
+    return withDbRetry(async () => {
+      const [rows] = await this.conn.query(this.prepare(sql), params);
+      const arr = rows as T[];
+      return arr[0] ?? null;
+    }, "get");
   }
   async run(sql: string, params: unknown[] = []): Promise<DbRunResult> {
-    const [result] = await this.conn.query(this.prepare(sql), params);
-    const r = result as ResultSetHeader;
-    return { insertId: Number(r.insertId), changes: r.affectedRows };
+    return withDbRetry(async () => {
+      const [result] = await this.conn.query(this.prepare(sql), params);
+      const r = result as ResultSetHeader;
+      return { insertId: Number(r.insertId), changes: r.affectedRows };
+    }, "run");
   }
   async exec(sql: string): Promise<void> {
-    await this.conn.query(this.prepare(sql));
+    return withDbRetry(async () => {
+      await this.conn.query(this.prepare(sql));
+    }, "exec");
   }
   async transaction<T>(fn: () => Promise<T>): Promise<T> {
     if (this.txConn) return fn();

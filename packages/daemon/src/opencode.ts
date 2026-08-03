@@ -300,6 +300,7 @@ export class Engine {
   private readonly takeover: TakeoverStrategy;
   private readonly backend: RuntimeBackend;
   private heartbeatTimer?: ReturnType<typeof setInterval>;
+  private maxConcurrent: number;
 
   // Runtime state keyed by session key (trackerType:scopeKey#issueId@sessionName)
   private processes = new Map<string, RuntimeHandle>();
@@ -348,6 +349,7 @@ export class Engine {
     this.daemonId = opts.daemonId;
     this.takeover = opts.takeover ?? new RecloneStrategy(cfg);
     this.backend = opts.backend ?? createDefaultBackend(cfg);
+    this.maxConcurrent = cfg.work.maxConcurrent;
     this.startGlobalObserver();
     void this.recover();
   }
@@ -369,7 +371,28 @@ export class Engine {
       this.store.heartbeat(this.daemonId).catch((e) => {
         log.error(`engine: heartbeat failed for daemon ${this.daemonId}:`, (e as Error).message);
       });
+      void this.syncMaxConcurrent();
     }, intervalMs);
+  }
+
+  private async syncMaxConcurrent(): Promise<void> {
+    try {
+      const cap = await this.store.getDaemonCapacity(this.daemonId);
+      if (cap != null && cap > 0 && cap !== this.maxConcurrent) {
+        log.info(`engine: maxConcurrent updated ${this.maxConcurrent} → ${cap} (DB sync)`);
+        this.maxConcurrent = cap;
+      }
+    } catch { /* non-critical */ }
+  }
+
+  setMaxConcurrent(n: number): void {
+    if (!Number.isFinite(n) || n < 1) return;
+    this.maxConcurrent = Math.floor(n);
+    log.info(`engine: maxConcurrent set to ${this.maxConcurrent}`);
+  }
+
+  getMaxConcurrent(): number {
+    return this.maxConcurrent;
   }
 
   stopHeartbeat(): void {
@@ -921,8 +944,8 @@ export class Engine {
       return;
     }
 
-    if (this.running.size >= this.cfg.work.maxConcurrent) {
-      log.info(`engine: concurrency limit reached (${this.running.size}/${this.cfg.work.maxConcurrent}), message ${msg.id.slice(0, 8)} queued for ${k}`);
+    if (this.running.size >= this.maxConcurrent) {
+      log.info(`engine: concurrency limit reached (${this.running.size}/${this.maxConcurrent}), message ${msg.id.slice(0, 8)} queued for ${k}`);
       return;
     }
 
@@ -1239,8 +1262,8 @@ export class Engine {
     if (nextMsg) {
       const current = await this.store.getSession(session.id);
       if (current && current.state !== "idle") {
-        if (this.running.size >= this.cfg.work.maxConcurrent) {
-          log.info(`engine: concurrency limit (${this.running.size}/${this.cfg.work.maxConcurrent}), keeping msg ${nextMsg.id.slice(0, 8)} pending for ${k}`);
+        if (this.running.size >= this.maxConcurrent) {
+          log.info(`engine: concurrency limit (${this.running.size}/${this.maxConcurrent}), keeping msg ${nextMsg.id.slice(0, 8)} pending for ${k}`);
         } else {
           await this.dequeueOrIdle(k, current, issue, nextMsg);
           return;
@@ -1255,11 +1278,11 @@ export class Engine {
   }
 
   private async drainGlobalPending(): Promise<void> {
-    const slotsAvailable = this.cfg.work.maxConcurrent - this.running.size;
+    const slotsAvailable = this.maxConcurrent - this.running.size;
     if (slotsAvailable <= 0) return;
     const pending = await this.store.getGlobalPendingMessages(slotsAvailable);
     for (const msg of pending) {
-      if (this.running.size >= this.cfg.work.maxConcurrent) break;
+      if (this.running.size >= this.maxConcurrent) break;
       const session = await this.store.getSession(msg.sessionId);
       if (!session || session.state === "running") continue;
       const issue = await this.store.getIssue(session.issueId);

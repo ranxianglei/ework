@@ -213,6 +213,15 @@ export function createServer(
       await engine.resume();
       return json({ ok: true, paused: false });
     }
+    if (pathname === "/api/admin/max-concurrent" && req.method === "POST") {
+      const body = await req.json().catch(() => ({} as unknown));
+      const value = (body as { value?: unknown })?.value;
+      if (typeof value !== "number" || !Number.isFinite(value) || value < 1) {
+        return json({ error: "value must be a positive number" }, 400);
+      }
+      engine.setMaxConcurrent(Math.floor(value));
+      return json({ ok: true, maxConcurrent: engine.getMaxConcurrent() });
+    }
 
     return json({ error: "not found" }, 404);
   }
