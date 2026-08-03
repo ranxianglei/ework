@@ -260,6 +260,13 @@ export class Store {
     return rows.map(rowToSession);
   }
 
+  async listSessionsWithPid(): Promise<Array<{ id: string; opencodePid: number }>> {
+    const rows = await getDB().all<{ uid: string; opencode_pid: number }>(
+      "SELECT uid, opencode_pid FROM {{op_sessions}} WHERE opencode_pid IS NOT NULL"
+    );
+    return rows.map((r) => ({ id: r.uid, opencodePid: r.opencode_pid }));
+  }
+
   async listNonIdleSessions(): Promise<OpSession[]> {
     const rows = await getDB().all<SessionRow>("SELECT * FROM {{op_sessions}} WHERE state != 'idle'");
     return rows.map(rowToSession);

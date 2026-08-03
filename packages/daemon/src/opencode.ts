@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { mkdirSync, writeFileSync, readdirSync, existsSync } from "fs";
+import { mkdirSync, writeFileSync, readdirSync, existsSync, readFileSync } from "fs";
 import { join, resolve, isAbsolute } from "path";
 import { homedir } from "os";
 import { log } from "./logger";
@@ -1617,6 +1617,8 @@ export class Engine {
       log.error("engine: releaseDeadOwners at boot failed:", (err as Error).message);
     }
 
+    await this.cleanupGlobalOrphans();
+
     // Multi-machine: recover ONLY this daemon's sessions. Other daemons own
     // the rest; touching their state would race them.
     const ownedSessions = await this.store.listOwnedSessions(this.daemonId);
@@ -1709,6 +1711,33 @@ export class Engine {
       log.info(`engine: recovering msg ${first.id.slice(0, 8)} for ${k}`);
       await this.dequeueOrIdle(k, session, issue, first);
     }
+  }
+
+  private async cleanupGlobalOrphans(): Promise<void> {
+    let sessions: Array<{ id: string; opencodePid: number }>;
+    try {
+      sessions = await this.store.listSessionsWithPid();
+    } catch { return; }
+    let killed = 0;
+    for (const s of sessions) {
+      let alive = false;
+      try { process.kill(s.opencodePid, 0); alive = true; } catch { /* dead */ }
+      if (!alive) continue;
+
+      let ppid = -1;
+      try {
+        const stat = readFileSync(`/proc/${s.opencodePid}/stat`, "utf8");
+        const m = stat.match(/\)\s+\S+\s+(\d+)/);
+        ppid = m ? Number(m[1]) : -1;
+      } catch { continue; }
+
+      if (ppid === 1) {
+        log.info(`engine: killing global orphan pid=${s.opencodePid} (PPID=1, session ${s.id})`);
+        try { this.killProcessTree(s.opencodePid); } catch { /* dead */ }
+        killed++;
+      }
+    }
+    if (killed > 0) log.info(`engine: cleaned up ${killed} orphaned processes (PPID=1)`);
   }
 
   // ─── API Methods ───
