@@ -132,11 +132,14 @@ header.topbar .num{opacity:.7}
 .ai-badge{font-size:12px;padding:.1rem .5rem;border-radius:10px;font-weight:600}
 .ai-processing{background:#0969da;color:#fff;animation:ai-pulse 2s ease-in-out infinite}
 .ai-halted{background:#bf8700;color:#fff}
+.ai-dispatch-off{background:#6f7781;color:#fff}
 .ai-completed{background:#1a7f37;color:#fff}
 .ai-failed{background:#cf222e;color:#fff}
 @keyframes ai-pulse{0%,100%{opacity:1}50%{opacity:.6}}
 .halt-btn{font-size:12px;padding:.15rem .6rem;border-radius:6px;border:1px solid var(--border);background:var(--bg-elev);color:#cf222e;cursor:pointer;font-weight:600}
 .halt-btn:hover{background:#cf222e;color:#fff}
+.dispatch-btn{font-size:12px;padding:.15rem .6rem;border-radius:6px;border:1px solid var(--border);background:var(--bg-elev);color:#6f7781;cursor:pointer;font-weight:600}
+.dispatch-btn:hover{background:#6f7781;color:#fff}
 `;
 
 export function renderLayout(props: LayoutProps, inner: string, initialItems: string): string {
@@ -161,6 +164,7 @@ export function renderLayout(props: LayoutProps, inner: string, initialItems: st
     const map: Record<string, { cls: string; label: string }> = {
       processing: { cls: "ai-processing", label: "⚙️ 处理中" },
       halted: { cls: "ai-halted", label: "⏸️ 已暂停" },
+      dispatch_off: { cls: "ai-dispatch-off", label: "🔕 不接单" },
       completed: { cls: "ai-completed", label: "✓ 已完成" },
       failed: { cls: "ai-failed", label: "✗ 失败" },
     };
@@ -170,6 +174,11 @@ export function renderLayout(props: LayoutProps, inner: string, initialItems: st
   })();
   const haltBtnHtml = props.writesEnabled !== false && props.aiStatus !== "halted"
     ? `<button type="button" id="haltBtn" class="halt-btn" title="停止 AI 处理">⏹ 停止</button>`
+    : "";
+  const dispatchBtnHtml = props.writesEnabled !== false
+    ? props.aiStatus === "dispatch_off"
+      ? `<button type="button" id="dispatchBtn" class="dispatch-btn" title="允许自动接单">🔔 接单</button>`
+      : `<button type="button" id="dispatchBtn" class="dispatch-btn" title="设为不自动接单">🔕 不接单</button>`
     : "";
   return `<!doctype html>
 <html lang="zh">
@@ -192,7 +201,7 @@ export function renderLayout(props: LayoutProps, inner: string, initialItems: st
   <h1>${escapeHtml(props.issueTitle)}</h1>
   <div class="meta-status">
     <span class="state-badge ${stateClass}">${stateLabel}</span>
-    ${aiBadgeHtml}${haltBtnHtml}
+    ${aiBadgeHtml}${haltBtnHtml}${dispatchBtnHtml}
     ${labelsHtml}${labelPickerBtn}
     <span class="count" id="count">…</span>
     ${props.upstreamWebUrl ? `<a class="upstream-link" href="${escapeAttr(props.upstreamWebUrl)}" target="_blank" rel="noopener noreferrer" title="跳转到上游仓库">🔗 查看上游</a>` : ""}
@@ -237,6 +246,19 @@ ${haltBtnHtml ? `<script>
   });
 })();
 </script>` : ""}
+${dispatchBtnHtml ? `<script>
+(function(){
+  var btn=document.getElementById("dispatchBtn");
+  if(!btn)return;
+  btn.addEventListener("click",function(){
+    var off=btn.textContent.indexOf("不接单")>=0;
+    btn.disabled=true;btn.textContent="⏳ …";
+    fetch(window.location.pathname+"/"+(off?"dispatch-off":"dispatch-on"),{method:"POST"}).then(function(r){return r.json()}).then(function(d){
+      if(d.ok){location.reload()}else{alert(d.error||"操作失败");btn.disabled=false;btn.textContent=off?"🔕 不接单":"🔔 接单"}
+    }).catch(function(e){alert("网络错误: "+e);btn.disabled=false;btn.textContent=off?"🔕 不接单":"🔔 接单"})
+  });
+})();
+</script>` : ""}
 </body>
 </html>`;
 }
@@ -256,6 +278,7 @@ export function aiStatusBadge(status: string | undefined): string {
   const map: Record<string, string> = {
     processing: '<span class="ai-status-list" style="color:var(--accent)">⚙️ 处理中</span>',
     halted: '<span class="ai-status-list" style="color:#bf8700">⏸️ 已暂停</span>',
+    dispatch_off: '<span class="ai-status-list" style="color:#6f7781">🔕 不接单</span>',
     completed: '<span class="ai-status-list" style="color:var(--green)">✓ 已完成</span>',
     failed: '<span class="ai-status-list" style="color:#cf222e">✗ 失败</span>',
   };

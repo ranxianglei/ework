@@ -5,7 +5,7 @@ import { spawn } from "child_process";
 import { homedir } from "os";
 import { loadConfig, DB_OVERRIDABLE, parseOverride, resolveTtsBackend } from "./config";
 import type { Config } from "./config";
-import { setConfig, initDB, getDB } from "./db";
+import { setConfig, deleteConfig, getConfigAll, initDB, getDB } from "./db";
 import { getActiveDaemons, listAllDaemons, getSessionDaemonMap, resolveDaemonEndpoint } from "./coordination";
 import { testMysqlConnection, migrateSqliteToMysql, writeMysqlEnv, migrateMysqlToSqlite, writeSqliteEnv, migrateDaemonSqliteToMysql, generateMysqlDDL } from "./db-admin";
 import type { MysqlTargetOpts } from "./db-admin";
@@ -378,7 +378,7 @@ const REPO_MODEL_RE = /^\/([^/]+)\/([^/]+)\/settings\/model$/;
 const REPO_LABELS_RE = /^\/([^/]+)\/([^/]+)\/settings\/labels$/;
 const REPO_LABEL_ADD_RE = /^\/([^/]+)\/([^/]+)\/settings\/labels\/add$/;
 const REPO_LABEL_ACTION_RE = /^\/([^/]+)\/([^/]+)\/settings\/labels\/(\d+)\/(update|archive|unarchive|delete)$/;
-const REPO_ISSUE_HALT_RE = /^\/([^/]+)\/([^/]+)\/issues\/(\d+)\/(halt|resume)$/;
+const REPO_ISSUE_HALT_RE = /^\/([^/]+)\/([^/]+)\/issues\/(\d+)\/(halt|resume|dispatch-off|dispatch-on)$/;
 const API_ISSUE_LABELS_RE = /^\/api\/([^/]+)\/([^/]+)\/issues\/(\d+)\/labels$/;
 const WH_ACTION_RE = /^\/__wh\/(\d+)\/(delete|toggle|test)$/;
 const SESSIONS_RE = /^\/sessions$/;
@@ -1199,6 +1199,53 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     });
   }
 
+  // ─── Dispatch switch (global / project) ───
+
+  const projectDispatchRe = /^\/api\/([^/]+)\/([^/]+)\/dispatch$/;
+
+  if (req.method === "GET" && url.pathname === "/api/dispatch") {
+    if (!ctx.user || ctx.user.is_admin !== 1) return json({ error: "admin required" }, 403);
+    const cfg = await getConfigAll();
+    const globalEnabled = cfg["dispatchEnabled"] !== "false";
+    const projectOverrides: Record<string, boolean> = {};
+    for (const [k, v] of Object.entries(cfg)) {
+      if (k.startsWith("dispatchOff:") && v === "1") {
+        projectOverrides[k.slice("dispatchOff:".length)] = false;
+      }
+    }
+    return json({ globalEnabled, projectOverrides });
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/dispatch") {
+    if (!ctx.user || ctx.user.is_admin !== 1) return json({ error: "admin required" }, 403);
+    const payload = await req.json().catch(() => ({} as unknown));
+    const enabled = !(payload && typeof payload === "object" && (payload as { enabled?: unknown }).enabled === false);
+    if (enabled) {
+      await deleteConfig("dispatchEnabled");
+    } else {
+      await setConfig("dispatchEnabled", "false");
+    }
+    return json({ ok: true, globalEnabled: enabled });
+  }
+
+  if (req.method === "POST" && projectDispatchRe.test(url.pathname)) {
+    const m = url.pathname.match(projectDispatchRe)!;
+    const owner = m[1]!;
+    const repo = m[2]!;
+    const project = await getProject(owner, repo);
+    if (!project) return json({ error: "project not found" }, 404);
+    if (!(await canWriteProject(project.id, ctx.user))) return json({ error: "insufficient permissions" }, 403);
+    const payload = await req.json().catch(() => ({} as unknown));
+    const enabled = !(payload && typeof payload === "object" && (payload as { enabled?: unknown }).enabled === false);
+    const key = `dispatchOff:${owner}/${repo}`;
+    if (enabled) {
+      await deleteConfig(key);
+    } else {
+      await setConfig(key, "1");
+    }
+    return json({ ok: true, enabled });
+  }
+
   if (url.pathname === "/api/router/daemons" && req.method === "GET") {
     if (!ctx.user || ctx.user.is_admin !== 1) return json({ error: "admin required" }, 403);
     try {
@@ -1674,10 +1721,13 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
         if (!project) return json({ error: "project not found" }, 404);
         const issue = await getIssueWithMeta(project.id, number);
         if (!issue) return json({ error: "issue not found" }, 404);
-        const newStatus = action === "halt" ? "halted" : "";
+        const statusMap: Record<string, string> = { halt: "halted", resume: "", "dispatch-off": "dispatch_off", "dispatch-on": "" };
+        const newStatus = statusMap[action] ?? "";
         const oldStatus = issue.ai_status ?? "";
         await updateIssueAiStatus(issue.id, newStatus);
-        void emitStatusChanged(project.id, issue.id, oldStatus, newStatus, ctx.user!.login, url.origin);
+        if (action === "halt" || action === "resume") {
+          void emitStatusChanged(project.id, issue.id, oldStatus, newStatus, ctx.user!.login, url.origin);
+        }
         return json({ ok: true, status: newStatus });
       } catch (e) {
         return json({ error: errMsg(e) }, e instanceof StoreError ? e.status : 500);

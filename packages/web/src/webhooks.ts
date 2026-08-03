@@ -16,7 +16,7 @@
 //   the full retry trail rather than an opaque final status.
 
 import { createHmac, randomUUID } from "node:crypto";
-import { getDB } from "./db";
+import { getDB, getConfigAll } from "./db";
 import { log } from "./logger";
 import { loadConfig } from "./config";
 import {
@@ -635,6 +635,24 @@ export async function emitIssueEvent(
     if (!project) return;
     const issue = await getIssueById(issueId);
     if (!issue) return;
+
+    if (action === "opened") {
+      const cfg = await getConfigAll();
+      const scopeKey = `${project.owner}/${project.name}`;
+      if (cfg["dispatchEnabled"] === "false") {
+        log.info(`webhook: global dispatch disabled — skipping opened for ${scopeKey}#${issue.number}`);
+        return;
+      }
+      if (cfg[`dispatchOff:${scopeKey}`] === "1") {
+        log.info(`webhook: project dispatch disabled — skipping opened for ${scopeKey}#${issue.number}`);
+        return;
+      }
+      if ((issue as IssueRow).ai_status === "dispatch_off") {
+        log.info(`webhook: issue dispatch disabled — skipping opened for ${scopeKey}#${issue.number}`);
+        return;
+      }
+    }
+
     const commentCount = await countCommentsSafe(issueId);
     // Resolve model: project override > global default. Empty string = no
     // override (daemon omits --model, lets opencode pick). globalDefault
