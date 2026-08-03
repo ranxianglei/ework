@@ -1076,6 +1076,37 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     return json({ ok: true, paused: isPause });
   }
 
+  const daemonCapacityRe = /^\/api\/daemons\/(\d+)\/capacity$/;
+
+  if (req.method === "POST" && daemonCapacityRe.test(url.pathname)) {
+    if (!ctx.user || ctx.user.is_admin !== 1) return json({ error: "admin required" }, 403);
+    const match = url.pathname.match(daemonCapacityRe);
+    const id = match ? Number(match[1]) : NaN;
+    if (!Number.isFinite(id)) return json({ error: "invalid id" }, 400);
+    const payload = await req.json().catch(() => ({} as unknown));
+    const value = (payload as { value?: unknown })?.value;
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 1) {
+      return json({ error: "value must be a positive number" }, 400);
+    }
+    await getDB().run(`UPDATE {{d_daemons}} SET capacity = ? WHERE id = ?`, [Math.floor(value), id]);
+    const rows = await getDB().all<{ endpoint: string }>(
+      `SELECT internal_endpoint AS endpoint FROM {{d_daemons}} WHERE id = ?`, [id]
+    );
+    if (rows.length > 0) {
+      const ep = rows[0]!.endpoint;
+      const proto = ep.startsWith("http") ? "" : "http://";
+      try {
+        await fetch(`${proto}${ep}/api/admin/max-concurrent`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ value: Math.floor(value) }),
+          signal: AbortSignal.timeout(3000),
+        });
+      } catch { /* daemon will pick up via heartbeat DB sync */ }
+    }
+    return json({ ok: true, capacity: Math.floor(value) });
+  }
+
   if (req.method === "POST" && daemonRestartRe.test(url.pathname)) {
     if (!ctx.user || ctx.user.is_admin !== 1) return json({ error: "admin required" }, 403);
     const match = url.pathname.match(daemonRestartRe);
