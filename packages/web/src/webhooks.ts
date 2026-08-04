@@ -687,6 +687,11 @@ export async function emitCommentEvent(
     if (!issue) return;
     const comment = await getCommentByIdSafe(commentId);
     if (!comment) return;
+    const cfg = await getConfigAll();
+    const scopeKey = `${project.owner}/${project.name}`;
+    if (cfg["dispatchEnabled"] === "false" || cfg[`dispatchOff:${scopeKey}`] === "1" || (issue as IssueRow).ai_status === "dispatch_off") {
+      log.info(`webhook: dispatch disabled but waking via comment_created (author=${comment.author}) for ${scopeKey}#${issue.number}`);
+    }
     const commentCount = await countCommentsSafe(issueId);
     const globalDefault = (await loadConfig()).defaultModel;
     const model = resolveModel(project.model, globalDefault);
