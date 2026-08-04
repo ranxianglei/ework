@@ -1727,7 +1727,9 @@ export class Engine {
 
       try {
         const cmdline = readFileSync(`/proc/${s.opencodePid}/cmdline`, "utf8");
-        if (!cmdline.includes(binaryName) && !cmdline.includes("opencode") && !cmdline.includes("pi")) continue;
+        const exe = cmdline.split("\0")[0] ?? "";
+        const base = exe.split("/").pop() ?? "";
+        if (base !== binaryName && base !== "opencode" && base !== "pi") continue;
       } catch { continue; }
 
       let ppid = -1;
