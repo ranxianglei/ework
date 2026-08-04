@@ -1,4 +1,5 @@
 import { THEME_CSS, escapeHtml, escapeAttr, containsCI, highlightAll, tabNavHTML, aiStatusBadge } from "../render/layout";
+import { BUILD_ID } from "../build";
 import { getProject, listIssues, listLabelsForIssues, type IssueWithMeta, type LabelRow } from "../store";
 import { relTime } from "../render/components";
 
@@ -6,7 +7,7 @@ export const LIST_PAGE_SIZE = 50;
 
 function labelChip(label: LabelRow, owner: string, repo: string, state: string): string {
   const href = `/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues?state=${state}&label=${encodeURIComponent(label.name)}`;
-  return `<span class="issue-label" style="--lc:${escapeAttr(label.color)}" title="${escapeAttr(label.description ?? "")}" onclick="event.preventDefault();event.stopPropagation();location.href='${href}'">${escapeHtml(label.name)}</span>`;
+  return `<span class="issue-label" data-href="${escapeAttr(href)}" style="--lc:${escapeAttr(label.color)}" title="${escapeAttr(label.description ?? "")}">${escapeHtml(label.name)}</span>`;
 }
 
 function issueRow(
@@ -109,6 +110,7 @@ ${tabNavHTML("issues", viewer ? { login: viewer.login, is_admin: viewer.is_admin
   </div>
   ${labelFilterHint}
   <div class="rows">${rows}</div>
+<script src="/static/row-nav.js?v=${BUILD_ID}" defer></script>
 </main>
 </body></html>`;
 }

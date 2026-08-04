@@ -27,6 +27,8 @@ import {
   ensureUser,
   resolveModel,
   listLabelsForIssue,
+  getUserByLogin,
+  canWriteProject,
   type IssueRow,
   type ProjectRow,
   type CommentRow,
@@ -691,6 +693,15 @@ export async function emitCommentEvent(
     const scopeKey = `${project.owner}/${project.name}`;
     if (cfg["dispatchEnabled"] === "false" || cfg[`dispatchOff:${scopeKey}`] === "1" || (issue as IssueRow).ai_status === "dispatch_off") {
       log.info(`webhook: dispatch disabled but waking via comment_created (author=${comment.author}) for ${scopeKey}#${issue.number}`);
+    }
+    const authorUser = await getUserByLogin(comment.author);
+    if (authorUser && authorUser.kind !== "human") {
+      log.info(`webhook: comment wake denied (author=${comment.author} kind=${authorUser.kind}) for ${scopeKey}#${issue.number}`);
+      return;
+    }
+    if (authorUser && !(await canWriteProject(projectId, { login: comment.author, is_admin: authorUser.is_admin }))) {
+      log.info(`webhook: comment wake denied (author=${comment.author} not project member) for ${scopeKey}#${issue.number}`);
+      return;
     }
     const commentCount = await countCommentsSafe(issueId);
     const globalDefault = (await loadConfig()).defaultModel;

@@ -2,6 +2,7 @@ import type { Config } from "../config";
 import { classifyActor, renderCommentCard, type CommentView } from "../render/components";
 import { renderMarkdown } from "../render/markdown";
 import { renderLayout, escapeHtml } from "../render/layout";
+import { runIssueActionsHook, type IssueActionContext, type IssueAction } from "../issue-actions-hook";
 import { hydrateReactions } from "../reactions";
 import {
   StoreError,
@@ -12,6 +13,7 @@ import {
   listCommentsSince,
   getDefaultUpstreamUrl,
   listLabelsForIssue,
+  getUserByLogin,
   type CommentRow,
   type IssueWithMeta,
 } from "../store";
@@ -112,6 +114,22 @@ export async function buildIssueThread(
     return webUrlFromClone(clone);
   })();
   const labels = await listLabelsForIssue(issue.id);
+  const viewerUser = viewerLogin ? await getUserByLogin(viewerLogin) : null;
+  const viewerIsAdmin = !!viewerUser?.is_admin;
+
+  let customActions: IssueAction[] = [];
+  let extraStatusBadges: Record<string, { cls: string; label: string }> | undefined;
+  if (cfg.issueActionsHook && viewerLogin) {
+    const ctx: IssueActionContext = {
+      owner, repo, issueNumber: number,
+      state: issue.state, aiStatus: issue.ai_status ?? "",
+      viewerLogin, viewerIsAdmin,
+      labels: labels.map((l) => ({ id: l.id, name: l.name, color: l.color })),
+    };
+    const result = await runIssueActionsHook(cfg.issueActionsHook, ctx);
+    customActions = result.actions;
+    extraStatusBadges = result.statusBadges;
+  }
 
   const html = renderLayout(
     {
@@ -131,6 +149,10 @@ export async function buildIssueThread(
       labels: labels.map((l) => ({ id: l.id, name: l.name, color: l.color })),
       canEditLabels: cfg.writesEnabled !== false,
       aiStatus: issue.ai_status ?? "",
+      viewerLogin,
+      viewerIsAdmin,
+      customActions,
+      extraStatusBadges,
     },
     safeJsonEmbed(payload),
     displayViews.map((v) => renderCommentCard(v, cfg)).join("")

@@ -476,6 +476,8 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
   if (url.pathname === "/static/session.js") return staticAsset("session.js", "text/javascript; charset=utf-8", req);
   if (url.pathname === "/static/file.js") return staticAsset("file.js", "text/javascript; charset=utf-8", req);
   if (url.pathname === "/static/tts.js") return staticAsset("tts.js", "text/javascript; charset=utf-8", req);
+  if (url.pathname === "/static/issue-actions.js") return staticAsset("issue-actions.js", "text/javascript; charset=utf-8", req);
+  if (url.pathname === "/static/row-nav.js") return staticAsset("row-nav.js", "text/javascript; charset=utf-8", req);
   if (url.pathname === "/static/highlight.css") {
     return new Response(hlCss, {
       headers: { "content-type": "text/css; charset=utf-8", "cache-control": "no-cache", ...SEC_HEADERS },

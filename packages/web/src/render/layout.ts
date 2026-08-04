@@ -1,4 +1,5 @@
 import { BUILD_ID } from "../build";
+import type { IssueAction } from "../issue-actions-hook";
 export interface LayoutProps {
   title: string;
   issueTitle: string;
@@ -17,6 +18,10 @@ export interface LayoutProps {
   labels?: { id: number; name: string; color: string }[];
   canEditLabels?: boolean;
   aiStatus?: string;
+  viewerLogin?: string;
+  viewerIsAdmin?: boolean;
+  customActions?: IssueAction[];
+  extraStatusBadges?: Record<string, { cls: string; label: string }>;
 }
 
 export const THEME_CSS = `
@@ -167,18 +172,21 @@ export function renderLayout(props: LayoutProps, inner: string, initialItems: st
       dispatch_off: { cls: "ai-dispatch-off", label: "🔕 不接单" },
       completed: { cls: "ai-completed", label: "✓ 已完成" },
       failed: { cls: "ai-failed", label: "✗ 失败" },
+      ...props.extraStatusBadges,
     };
     const m = map[s];
     if (!m) return "";
     return `<span class="ai-badge ${m.cls}">${m.label}</span>`;
   })();
-  const haltBtnHtml = props.writesEnabled !== false && props.aiStatus !== "halted"
-    ? `<button type="button" id="haltBtn" class="halt-btn" title="停止 AI 处理">⏹ 停止</button>`
+  const haltBtnHtml = props.writesEnabled !== false
+    ? props.aiStatus === "halted"
+      ? `<button type="button" class="halt-btn resume-btn" data-action-href="${escapeAttr(repoIssuesHref)}/${props.issueNumber}/resume" data-action-confirm="确认恢复 AI 处理？" title="恢复 AI 处理">▶ 恢复</button>`
+      : `<button type="button" class="halt-btn" data-action-href="${escapeAttr(repoIssuesHref)}/${props.issueNumber}/halt" data-action-confirm="确认停止 AI 处理？" title="停止 AI 处理">⏹ 停止</button>`
     : "";
   const dispatchBtnHtml = props.writesEnabled !== false
     ? props.aiStatus === "dispatch_off"
-      ? `<button type="button" id="dispatchBtn" class="dispatch-btn" title="允许自动接单">🔔 接单</button>`
-      : `<button type="button" id="dispatchBtn" class="dispatch-btn" title="设为不自动接单">🔕 不接单</button>`
+      ? `<button type="button" class="dispatch-btn" data-action-href="${escapeAttr(repoIssuesHref)}/${props.issueNumber}/dispatch-on" title="允许自动接单">🔔 接单</button>`
+      : `<button type="button" class="dispatch-btn" data-action-href="${escapeAttr(repoIssuesHref)}/${props.issueNumber}/dispatch-off" data-action-confirm="设为不自动接单？" title="设为不自动接单">🔕 不接单</button>`
     : "";
   return `<!doctype html>
 <html lang="zh">
@@ -201,7 +209,14 @@ export function renderLayout(props: LayoutProps, inner: string, initialItems: st
   <h1>${escapeHtml(props.issueTitle)}</h1>
   <div class="meta-status">
     <span class="state-badge ${stateClass}">${stateLabel}</span>
-    ${aiBadgeHtml}${haltBtnHtml}${dispatchBtnHtml}
+    ${aiBadgeHtml}${haltBtnHtml}${dispatchBtnHtml}${(props.customActions ?? []).map((a) => {
+      const attrs = [`data-action-href="${escapeAttr(a.href)}"`];
+      if (a.method && a.method !== "POST") attrs.push(`data-action-method="${escapeAttr(a.method)}"`);
+      if (a.confirm) attrs.push(`data-action-confirm="${escapeAttr(a.confirm)}"`);
+      if (a.reloadOnOk === false) attrs.push(`data-action-reload="false"`);
+      const cls = a.className ? `${escapeAttr(a.className)}` : "custom-action-btn";
+      return `<button type="button" class="${cls}" ${attrs.join(" ")}${a.title ? ` title="${escapeAttr(a.title)}"` : ""}>${escapeHtml(a.label)}</button>`;
+    }).join("")}
     ${labelsHtml}${labelPickerBtn}
     <span class="count" id="count">…</span>
     ${props.upstreamWebUrl ? `<a class="upstream-link" href="${escapeAttr(props.upstreamWebUrl)}" target="_blank" rel="noopener noreferrer" title="跳转到上游仓库">🔗 查看上游</a>` : ""}
@@ -233,32 +248,7 @@ ${props.writesEnabled !== false
 <script src="/static/app.js?v=${BUILD_ID}" defer></script>
 ${props.canEditLabels ? `<dialog id="labelDlg"><h3>标签</h3><div class="lp-list" id="lpList"></div><div class="lp-empty hidden" id="lpEmpty">该项目还没有标签。先到设置页创建。</div></dialog>
 <script src="/static/label-picker.js?v=${BUILD_ID}" defer></script>` : ""}
-${haltBtnHtml ? `<script>
-(function(){
-  var btn=document.getElementById("haltBtn");
-  if(!btn)return;
-  btn.addEventListener("click",function(){
-    if(!confirm("确认停止 AI 处理？"))return;
-    btn.disabled=true;btn.textContent="⏳ 停止中…";
-    fetch(window.location.pathname+"/halt",{method:"POST"}).then(function(r){return r.json()}).then(function(d){
-      if(d.ok){location.reload()}else{alert(d.error||"操作失败");btn.disabled=false;btn.textContent="⏹ 停止"}
-    }).catch(function(e){alert("网络错误: "+e);btn.disabled=false;btn.textContent="⏹ 停止"})
-  });
-})();
-</script>` : ""}
-${dispatchBtnHtml ? `<script>
-(function(){
-  var btn=document.getElementById("dispatchBtn");
-  if(!btn)return;
-  btn.addEventListener("click",function(){
-    var off=btn.textContent.indexOf("不接单")>=0;
-    btn.disabled=true;btn.textContent="⏳ …";
-    fetch(window.location.pathname+"/"+(off?"dispatch-off":"dispatch-on"),{method:"POST"}).then(function(r){return r.json()}).then(function(d){
-      if(d.ok){location.reload()}else{alert(d.error||"操作失败");btn.disabled=false;btn.textContent=off?"🔕 不接单":"🔔 接单"}
-    }).catch(function(e){alert("网络错误: "+e);btn.disabled=false;btn.textContent=off?"🔕 不接单":"🔔 接单"})
-  });
-})();
-</script>` : ""}
+<script src="/static/issue-actions.js?v=${BUILD_ID}" defer></script>
 </body>
 </html>`;
 }
