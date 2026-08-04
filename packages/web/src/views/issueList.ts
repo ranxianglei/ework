@@ -6,7 +6,7 @@ export const LIST_PAGE_SIZE = 50;
 
 function labelChip(label: LabelRow, owner: string, repo: string, state: string): string {
   const href = `/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues?state=${state}&label=${encodeURIComponent(label.name)}`;
-  return `<span class="issue-label" data-href="${escapeAttr(href)}" style="--lc:${escapeAttr(label.color)}" title="${escapeAttr(label.description ?? "")}">${escapeHtml(label.name)}</span>`;
+  return `<span class="issue-label" style="--lc:${escapeAttr(label.color)}" title="${escapeAttr(label.description ?? "")}" onclick="event.preventDefault();event.stopPropagation();location.href='${href}'">${escapeHtml(label.name)}</span>`;
 }
 
 function issueRow(
@@ -23,10 +23,10 @@ function issueRow(
     ? `<span class="row-labels">${labels.map((l) => labelChip(l, owner, repo, state)).join("")}</span>`
     : "";
   const aiBadge = aiStatusBadge(it.ai_status);
-  return `<div class="row" data-href="${escapeAttr(href)}">
+  return `<a class="row" href="${escapeAttr(href)}">
     <div class="row-title">${title}${chips}</div>
     <div class="row-meta">#${it.number} · 💬 ${it.comment_count} · ${relTime(it.updated_at)}${aiBadge ? ` · ${aiBadge}` : ""}</div>
-  </div>`;
+  </a>`;
 }
 
 export async function buildIssueList(
@@ -75,7 +75,7 @@ export async function buildIssueList(
 .tabs-sub a{padding:.3rem .8rem;border-radius:6px;font-size:13px;color:var(--text-muted)}
 .tabs-sub a.active{background:var(--bg-muted);color:var(--text);font-weight:600}
 .new-btn{margin-left:auto;background:var(--green);color:#fff;padding:.3rem .8rem;border-radius:6px;font-size:13px;font-weight:600}
-.row{display:block;padding:.6rem .2rem;border-bottom:1px solid var(--border);color:var(--text)}
+.row{display:block;padding:.6rem .2rem;border-bottom:1px solid var(--border);color:var(--text);text-decoration:none}
 .row:hover{text-decoration:none;background:var(--bg-muted)}
 .row-title{font-weight:500;overflow-wrap:anywhere}
 .row-meta{color:var(--text-muted);font-size:12px;margin-top:.2rem}
@@ -109,7 +109,6 @@ ${tabNavHTML("issues", viewer ? { login: viewer.login, is_admin: viewer.is_admin
   </div>
   ${labelFilterHint}
   <div class="rows">${rows}</div>
-<script>document.addEventListener("click",function(e){var l=e.target.closest(".issue-label");if(l){e.preventDefault();e.stopPropagation();location.href=l.dataset.href;return}var r=e.target.closest(".row[data-href]");if(r){location.href=r.dataset.href}})</script>
 </main>
 </body></html>`;
 }
