@@ -260,9 +260,12 @@ export class Store {
     return rows.map(rowToSession);
   }
 
-  async listSessionsWithPid(): Promise<Array<{ id: string; opencodePid: number }>> {
+  async listSessionsWithPid(daemonId: number): Promise<Array<{ id: string; opencodePid: number }>> {
     const rows = await getDB().all<{ uid: string; opencode_pid: number }>(
-      "SELECT uid, opencode_pid FROM {{op_sessions}} WHERE opencode_pid IS NOT NULL"
+      `SELECT s.uid, s.opencode_pid FROM {{op_sessions}} s
+       INNER JOIN {{issues}} i ON i.uid = s.issue_id
+       WHERE s.opencode_pid IS NOT NULL AND i.owner_daemon_id = ?`,
+      [daemonId]
     );
     return rows.map((r) => ({ id: r.uid, opencodePid: r.opencode_pid }));
   }

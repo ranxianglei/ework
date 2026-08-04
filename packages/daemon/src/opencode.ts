@@ -1716,13 +1716,19 @@ export class Engine {
   private async cleanupGlobalOrphans(): Promise<void> {
     let sessions: Array<{ id: string; opencodePid: number }>;
     try {
-      sessions = await this.store.listSessionsWithPid();
+      sessions = await this.store.listSessionsWithPid(this.daemonId);
     } catch { return; }
+    const binaryName = this.cfg.opencode.binary.split("/").pop() ?? "opencode";
     let killed = 0;
     for (const s of sessions) {
       let alive = false;
       try { process.kill(s.opencodePid, 0); alive = true; } catch { /* dead */ }
       if (!alive) continue;
+
+      try {
+        const cmdline = readFileSync(`/proc/${s.opencodePid}/cmdline`, "utf8");
+        if (!cmdline.includes(binaryName) && !cmdline.includes("opencode") && !cmdline.includes("pi")) continue;
+      } catch { continue; }
 
       let ppid = -1;
       try {
@@ -1732,7 +1738,7 @@ export class Engine {
       } catch { continue; }
 
       if (ppid === 1) {
-        log.info(`engine: killing global orphan pid=${s.opencodePid} (PPID=1, session ${s.id})`);
+        log.info(`engine: killing orphaned pid=${s.opencodePid} (PPID=1, session ${s.id})`);
         try { this.killProcessTree(s.opencodePid); } catch { /* dead */ }
         killed++;
       }
