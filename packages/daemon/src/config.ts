@@ -25,6 +25,7 @@ export const configSchema = z.object({
     port: z.coerce.number().default(3101),
     host: z.string().default("0.0.0.0"),
     endpoint: z.string().default(""),
+    nonWakingAuthors: z.array(z.string()).default([]),
   }),
   opencode: z.object({
     binary: z.string().default("opencode"),
@@ -45,6 +46,7 @@ export const configSchema = z.object({
   work: z.object({
     capacity: z.coerce.number().int().positive().default(4),
     maxConcurrent: z.coerce.number().int().positive().default(4),
+    maxConcurrentExplicit: z.boolean().default(false),
     heartbeatMs: z.coerce.number().int().positive().default(10_000),
     leaseTtlMs: z.coerce.number().int().positive().default(60_000),
   }),
@@ -95,9 +97,11 @@ const TEST_DEFAULTS = {
 
 function readWorkSection() {
   const capacity = process.env.WORK_DAEMON_CAPACITY ? Number(process.env.WORK_DAEMON_CAPACITY) : 4;
+  const maxConcurrentExplicit = process.env.WORK_MAX_CONCURRENT != null;
   return {
     capacity,
-    maxConcurrent: process.env.WORK_MAX_CONCURRENT ? Number(process.env.WORK_MAX_CONCURRENT) : capacity,
+    maxConcurrent: maxConcurrentExplicit ? Number(process.env.WORK_MAX_CONCURRENT) : capacity,
+    maxConcurrentExplicit,
     heartbeatMs: process.env.WORK_DAEMON_HEARTBEAT_MS ? Number(process.env.WORK_DAEMON_HEARTBEAT_MS) : 10_000,
     leaseTtlMs: process.env.WORK_DAEMON_LEASE_TTL_MS ? Number(process.env.WORK_DAEMON_LEASE_TTL_MS) : 60_000,
   };
@@ -139,6 +143,7 @@ export function loadConfig(): Config {
         port: process.env.DAEMON_PORT ?? TEST_DEFAULTS.daemon.port,
         host: process.env.DAEMON_HOST ?? TEST_DEFAULTS.daemon.host,
         endpoint: process.env.DAEMON_ENDPOINT ?? "",
+        nonWakingAuthors: (process.env.WORK_NON_WAKING_AUTHORS ?? "").split(",").map((s) => s.trim()).filter(Boolean),
       },
       opencode: {
         binary: process.env.OPENCODE_BINARY ?? TEST_DEFAULTS.opencode.binary,

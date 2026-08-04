@@ -81,6 +81,7 @@ export function createServer(
         running: status.runningCount,
         pending: status.pendingCount,
         processes: status.processCount,
+        maxConcurrent: engine.getMaxConcurrent(),
         observedIssues: status.observedIssues,
         issues: (await store.listAllIssues()).length,
         sessions: (await store.listAllSessions()).length,

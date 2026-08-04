@@ -301,6 +301,7 @@ export class Engine {
   private readonly backend: RuntimeBackend;
   private heartbeatTimer?: ReturnType<typeof setInterval>;
   private maxConcurrent: number;
+  private maxConcurrentExplicit: boolean;
 
   // Runtime state keyed by session key (trackerType:scopeKey#issueId@sessionName)
   private processes = new Map<string, RuntimeHandle>();
@@ -350,6 +351,7 @@ export class Engine {
     this.takeover = opts.takeover ?? new RecloneStrategy(cfg);
     this.backend = opts.backend ?? createDefaultBackend(cfg);
     this.maxConcurrent = cfg.work.maxConcurrent;
+    this.maxConcurrentExplicit = cfg.work.maxConcurrentExplicit;
     this.startGlobalObserver();
     void this.recover();
   }
@@ -376,6 +378,7 @@ export class Engine {
   }
 
   private async syncMaxConcurrent(): Promise<void> {
+    if (this.maxConcurrentExplicit) return;
     try {
       const cap = await this.store.getDaemonCapacity(this.daemonId);
       if (cap != null && cap > 0 && cap !== this.maxConcurrent) {
@@ -388,7 +391,8 @@ export class Engine {
   setMaxConcurrent(n: number): void {
     if (!Number.isFinite(n) || n < 1) return;
     this.maxConcurrent = Math.floor(n);
-    log.info(`engine: maxConcurrent set to ${this.maxConcurrent}`);
+    this.maxConcurrentExplicit = true;
+    log.info(`engine: maxConcurrent set to ${this.maxConcurrent} (explicit — DB sync disabled)`);
   }
 
   getMaxConcurrent(): number {
@@ -593,6 +597,14 @@ export class Engine {
     if (issueData.ai_status === "halted" && (event.type === "issue_opened" || event.type === "comment_created")) {
       log.info(`engine: issue halted — skipping ${event.type} for ${ref.trackerType}:${scopeKey}#${ref.issueId}`);
       return;
+    }
+
+    if (event.type === "comment_created" && event.comment?.author) {
+      const author = event.comment.author;
+      if (this.cfg.daemon.nonWakingAuthors.includes(author)) {
+        log.info(`engine: non-waking author ${author} — skipping comment_created for ${ref.trackerType}:${scopeKey}#${ref.issueId}`);
+        return;
+      }
     }
 
     const issueMapKey = `${ref.trackerType}:${scopeKey}#${ref.issueId}`;

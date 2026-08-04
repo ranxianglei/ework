@@ -131,7 +131,7 @@ function makeConfig(): Config {
   return {
     ...cfg,
     opencode: { ...cfg.opencode, binary: FAKE_BIN, baseWorkdir: workdirBase, dbPath: opencodeDbPath },
-    work: { capacity: 4, maxConcurrent: 4, heartbeatMs: HEARTBEAT_MS, leaseTtlMs: LEASE_TTL_MS },
+    work: { capacity: 4, maxConcurrent: 4, maxConcurrentExplicit: false, heartbeatMs: HEARTBEAT_MS, leaseTtlMs: LEASE_TTL_MS },
   };
 }
 
