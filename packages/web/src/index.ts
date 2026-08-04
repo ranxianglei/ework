@@ -1116,7 +1116,7 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
       `SELECT internal_endpoint AS endpoint, status FROM {{d_daemons}} WHERE id = ?`, [id]
     );
     if (rows.length === 0) return json({ ok: false, error: "daemon not found" }, 404);
-    await getDB().run(`UPDATE {{d_daemons}} SET status = 'active', last_heartbeat = datetime('now') WHERE id = ?`, [id]);
+    await getDB().run(`UPDATE {{d_daemons}} SET status = 'active', last_heartbeat = ? WHERE id = ?`, [new Date().toISOString(), id]);
     return json({ ok: true, note: "reactivated — daemon process will re-register via heartbeat" });
   }
 
