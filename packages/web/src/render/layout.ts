@@ -49,6 +49,8 @@ header.topbar .num{opacity:.7}
 .meta-bar{display:flex;flex-direction:column;gap:.3rem;padding:.7rem max(1rem,calc((100% - 900px)/2));border-bottom:1px solid var(--border);background:var(--bg-muted)}
 .meta-bar h1{font-size:18px;margin:0;font-weight:600;overflow-wrap:anywhere;word-break:break-word}
 .meta-status{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;font-size:13px;color:var(--text-muted)}
+.action-group{display:flex;gap:.3rem;align-items:center;padding-left:.5rem;margin-left:.2rem;border-left:1px solid var(--border)}
+.label-group{display:flex;gap:.3rem;align-items:center;padding-left:.5rem;margin-left:.2rem;border-left:1px solid var(--border);flex-wrap:wrap}
 .count{color:var(--text-muted);font-size:12px;white-space:nowrap}
 #list{padding:.5rem .6rem 4rem;max-width:900px;margin:0 auto}
 .sentinel{height:1px}
@@ -141,10 +143,14 @@ header.topbar .num{opacity:.7}
 .ai-completed{background:#1a7f37;color:#fff}
 .ai-failed{background:#cf222e;color:#fff}
 @keyframes ai-pulse{0%,100%{opacity:1}50%{opacity:.6}}
-.halt-btn{font-size:12px;padding:.15rem .6rem;border-radius:6px;border:1px solid var(--border);background:var(--bg-elev);color:#cf222e;cursor:pointer;font-weight:600}
-.halt-btn:hover{background:#cf222e;color:#fff}
-.dispatch-btn{font-size:12px;padding:.15rem .6rem;border-radius:6px;border:1px solid var(--border);background:var(--bg-elev);color:#6f7781;cursor:pointer;font-weight:600}
-.dispatch-btn:hover{background:#6f7781;color:#fff}
+.action-btn{font-size:12px;padding:.15rem .6rem;border-radius:6px;border:1px solid var(--border);background:var(--bg-elev);color:#cf222e;cursor:pointer;font-weight:600}
+.action-btn:hover{background:#cf222e;color:#fff}
+.action-btn.resume-btn{color:#1a7f37}
+.action-btn.resume-btn:hover{background:#1a7f37;color:#fff}
+.action-btn.dispatch-btn{color:#6f7781}
+.action-btn.dispatch-btn:hover{background:#6f7781;color:#fff}
+.action-btn.custom-btn{color:var(--accent)}
+.action-btn.custom-btn:hover{background:var(--accent);color:#fff}
 `;
 
 export function renderLayout(props: LayoutProps, inner: string, initialItems: string): string {
@@ -165,11 +171,10 @@ export function renderLayout(props: LayoutProps, inner: string, initialItems: st
     : "";
   const aiBadgeHtml = (() => {
     const s = props.aiStatus ?? "";
-    if (!s) return "";
+    // halted/dispatch_off are represented by their action buttons — skip badge
+    if (!s || s === "halted" || s === "dispatch_off") return "";
     const map: Record<string, { cls: string; label: string }> = {
       processing: { cls: "ai-processing", label: "⚙️ 处理中" },
-      halted: { cls: "ai-halted", label: "⏸️ 已暂停" },
-      dispatch_off: { cls: "ai-dispatch-off", label: "🔕 不接单" },
       completed: { cls: "ai-completed", label: "✓ 已完成" },
       failed: { cls: "ai-failed", label: "✗ 失败" },
       ...props.extraStatusBadges,
@@ -178,15 +183,17 @@ export function renderLayout(props: LayoutProps, inner: string, initialItems: st
     if (!m) return "";
     return `<span class="ai-badge ${m.cls}">${m.label}</span>`;
   })();
-  const haltBtnHtml = props.writesEnabled !== false
-    ? props.aiStatus === "halted"
-      ? `<button type="button" class="halt-btn resume-btn" data-action-href="${escapeAttr(repoIssuesHref)}/${props.issueNumber}/resume" data-action-confirm="确认恢复 AI 处理？" title="恢复 AI 处理">▶ 恢复</button>`
-      : `<button type="button" class="halt-btn" data-action-href="${escapeAttr(repoIssuesHref)}/${props.issueNumber}/halt" data-action-confirm="确认停止 AI 处理？" title="停止 AI 处理">⏹ 停止</button>`
+  const isTerminal = props.aiStatus === "completed";
+  const showActions = props.writesEnabled !== false && !isTerminal;
+  const haltBtnHtml = showActions
+    ? (props.aiStatus === "halted" || props.aiStatus === "failed")
+      ? `<button type="button" class="action-btn resume-btn" data-action-href="${escapeAttr(repoIssuesHref)}/${props.issueNumber}/resume" data-action-confirm="确认恢复 AI 处理？" title="恢复 AI 处理">▶ 恢复</button>`
+      : `<button type="button" class="action-btn" data-action-href="${escapeAttr(repoIssuesHref)}/${props.issueNumber}/halt" data-action-confirm="确认停止 AI 处理？" title="停止 AI 处理">⏹ 停止</button>`
     : "";
-  const dispatchBtnHtml = props.writesEnabled !== false
+  const dispatchBtnHtml = showActions
     ? props.aiStatus === "dispatch_off"
-      ? `<button type="button" class="dispatch-btn" data-action-href="${escapeAttr(repoIssuesHref)}/${props.issueNumber}/dispatch-on" title="允许自动接单">🔔 接单</button>`
-      : `<button type="button" class="dispatch-btn" data-action-href="${escapeAttr(repoIssuesHref)}/${props.issueNumber}/dispatch-off" data-action-confirm="设为不自动接单？" title="设为不自动接单">🔕 不接单</button>`
+      ? `<button type="button" class="action-btn dispatch-btn" data-action-href="${escapeAttr(repoIssuesHref)}/${props.issueNumber}/dispatch-on" title="允许自动接单">🔔 接单</button>`
+      : `<button type="button" class="action-btn dispatch-btn" data-action-href="${escapeAttr(repoIssuesHref)}/${props.issueNumber}/dispatch-off" data-action-confirm="设为不自动接单？" title="设为不自动接单">🔕 不接单</button>`
     : "";
   return `<!doctype html>
 <html lang="zh">
@@ -209,15 +216,16 @@ export function renderLayout(props: LayoutProps, inner: string, initialItems: st
   <h1>${escapeHtml(props.issueTitle)}</h1>
   <div class="meta-status">
     <span class="state-badge ${stateClass}">${stateLabel}</span>
-    ${aiBadgeHtml}${haltBtnHtml}${dispatchBtnHtml}${(props.customActions ?? []).map((a) => {
+    ${aiBadgeHtml}
+    ${(haltBtnHtml || dispatchBtnHtml || (props.customActions ?? []).length) ? `<span class="action-group">${haltBtnHtml}${dispatchBtnHtml}${(props.customActions ?? []).map((a) => {
       const attrs = [`data-action-href="${escapeAttr(a.href)}"`];
       if (a.method && a.method !== "POST") attrs.push(`data-action-method="${escapeAttr(a.method)}"`);
       if (a.confirm) attrs.push(`data-action-confirm="${escapeAttr(a.confirm)}"`);
       if (a.reloadOnOk === false) attrs.push(`data-action-reload="false"`);
-      const cls = a.className ? `${escapeAttr(a.className)}` : "custom-action-btn";
+      const cls = a.className ? `${escapeAttr(a.className)}` : "action-btn custom-btn";
       return `<button type="button" class="${cls}" ${attrs.join(" ")}${a.title ? ` title="${escapeAttr(a.title)}"` : ""}>${escapeHtml(a.label)}</button>`;
-    }).join("")}
-    ${labelsHtml}${labelPickerBtn}
+    }).join("")}</span>` : ""}
+    ${(labelsHtml || labelPickerBtn) ? `<span class="label-group">${labelsHtml}${labelPickerBtn}</span>` : ""}
     <span class="count" id="count">…</span>
     ${props.upstreamWebUrl ? `<a class="upstream-link" href="${escapeAttr(props.upstreamWebUrl)}" target="_blank" rel="noopener noreferrer" title="跳转到上游仓库">🔗 查看上游</a>` : ""}
   </div>
