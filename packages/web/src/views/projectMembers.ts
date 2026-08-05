@@ -26,7 +26,6 @@ export async function buildProjectMembersPage(
   viewer: UserRow,
   project: ProjectRow,
   flash: Flash | null,
-  dispatchOff: boolean,
 ): Promise<string> {
   const members = await listProjectMembersWithUsers(project.id);
   const users = await listUsers();
@@ -121,12 +120,6 @@ ${flashHtml}
 </div>
 <div class="hint">公开 = 任何登录用户都能查看 issue 和评论；私有 = 需要项目成员（reader+）权限。Bot 用户已自动获得 writer 角色，不受影响。</div>
 <button class="primary" type="submit">保存</button>
-</form>
-
-<form class="card" method="POST" action="${escapeAttr(`/${encodeURIComponent(project.owner)}/${encodeURIComponent(project.name)}/settings/dispatch`)}">
-<h2>AI 自动接单</h2>
-<div class="hint">关闭后，本项目新建 issue 不会自动派给 AI；评论仍可显式召唤。</div>
-<button type="submit" class="${dispatchOff ? "primary" : "secondary"}">${dispatchOff ? "🔔 开启自动接单" : "🔕 关闭自动接单"}</button>
 </form>
 
 <div class="card">

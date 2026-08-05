@@ -107,6 +107,7 @@ import { buildProjectMembersPage } from "./views/projectMembers";
 import { buildProjectUpstreamsPage, trySetUpstreamUrls } from "./views/projectUpstreams";
 import { buildProjectLabelsPage } from "./views/projectLabels";
 import { buildProjectModelPage } from "./views/projectModel";
+import { buildProjectAiPage } from "./views/projectAi";
 import { handleGiteaApi } from "./giteaApi";
 import { deployRemoteDaemon, deployBatch, type DeployTarget } from "./daemon-deploy";
 
@@ -377,6 +378,7 @@ const REPO_DISPATCH_RE = /^\/([^/]+)\/([^/]+)\/settings\/dispatch$/;
 const SETTINGS_DISPATCH_RE = /^\/settings\/dispatch$/;
 const REPO_UPSTREAMS_RE = /^\/([^/]+)\/([^/]+)\/settings\/upstreams$/;
 const REPO_MODEL_RE = /^\/([^/]+)\/([^/]+)\/settings\/model$/;
+const REPO_AI_RE = /^\/([^/]+)\/([^/]+)\/settings\/ai$/;
 const REPO_LABELS_RE = /^\/([^/]+)\/([^/]+)\/settings\/labels$/;
 const REPO_LABEL_ADD_RE = /^\/([^/]+)\/([^/]+)\/settings\/labels\/add$/;
 const REPO_LABEL_ACTION_RE = /^\/([^/]+)\/([^/]+)\/settings\/labels\/(\d+)\/(update|archive|unarchive|delete)$/;
@@ -2201,9 +2203,22 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     const flashKind = url.searchParams.get("ok") === "1" ? "ok" : url.searchParams.get("err") ? "err" : null;
     const flashMsg = flashKind === "ok" ? (url.searchParams.get("ok_msg") ?? "") : (url.searchParams.get("err") ?? "");
     const flash = flashKind ? { kind: flashKind as "ok" | "err", msg: flashMsg } : null;
+    return html(await buildProjectMembersPage(ctx.user!, project, flash));
+  }
+
+  const aiPage = url.pathname.match(REPO_AI_RE);
+  if (aiPage) {
+    const [, owner, repo] = aiPage;
+    if (!(owner && repo)) return html(errorPage("404", "bad path"), 404);
+    const project = await getProject(owner, repo);
+    if (!project) return html(errorPage("项目不存在", "项目未创建"), 404);
+    if (!(await canAdminProject(project.id, ctx.user))) {
+      return html(errorPage("无权限", "需要该项目 admin 角色才能管理 AI 设置"), 403);
+    }
     const dispatchCfg = await getConfigAll();
     const dispatchOff = dispatchCfg[`dispatchOff:${owner}/${repo}`] === "1";
-    return html(await buildProjectMembersPage(ctx.user!, project, flash, dispatchOff));
+    const globalDispatchOff = dispatchCfg["dispatchEnabled"] === "false";
+    return html(buildProjectAiPage(project, dispatchOff, globalDispatchOff).html);
   }
 
   const upstreamsPage = url.pathname.match(REPO_UPSTREAMS_RE);
