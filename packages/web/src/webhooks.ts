@@ -696,11 +696,15 @@ export async function emitCommentEvent(
       log.info(`webhook: issue dispatch disabled — skipping comment_created (author=${comment.author}) for ${scopeKey}#${issue.number}`);
       return;
     }
-    // Global/project-level are "default no auto-dispatch" strategies — comments can still explicitly wake AI.
-    if (cfg["dispatchEnabled"] === "false" || cfg[`dispatchOff:${scopeKey}`] === "1") {
-      log.info(`webhook: dispatch disabled but waking via comment_created (author=${comment.author}) for ${scopeKey}#${issue.number}`);
-    }
     const authorUser = await getUserByLogin(comment.author);
+    const dispatchOff = cfg["dispatchEnabled"] === "false" || cfg[`dispatchOff:${scopeKey}`] === "1";
+    if (dispatchOff && authorUser && authorUser.kind !== "human") {
+      log.info(`webhook: dispatch disabled — non-human comment blocked (author=${comment.author} kind=${authorUser.kind}) for ${scopeKey}#${issue.number}`);
+      return;
+    }
+    if (dispatchOff) {
+      log.info(`webhook: dispatch disabled but human comment waking AI (author=${comment.author}) for ${scopeKey}#${issue.number}`);
+    }
     const appCfg = await loadConfig();
     const cfgList = (k: string, d: string) =>
       (cfg[k] ?? d).split(",").map((s) => s.trim()).filter(Boolean);
