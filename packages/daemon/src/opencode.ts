@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { mkdirSync, writeFileSync, readdirSync, existsSync, readFileSync } from "fs";
+import { mkdirSync, writeFileSync, unlinkSync, readdirSync, existsSync, readFileSync } from "fs";
 import { join, resolve, isAbsolute } from "path";
 import { homedir } from "os";
 import { log } from "./logger";
@@ -413,17 +413,85 @@ export class Engine {
   async pause(): Promise<void> {
     this.paused = true;
     await this.store.markDaemonStatus(this.daemonId, "drained");
+    this.persistPaused(true);
     log.info(`engine: daemon ${this.daemonId} paused (drained) — new issues rejected, existing sessions continue`);
   }
 
   async resume(): Promise<void> {
     this.paused = false;
     await this.store.markDaemonStatus(this.daemonId, "active");
+    this.persistPaused(false);
     log.info(`engine: daemon ${this.daemonId} resumed (active)`);
   }
 
   isPaused(): boolean {
     return this.paused;
+  }
+
+  getRunningCount(): number {
+    return this.running.size;
+  }
+
+  /**
+   * Force-terminate ALL running sessions on this daemon. Returns kill count.
+   * Unlike pause() (which only rejects new work), this actively kills
+   * in-progress opencode/Pi processes.
+   */
+  async haltAll(): Promise<number> {
+    let killed = 0;
+    const issues = await this.store.listOwnedIssues(this.daemonId);
+    for (const issue of issues) {
+      const sessions = await this.store.getSessionsForIssue(issue.id);
+      for (const session of sessions) {
+        if (session.state !== "running") continue;
+        const k = this.sessionKey(session, issue);
+        const wasKilled = await this.killSessionProcess(session, k);
+        if (wasKilled) killed++;
+        this.clearRuntimeState(k);
+        const msgs = await this.store.getMessagesForSession(session.id);
+        for (const msg of msgs) {
+          if (msg.status === "pending" || msg.status === "running") {
+            await this.store.updateMessageStatus(msg.id, "interrupted", "halted by admin");
+          }
+        }
+        await this.store.updateSession(session.id, { state: "idle", opencodePid: undefined });
+        const tracker = this.trackers.get(issue.trackerType);
+        if (tracker) {
+          try {
+            await tracker.createComment(
+              { trackerType: issue.trackerType, scope: issue.trackerScope, issueId: issue.trackerIssueId },
+              `[system] ⏹️ Session **${session.name}** force-stopped by admin (halt-all).`
+            );
+          } catch { /* tracker unavailable */ }
+        }
+      }
+    }
+    this.paused = true;
+    await this.store.markDaemonStatus(this.daemonId, "drained");
+    this.persistPaused(true);
+    log.info(`engine: haltAll complete — ${killed} sessions killed, daemon ${this.daemonId} now paused`);
+    return killed;
+  }
+
+  private pausedFilePath(): string {
+    return join(this.cfg.opencode.baseWorkdir, "..", ".ework-paused.flag");
+  }
+
+  private persistPaused(paused: boolean): void {
+    try {
+      const p = this.pausedFilePath();
+      if (paused) writeFileSync(p, String(Date.now()));
+      else if (existsSync(p)) unlinkSync(p);
+    } catch { /* best-effort persistence */ }
+  }
+
+  restorePausedState(): void {
+    try {
+      if (existsSync(this.pausedFilePath())) {
+        this.paused = true;
+        log.info(`engine: daemon ${this.daemonId} restored paused state from flag file`);
+      }
+    } catch { /* best-effort */ }
   }
 
   /**

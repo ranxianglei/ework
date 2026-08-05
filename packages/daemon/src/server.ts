@@ -82,6 +82,8 @@ export function createServer(
         pending: status.pendingCount,
         processes: status.processCount,
         maxConcurrent: engine.getMaxConcurrent(),
+        paused: engine.isPaused(),
+        runningCount: engine.getRunningCount(),
         observedIssues: status.observedIssues,
         issues: (await store.listAllIssues()).length,
         sessions: (await store.listAllSessions()).length,
@@ -213,6 +215,10 @@ export function createServer(
     if (pathname === "/api/admin/resume" && req.method === "POST") {
       await engine.resume();
       return json({ ok: true, paused: false });
+    }
+    if (pathname === "/api/admin/halt-all" && req.method === "POST") {
+      const killed = await engine.haltAll();
+      return json({ ok: true, killed, paused: true });
     }
     if (pathname === "/api/admin/max-concurrent" && req.method === "POST") {
       const body = await req.json().catch(() => ({} as unknown));

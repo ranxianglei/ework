@@ -73,6 +73,7 @@ async function boot() {
   if (claimed > 0) log.info(`  first-boot migration: claimed ${claimed} previously-ownerless issue(s)`);
 
   const engine = new Engine(config, store, trackers, { daemonId });
+  engine.restorePausedState();
   engine.startHeartbeat(config.work.heartbeatMs);
   const server = createServer(config, store, engine, trackers);
 
