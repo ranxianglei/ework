@@ -1279,6 +1279,32 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     return json({ ok: true, enabled });
   }
 
+  if (req.method === "GET" && url.pathname === "/api/wake-policy") {
+    if (!ctx.user || ctx.user.is_admin !== 1) return json({ error: "admin required" }, 403);
+    const cfg = await getConfigAll();
+    const appCfg = await loadConfig();
+    const list = (k: string, d: string) => (cfg[k] ?? d).split(",").map((s) => s.trim()).filter(Boolean);
+    return json({
+      wakeKinds: list("wakeKinds", "human"),
+      wakeLogins: list("wakeLogins", ""),
+      noWakeLogins: list("noWakeLogins", appCfg.daemonBotLogin),
+    });
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/wake-policy") {
+    if (!ctx.user || ctx.user.is_admin !== 1) return json({ error: "admin required" }, 403);
+    const payload = await req.json().catch(() => ({} as Record<string, unknown>));
+    const p = payload as { wakeKinds?: unknown; wakeLogins?: unknown; noWakeLogins?: unknown };
+    const join = (v: unknown) => Array.isArray(v) ? v.filter((s) => typeof s === "string").join(",") : (typeof v === "string" ? v : "");
+    const wk = join(p.wakeKinds);
+    const wl = join(p.wakeLogins);
+    const nw = join(p.noWakeLogins);
+    if (wk) await setConfig("wakeKinds", wk); else await deleteConfig("wakeKinds");
+    if (wl) await setConfig("wakeLogins", wl); else await deleteConfig("wakeLogins");
+    if (nw) await setConfig("noWakeLogins", nw); else await deleteConfig("noWakeLogins");
+    return json({ ok: true });
+  }
+
   if (url.pathname === "/api/router/daemons" && req.method === "GET") {
     if (!ctx.user || ctx.user.is_admin !== 1) return json({ error: "admin required" }, 403);
     try {

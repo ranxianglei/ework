@@ -695,8 +695,20 @@ export async function emitCommentEvent(
       log.info(`webhook: dispatch disabled but waking via comment_created (author=${comment.author}) for ${scopeKey}#${issue.number}`);
     }
     const authorUser = await getUserByLogin(comment.author);
-    if (authorUser && authorUser.kind !== "human") {
-      log.info(`webhook: comment wake denied (author=${comment.author} kind=${authorUser.kind}) for ${scopeKey}#${issue.number}`);
+    const appCfg = await loadConfig();
+    const cfgList = (k: string, d: string) =>
+      (cfg[k] ?? d).split(",").map((s) => s.trim()).filter(Boolean);
+    const noWake = cfgList("noWakeLogins", appCfg.daemonBotLogin);
+    const okLogins = cfgList("wakeLogins", "");
+    const okKinds = cfgList("wakeKinds", "human");
+    const author = comment.author;
+    const denied =
+      noWake.includes(author) ? "deny-list" :
+      okLogins.includes(author) ? null :
+      (authorUser && !okKinds.includes(authorUser.kind)) ? `kind=${authorUser.kind}` :
+      null;
+    if (denied) {
+      log.info(`webhook: comment wake denied (author=${author} reason=${denied}) for ${scopeKey}#${issue.number}`);
       return;
     }
     if (authorUser && !(await canWriteProject(projectId, { login: comment.author, is_admin: authorUser.is_admin }))) {
