@@ -691,7 +691,13 @@ export async function emitCommentEvent(
     if (!comment) return;
     const cfg = await getConfigAll();
     const scopeKey = `${project.owner}/${project.name}`;
-    if (cfg["dispatchEnabled"] === "false" || cfg[`dispatchOff:${scopeKey}`] === "1" || (issue as IssueRow).ai_status === "dispatch_off") {
+    // Issue-level dispatch_off is a per-issue explicit close — block comments entirely (same as halted).
+    if ((issue as IssueRow).ai_status === "dispatch_off") {
+      log.info(`webhook: issue dispatch disabled — skipping comment_created (author=${comment.author}) for ${scopeKey}#${issue.number}`);
+      return;
+    }
+    // Global/project-level are "default no auto-dispatch" strategies — comments can still explicitly wake AI.
+    if (cfg["dispatchEnabled"] === "false" || cfg[`dispatchOff:${scopeKey}`] === "1") {
       log.info(`webhook: dispatch disabled but waking via comment_created (author=${comment.author}) for ${scopeKey}#${issue.number}`);
     }
     const authorUser = await getUserByLogin(comment.author);

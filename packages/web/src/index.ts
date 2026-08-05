@@ -373,6 +373,8 @@ const REPO_MEMBERS_RE = /^\/([^/]+)\/([^/]+)\/settings\/members$/;
 const REPO_MEMBER_ACTION_RE = /^\/([^/]+)\/([^/]+)\/settings\/members\/([^/]+)\/(role|remove)$/;
 const REPO_MEMBER_ADD_RE = /^\/([^/]+)\/([^/]+)\/settings\/members\/add$/;
 const REPO_VISIBILITY_RE = /^\/([^/]+)\/([^/]+)\/settings\/visibility$/;
+const REPO_DISPATCH_RE = /^\/([^/]+)\/([^/]+)\/settings\/dispatch$/;
+const SETTINGS_DISPATCH_RE = /^\/settings\/dispatch$/;
 const REPO_UPSTREAMS_RE = /^\/([^/]+)\/([^/]+)\/settings\/upstreams$/;
 const REPO_MODEL_RE = /^\/([^/]+)\/([^/]+)\/settings\/model$/;
 const REPO_LABELS_RE = /^\/([^/]+)\/([^/]+)\/settings\/labels$/;
@@ -1344,7 +1346,8 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
 
   if (url.pathname === "/settings") {
     if (req.method === "GET") {
-      return html(buildSettingsPage(cfg, url.searchParams.get("saved") === "1", ctx.user!, await listCachedModels()).html);
+      const dispatchCfg = await getConfigAll();
+      return html(buildSettingsPage(cfg, url.searchParams.get("saved") === "1", ctx.user!, await listCachedModels(), dispatchCfg["dispatchEnabled"] === "false").html);
     }
     if (req.method === "POST") {
       if (!rateLimit(`settings:${ip}`, 10, 10 / 60)) return html(errorPage("太快了", "请稍后再试"), 429);
@@ -1943,6 +1946,33 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
       return Response.redirect(`${back}?ok=1&ok_msg=${encodeURIComponent(`可见性已更新为 ${visibility === "public" ? "公开" : "私有"}`)}`, 303);
     }
 
+    const repoDispatchMatch = url.pathname.match(REPO_DISPATCH_RE);
+    if (repoDispatchMatch) {
+      const [, owner, repo] = repoDispatchMatch;
+      if (!(owner && repo)) return html(errorPage("bad path", ""), 400);
+      const project = await getProject(owner, repo);
+      if (!project) return html(errorPage("项目不存在", ""), 404);
+      const back = `${url.origin}/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/settings/members`;
+      if (!(await canAdminProject(project.id, ctx.user))) {
+        return Response.redirect(`${back}?err=${encodeURIComponent("无权限")}`, 303);
+      }
+      const cfg = await getConfigAll();
+      const key = `dispatchOff:${owner}/${repo}`;
+      const isOff = cfg[key] === "1";
+      if (isOff) { await deleteConfig(key); } else { await setConfig(key, "1"); }
+      return Response.redirect(`${back}?ok=1&ok_msg=${encodeURIComponent(isOff ? "已开启自动接单" : "已关闭自动接单")}`, 303);
+    }
+
+    const settingsDispatchMatch = url.pathname.match(SETTINGS_DISPATCH_RE);
+    if (settingsDispatchMatch) {
+      if (!ctx.user || ctx.user.is_admin !== 1) return html(errorPage("需要管理员权限", ""), 403);
+      const back = `${url.origin}/settings`;
+      const cfg = await getConfigAll();
+      const isOff = cfg["dispatchEnabled"] === "false";
+      if (isOff) { await deleteConfig("dispatchEnabled"); } else { await setConfig("dispatchEnabled", "false"); }
+      return Response.redirect(`${back}?ok=1&ok_msg=${encodeURIComponent(isOff ? "已开启全局自动接单" : "已关闭全局自动接单")}`, 303);
+    }
+
     const whAction = url.pathname.match(WH_ACTION_RE);
     if (whAction) {
       const [, idStr, action] = whAction;
@@ -2171,7 +2201,9 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     const flashKind = url.searchParams.get("ok") === "1" ? "ok" : url.searchParams.get("err") ? "err" : null;
     const flashMsg = flashKind === "ok" ? (url.searchParams.get("ok_msg") ?? "") : (url.searchParams.get("err") ?? "");
     const flash = flashKind ? { kind: flashKind as "ok" | "err", msg: flashMsg } : null;
-    return html(await buildProjectMembersPage(ctx.user!, project, flash));
+    const dispatchCfg = await getConfigAll();
+    const dispatchOff = dispatchCfg[`dispatchOff:${owner}/${repo}`] === "1";
+    return html(await buildProjectMembersPage(ctx.user!, project, flash, dispatchOff));
   }
 
   const upstreamsPage = url.pathname.match(REPO_UPSTREAMS_RE);

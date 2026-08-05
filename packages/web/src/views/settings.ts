@@ -99,7 +99,7 @@ function buildDaemonSection(viewer: UserRow): string {
 </section>`;
 }
 
-export function buildSettingsPage(cfg: Config, saved: boolean, viewer: UserRow, models: CachedModel[]): { html: string } {
+export function buildSettingsPage(cfg: Config, saved: boolean, viewer: UserRow, models: CachedModel[], globalDispatchOff: boolean): { html: string } {
   const groups = SETTINGS_GROUPS.map(
     (g) =>
       `<section class="sg"><h2>${escapeHtml(g.title)}</h2>${fieldInput(g, cfg, models)}</section>`
@@ -109,6 +109,9 @@ export function buildSettingsPage(cfg: Config, saved: boolean, viewer: UserRow, 
     ? `<p class="hint">要增删朗读后端（kokoro / cosyvoice3 等），去 <a href="/admin/tts-backends">朗读后端管理</a>。</p>`
     : "";
   const modelRefreshForm = `<section class="sg"><h2>opencode 模型列表</h2><p class="hint" style="margin:0 0 .6rem">从 <code>opencode models</code> 拉取可用模型并刷新上方下拉列表。刷新后自动选定一个具体模型作为默认（不会留空）。</p><form method="POST" action="/settings/models/refresh"><button type="submit" class="secondary">🔄 刷新 opencode 模型列表</button></form></section>`;
+  const dispatchToggle = viewer.is_admin === 1
+    ? `<section class="sg"><h2>全局 AI 自动接单</h2><p class="hint" style="margin:0 0 .6rem">关闭后，所有项目新建 issue 都不会自动派给 AI；评论仍可显式召唤。</p><form method="POST" action="/settings/dispatch"><button type="submit" class="${globalDispatchOff ? "primary" : "secondary"}">${globalDispatchOff ? "🔔 开启全局自动接单" : "🔕 关闭全局自动接单"}</button></form></section>`
+    : "";
   const html = `<!doctype html>
 <html lang="zh"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -171,6 +174,7 @@ ${banner}
 <div class="bar"><button type="submit">保存</button><a class="a-back" href="/">返回</a></div>
 </form>
 ${modelRefreshForm}
+${dispatchToggle}
 ${ttsLink}
 ${buildDbSection(viewer)}
 ${buildDaemonSection(viewer)}
