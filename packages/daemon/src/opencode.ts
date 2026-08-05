@@ -594,8 +594,8 @@ export class Engine {
       return;
     }
 
-    if (issueData.ai_status === "halted" && (event.type === "issue_opened" || event.type === "comment_created")) {
-      log.info(`engine: issue halted — skipping ${event.type} for ${ref.trackerType}:${scopeKey}#${ref.issueId}`);
+    if ((issueData.ai_status === "halted" || issueData.ai_status === "dispatch_off") && (event.type === "issue_opened" || event.type === "comment_created")) {
+      log.info(`engine: issue ${issueData.ai_status} — skipping ${event.type} for ${ref.trackerType}:${scopeKey}#${ref.issueId}`);
       return;
     }
 
