@@ -38,6 +38,7 @@ import {
   postComment,
   setIssueState,
   updateIssueAiStatus,
+  listIssues,
   createAttachment,
   getAttachment,
   verifyUserPassword,
@@ -375,6 +376,7 @@ const REPO_MEMBER_ACTION_RE = /^\/([^/]+)\/([^/]+)\/settings\/members\/([^/]+)\/
 const REPO_MEMBER_ADD_RE = /^\/([^/]+)\/([^/]+)\/settings\/members\/add$/;
 const REPO_VISIBILITY_RE = /^\/([^/]+)\/([^/]+)\/settings\/visibility$/;
 const REPO_DISPATCH_RE = /^\/([^/]+)\/([^/]+)\/settings\/dispatch$/;
+const REPO_HALT_ALL_RE = /^\/([^/]+)\/([^/]+)\/settings\/ai\/halt-all$/;
 const SETTINGS_DISPATCH_RE = /^\/settings\/dispatch$/;
 const REPO_UPSTREAMS_RE = /^\/([^/]+)\/([^/]+)\/settings\/upstreams$/;
 const REPO_MODEL_RE = /^\/([^/]+)\/([^/]+)\/settings\/model$/;
@@ -1283,7 +1285,7 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     return json({ ok: true, enabled });
   }
 
-  if (req.method === "GET" && url.pathname === "/api/wake-policy") {
+  if (url.pathname === "/api/wake-policy" && req.method === "GET") {
     if (!ctx.user || ctx.user.is_admin !== 1) return json({ error: "admin required" }, 403);
     const cfg = await getConfigAll();
     const appCfg = await loadConfig();
@@ -1954,7 +1956,7 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
       if (!(owner && repo)) return html(errorPage("bad path", ""), 400);
       const project = await getProject(owner, repo);
       if (!project) return html(errorPage("项目不存在", ""), 404);
-      const back = `${url.origin}/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/settings/members`;
+      const back = `${url.origin}/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/settings/ai`;
       if (!(await canAdminProject(project.id, ctx.user))) {
         return Response.redirect(`${back}?err=${encodeURIComponent("无权限")}`, 303);
       }
@@ -1963,6 +1965,25 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
       const isOff = cfg[key] === "1";
       if (isOff) { await deleteConfig(key); } else { await setConfig(key, "1"); }
       return Response.redirect(`${back}?ok=1&ok_msg=${encodeURIComponent(isOff ? "已开启自动接单" : "已关闭自动接单")}`, 303);
+    }
+
+    const repoHaltAllMatch = url.pathname.match(REPO_HALT_ALL_RE);
+    if (repoHaltAllMatch) {
+      const [, owner, repo] = repoHaltAllMatch;
+      if (!(owner && repo)) return html(errorPage("bad path", ""), 400);
+      const project = await getProject(owner, repo);
+      if (!project) return html(errorPage("项目不存在", ""), 404);
+      const back = `${url.origin}/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/settings/ai`;
+      if (!(await canAdminProject(project.id, ctx.user))) {
+        return Response.redirect(`${back}?err=${encodeURIComponent("无权限")}`, 303);
+      }
+      const issues = await listIssues(project.id, { state: "all" });
+      const processing = issues.filter((it) => it.ai_status === "processing");
+      for (const it of processing) {
+        await updateIssueAiStatus(it.id, "halted");
+        void emitStatusChanged(project.id, it.number, "processing", "halted", ctx.user!.login, url.origin);
+      }
+      return Response.redirect(`${back}?ok=1&ok_msg=${encodeURIComponent(`已停止 ${processing.length} 个运行中AI会话`)}`, 303);
     }
 
     const settingsDispatchMatch = url.pathname.match(SETTINGS_DISPATCH_RE);
@@ -2218,7 +2239,9 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     const dispatchCfg = await getConfigAll();
     const dispatchOff = dispatchCfg[`dispatchOff:${owner}/${repo}`] === "1";
     const globalDispatchOff = dispatchCfg["dispatchEnabled"] === "false";
-    return html(buildProjectAiPage(project, dispatchOff, globalDispatchOff).html);
+    const processingIssues = await listIssues(project.id, { state: "all" });
+    const processingCount = processingIssues.filter((it) => it.ai_status === "processing").length;
+    return html(buildProjectAiPage(project, dispatchOff, globalDispatchOff, processingCount).html);
   }
 
   const upstreamsPage = url.pathname.match(REPO_UPSTREAMS_RE);

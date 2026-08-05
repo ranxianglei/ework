@@ -275,7 +275,7 @@ export function aiStatusBadge(status: string | undefined): string {
   if (!s) return "";
   const map: Record<string, string> = {
     processing: '<span class="ai-status-list" style="color:var(--accent)">⚙️ 处理中</span>',
-    halted: '<span class="ai-status-list" style="color:#bf8700">⏸️ 已暂停</span>',
+    halted: '<span class="ai-status-list" style="color:#bf8700">⏹️ 已停止</span>',
     dispatch_off: '<span class="ai-status-list" style="color:#6f7781">🔕 不接单</span>',
     completed: '<span class="ai-status-list" style="color:var(--green)">✓ 已完成</span>',
     failed: '<span class="ai-status-list" style="color:#cf222e">✗ 失败</span>',
