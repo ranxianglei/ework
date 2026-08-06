@@ -140,7 +140,7 @@ async function bootEngine(name: string, store: Store, cfg: Config, port: number)
   );
   await store.claimAllOwnerless(daemonId);
   const engine = new Engine(cfg, store, trackerRegistry, {
-    daemonId,
+    daemonId, gateChecker: async () => ({ allowed: true, reason: "test" }),
     takeover: new TestTakeoverStrategy(workdirBase),
   });
   engine.startHeartbeat(cfg.work.heartbeatMs);

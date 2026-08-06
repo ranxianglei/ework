@@ -145,7 +145,7 @@ async function bootEngine(
   );
   await store.claimAllOwnerless(daemonId);
   const engine = new Engine(cfg, store, trackerRegistry, {
-    daemonId,
+    daemonId, gateChecker: async () => ({ allowed: true, reason: "test" }),
     takeover: strategy,
   });
   liveEngines.push(engine);

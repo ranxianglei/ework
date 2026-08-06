@@ -283,6 +283,7 @@ export interface EngineOptions {
   daemonId: number;
   takeover?: TakeoverStrategy;
   backend?: RuntimeBackend;
+  gateChecker?: (issue: Issue) => Promise<{ allowed: boolean; reason: string }>;
 }
 
 function createDefaultBackend(cfg: Config): RuntimeBackend {
@@ -299,6 +300,7 @@ export class Engine {
   private readonly daemonId: number;
   private readonly takeover: TakeoverStrategy;
   private readonly backend: RuntimeBackend;
+  private gateChecker: (issue: Issue) => Promise<{ allowed: boolean; reason: string }>;
   private heartbeatTimer?: ReturnType<typeof setInterval>;
   private maxConcurrent: number;
   private maxConcurrentExplicit: boolean;
@@ -350,6 +352,7 @@ export class Engine {
     this.daemonId = opts.daemonId;
     this.takeover = opts.takeover ?? new RecloneStrategy(cfg);
     this.backend = opts.backend ?? createDefaultBackend(cfg);
+    this.gateChecker = opts.gateChecker ?? ((issue: Issue) => this.webGateAllows(issue));
     this.maxConcurrent = cfg.work.maxConcurrent;
     this.maxConcurrentExplicit = cfg.work.maxConcurrentExplicit;
     this.startGlobalObserver();
@@ -1119,6 +1122,17 @@ export class Engine {
   // ─── Process Manager ───
 
   private async execProcess(k: string, session: OpSession, issue: Issue, msg: Message) {
+    const gate = await this.gateChecker(issue);
+    if (!gate.allowed) {
+      log.info(`engine: execProcess blocked by web gate (${gate.reason}) for ${k}`);
+      await this.store.updateMessageStatus(msg.id, "failed", `gate: ${gate.reason}`);
+      this.running.delete(k);
+      this.currentMessage.delete(k);
+      this.currentModel.delete(k);
+      void this.dequeueAfterGate(k, session, issue);
+      return;
+    }
+
     const gen = (this.generation.get(k) ?? 0) + 1;
     this.generation.set(k, gen);
 
@@ -1392,6 +1406,12 @@ export class Engine {
     void this.drainGlobalPending();
   }
 
+  private async dequeueAfterGate(k: string, session: OpSession, issue: Issue): Promise<void> {
+    const next = await this.store.getNextPendingMessage(session.id);
+    if (!next) return;
+    await this.dequeueOrIdle(k, session, issue, next);
+  }
+
   private async drainGlobalPending(): Promise<void> {
     const slotsAvailable = this.maxConcurrent - this.running.size;
     if (slotsAvailable <= 0) return;
@@ -1574,7 +1594,7 @@ export class Engine {
 
     for (const issue of ownedIssues) {
       try {
-        const gate = await this.webGateAllows(issue);
+    const gate = await this.gateChecker(issue);
         if (!gate.allowed) {
           log.info(`engine: observer — web gate blocked ${issue.trackerScopeKey}#${issue.trackerIssueId} (${gate.reason})`);
           continue;
