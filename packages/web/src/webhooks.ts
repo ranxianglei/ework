@@ -16,7 +16,7 @@
 //   the full retry trail rather than an opaque final status.
 
 import { createHmac, randomUUID } from "node:crypto";
-import { getDB, getConfigAll } from "./db";
+import { getDB } from "./db";
 import { log } from "./logger";
 import { loadConfig } from "./config";
 import {
@@ -28,7 +28,6 @@ import {
   resolveModel,
   listLabelsForIssue,
   getUserByLogin,
-  canWriteProject,
   type IssueRow,
   type ProjectRow,
   type CommentRow,
@@ -301,6 +300,7 @@ interface PayloadComment {
   created_at: string;
   updated_at: string;
   user: PayloadUser;
+  author_kind?: string;
 }
 
 interface IssueEventPayload {
@@ -636,25 +636,11 @@ export async function emitIssueEvent(
     const project = await getProjectById(projectId);
     if (!project) return;
     const issue = await getIssueById(issueId);
-    if (!issue) return;
+    if (!issue) { log.warn(`emitIssueEvent: issue ${issueId} not found — silent skip prevented`); return; }
 
-    if (action === "opened") {
-      const cfg = await getConfigAll();
-      const scopeKey = `${project.owner}/${project.name}`;
-      if (cfg["dispatchEnabled"] === "false") {
-        log.info(`webhook: global dispatch disabled — skipping opened for ${scopeKey}#${issue.number}`);
-        return;
-      }
-      if (cfg[`dispatchOff:${scopeKey}`] === "1") {
-        log.info(`webhook: project dispatch disabled — skipping opened for ${scopeKey}#${issue.number}`);
-        return;
-      }
-      if ((issue as IssueRow).ai_status === "dispatch_off") {
-        log.info(`webhook: issue dispatch disabled — skipping opened for ${scopeKey}#${issue.number}`);
-        return;
-      }
-    }
-
+    // Web is a dumb message bus — always fan out. Wake policy is enforced
+    // downstream (daemon handleEvent). Web only suppresses for subscription-
+    // level concerns (none currently).
     const commentCount = await countCommentsSafe(issueId);
     // Resolve model: project override > global default. Empty string = no
     // override (daemon omits --model, lets opencode pick). globalDefault
@@ -689,48 +675,16 @@ export async function emitCommentEvent(
     if (!issue) return;
     const comment = await getCommentByIdSafe(commentId);
     if (!comment) return;
-    const cfg = await getConfigAll();
-    const scopeKey = `${project.owner}/${project.name}`;
-    // Issue-level dispatch_off is a per-issue explicit close — block comments entirely (same as halted).
-    if ((issue as IssueRow).ai_status === "dispatch_off") {
-      log.info(`webhook: issue dispatch disabled — skipping comment_created (author=${comment.author}) for ${scopeKey}#${issue.number}`);
-      return;
-    }
+    // Web is a dumb message bus — always fan out. Wake policy is enforced
+    // downstream (daemon handleEvent checks author_kind, ai_status, env config).
     const authorUser = await getUserByLogin(comment.author);
-    const dispatchOff = cfg["dispatchEnabled"] === "false" || cfg[`dispatchOff:${scopeKey}`] === "1";
-    if (dispatchOff && authorUser && authorUser.kind !== "human") {
-      log.info(`webhook: dispatch disabled — non-human comment blocked (author=${comment.author} kind=${authorUser.kind}) for ${scopeKey}#${issue.number}`);
-      return;
-    }
-    if (dispatchOff) {
-      log.info(`webhook: dispatch disabled but human comment waking AI (author=${comment.author}) for ${scopeKey}#${issue.number}`);
-    }
-    const appCfg = await loadConfig();
-    const cfgList = (k: string, d: string) =>
-      (cfg[k] ?? d).split(",").map((s) => s.trim()).filter(Boolean);
-    const noWake = cfgList("noWakeLogins", appCfg.daemonBotLogin);
-    const okLogins = cfgList("wakeLogins", "");
-    const okKinds = cfgList("wakeKinds", "human");
-    const author = comment.author;
-    const denied =
-      noWake.includes(author) ? "deny-list" :
-      okLogins.includes(author) ? null :
-      (authorUser && !okKinds.includes(authorUser.kind)) ? `kind=${authorUser.kind}` :
-      null;
-    if (denied) {
-      log.info(`webhook: comment wake denied (author=${author} reason=${denied}) for ${scopeKey}#${issue.number}`);
-      return;
-    }
-    if (authorUser && !(await canWriteProject(projectId, { login: comment.author, is_admin: authorUser.is_admin }))) {
-      log.info(`webhook: comment wake denied (author=${comment.author} not project member) for ${scopeKey}#${issue.number}`);
-      return;
-    }
     const commentCount = await countCommentsSafe(issueId);
     const globalDefault = (await loadConfig()).defaultModel;
     const model = resolveModel(project.model, globalDefault);
     const labels = await toPayloadLabels(issueId);
     const payload = buildCommentPayload(issue, comment, project, commentCount, origin, model, labels);
     (payload as CommentEventPayload).event_id = randomUUID();
+    (payload as CommentEventPayload).comment.author_kind = authorUser?.kind ?? "human";
     const rawBody = JSON.stringify(payload);
     await fanOut(projectId, "issue_comment", rawBody);
   } catch (e) {

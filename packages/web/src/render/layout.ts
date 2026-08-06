@@ -18,6 +18,7 @@ export interface LayoutProps {
   labels?: { id: number; name: string; color: string }[];
   canEditLabels?: boolean;
   aiStatus?: string;
+  projectDispatchOff?: boolean;
   viewerLogin?: string;
   viewerIsAdmin?: boolean;
   customActions?: IssueAction[];
@@ -192,9 +193,11 @@ export function renderLayout(props: LayoutProps, inner: string, initialItems: st
       : `<button type="button" class="action-btn" data-action-href="${escapeAttr(repoIssuesHref)}/${props.issueNumber}/halt" data-action-confirm="确认停止 AI 处理？" title="停止 AI 处理">⏹ 停止</button>`
     : "";
   const dispatchBtnHtml = showActions
-    ? props.aiStatus === "dispatch_off"
-      ? `<button type="button" class="action-btn dispatch-btn" data-action-href="${escapeAttr(repoIssuesHref)}/${props.issueNumber}/dispatch-on" title="允许自动接单">🔔 接单</button>`
-      : `<button type="button" class="action-btn dispatch-btn" data-action-href="${escapeAttr(repoIssuesHref)}/${props.issueNumber}/dispatch-off" data-action-confirm="设为不自动接单？" title="设为不自动接单">🔕 不接单</button>`
+    ? props.projectDispatchOff
+      ? `<span class="action-btn dispatch-btn" style="opacity:.5;cursor:not-allowed" title="项目已关闭自动接单">🔕 项目不接单</span>`
+      : props.aiStatus === "dispatch_off"
+        ? `<button type="button" class="action-btn dispatch-btn" data-action-href="${escapeAttr(repoIssuesHref)}/${props.issueNumber}/dispatch-on" title="允许自动接单">🔔 接单</button>`
+        : `<button type="button" class="action-btn dispatch-btn" data-action-href="${escapeAttr(repoIssuesHref)}/${props.issueNumber}/dispatch-off" data-action-confirm="设为不自动接单？" title="设为不自动接单">🔕 不接单</button>`
     : "";
   return `<!doctype html>
 <html lang="zh">

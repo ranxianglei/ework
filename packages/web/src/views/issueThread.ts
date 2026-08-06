@@ -91,7 +91,8 @@ export async function buildIssueThread(
   owner: string,
   repo: string,
   number: number,
-  viewerLogin?: string
+  viewerLogin?: string,
+  projectDispatchOff?: boolean
 ): Promise<{ html: string }> {
   const project = await getProject(owner, repo);
   if (!project) throw new StoreError(404, `项目 ${owner}/${repo} 不存在`);
@@ -150,6 +151,7 @@ export async function buildIssueThread(
       labels: labels.map((l) => ({ id: l.id, name: l.name, color: l.color })),
       canEditLabels: cfg.writesEnabled !== false,
       aiStatus: issue.ai_status ?? "",
+      projectDispatchOff: projectDispatchOff ?? false,
       viewerLogin,
       viewerIsAdmin,
       customActions,

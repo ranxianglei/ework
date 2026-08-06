@@ -2189,7 +2189,9 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
       const project = await getProject(owner, repo);
       if (!project) return html(errorPage("404", "项目不存在"), 404);
       if (!(await canReadProject(project.id, ctx.user))) return html(errorPage("404", "项目不存在"), 404);
-      const { html: body } = await buildIssueThread(cfg, owner, repo, number, ctx.user?.login);
+      const dispatchCfg = await getConfigAll();
+      const projectDispatchOff = dispatchCfg[`dispatchOff:${owner}/${repo}`] === "1";
+      const { html: body } = await buildIssueThread(cfg, owner, repo, number, ctx.user?.login, projectDispatchOff);
       return html(body);
     } catch (e) {
       const status = e instanceof StoreError ? e.status : 500;
