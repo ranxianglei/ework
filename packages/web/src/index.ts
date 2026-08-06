@@ -2260,8 +2260,8 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     const dispatchCfg = await getConfigAll();
     const dispatchOff = dispatchCfg[`dispatchOff:${owner}/${repo}`] === "1";
     const globalDispatchOff = dispatchCfg["dispatchEnabled"] === "false";
-    const processingIssues = await listIssues(project.id, { state: "all" });
-    const processingCount = processingIssues.filter((it) => it.ai_status === "processing").length;
+    const running = await getRunningSessionsForProject(`${owner}/${repo}`);
+    const processingCount = new Set(running.map((r) => r.issueNumber)).size;
     return html(buildProjectAiPage(project, dispatchOff, globalDispatchOff, processingCount).html);
   }
 
