@@ -16,7 +16,7 @@
 //   the full retry trail rather than an opaque final status.
 
 import { createHmac, randomUUID } from "node:crypto";
-import { getDB } from "./db";
+import { getDB, getConfigAll } from "./db";
 import { log } from "./logger";
 import { loadConfig } from "./config";
 import {
@@ -312,6 +312,7 @@ interface IssueEventPayload {
   commit_id?: string;
   commit_url?: string;
   url?: string;
+  dispatch_off?: boolean;
 }
 
 interface CommentEventPayload {
@@ -638,9 +639,23 @@ export async function emitIssueEvent(
     const issue = await getIssueById(issueId);
     if (!issue) { log.warn(`emitIssueEvent: issue ${issueId} not found — silent skip prevented`); return; }
 
-    // Web is a dumb message bus — always fan out. Wake policy is enforced
-    // downstream (daemon handleEvent). Web only suppresses for subscription-
-    // level concerns (none currently).
+    // Web is a dumb message bus for comments — always fan out.
+    // BUT for issue_opened, dispatch state is a subscription-level switch:
+    // if dispatch is off (global/project/issue), don't emit at all.
+    // This is the "webhook switch" — downstream never sees the event.
+    // We still include dispatch_off in payload for defense-in-depth.
+    const cfg = await getConfigAll();
+    const scopeKey = `${project.owner}/${project.name}`;
+    const globalOff = cfg["dispatchEnabled"] === "false";
+    const projectOff = cfg[`dispatchOff:${scopeKey}`] === "1";
+    const issueOff = issue.ai_status === "dispatch_off" || issue.ai_status === "halted";
+    const dispatchOff = globalOff || projectOff || issueOff;
+
+    if (action === "opened" && dispatchOff) {
+      log.info(`webhook: issue_opened suppressed (dispatch off: global=${globalOff} project=${projectOff} issue=${issueOff}) for ${scopeKey}#${issue.number}`);
+      return;
+    }
+
     const commentCount = await countCommentsSafe(issueId);
     // Resolve model: project override > global default. Empty string = no
     // override (daemon omits --model, lets opencode pick). globalDefault
@@ -650,6 +665,7 @@ export async function emitIssueEvent(
     const labels = await toPayloadLabels(issueId);
     const payload = buildIssuePayload(issue, project, commentCount, action, origin, model, labels);
     (payload as IssueEventPayload).event_id = randomUUID();
+    (payload as IssueEventPayload).dispatch_off = dispatchOff;
     const rawBody = JSON.stringify(payload);
     await fanOut(projectId, "issues", rawBody);
   } catch (e) {
