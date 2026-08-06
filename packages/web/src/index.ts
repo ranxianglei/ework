@@ -6,7 +6,7 @@ import { homedir } from "os";
 import { loadConfig, DB_OVERRIDABLE, parseOverride, resolveTtsBackend } from "./config";
 import type { Config } from "./config";
 import { setConfig, deleteConfig, getConfigAll, initDB, getDB } from "./db";
-import { getActiveDaemons, listAllDaemons, getSessionDaemonMap, resolveDaemonEndpoint } from "./coordination";
+import { getActiveDaemons, listAllDaemons, getSessionDaemonMap, resolveDaemonEndpoint, getRunningSessionsForProject } from "./coordination";
 import { testMysqlConnection, migrateSqliteToMysql, writeMysqlEnv, migrateMysqlToSqlite, writeSqliteEnv, migrateDaemonSqliteToMysql, generateMysqlDDL } from "./db-admin";
 import type { MysqlTargetOpts } from "./db-admin";
 import { checkAuth, makeAuthCookieHeader, clearAuthCookieHeader, loginHTML, sanitizeNext, ensureBootstrapAdmin, ensureBootstrapSystem, isReservedSystemLogin } from "./auth";
@@ -1994,12 +1994,17 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
         return Response.redirect(`${back}?err=${encodeURIComponent("无权限")}`, 303);
       }
       const issues = await listIssues(project.id, { state: "all" });
-      const processing = issues.filter((it) => it.ai_status === "processing");
-      for (const it of processing) {
-        await updateIssueAiStatus(it.id, "halted");
-        void emitStatusChanged(project.id, it.number, "processing", "halted", ctx.user!.login, url.origin);
+      const running = await getRunningSessionsForProject(`${owner}/${repo}`);
+      const issueIds = new Set<number>();
+      for (const r of running) {
+        const it = issues.find((i) => String(i.number) === r.issueNumber);
+        if (it) issueIds.add(it.id);
       }
-      return Response.redirect(`${back}?ok=1&ok_msg=${encodeURIComponent(`已停止 ${processing.length} 个运行中AI会话`)}`, 303);
+      for (const id of issueIds) {
+        await updateIssueAiStatus(id, "halted");
+        void emitStatusChanged(project.id, id, "processing", "halted", ctx.user!.login, url.origin);
+      }
+      return Response.redirect(`${back}?ok=1&ok_msg=${encodeURIComponent(`已停止 ${issueIds.size} 个运行中AI会话`)}`, 303);
     }
 
     const settingsDispatchMatch = url.pathname.match(SETTINGS_DISPATCH_RE);

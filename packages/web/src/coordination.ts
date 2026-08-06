@@ -118,3 +118,39 @@ export async function resolveDaemonEndpoint(daemonId: number): Promise<string | 
     return null;
   }
 }
+
+export interface RunningSessionInfo {
+  issueNumber: string;
+  sessionId: string;
+  daemonId: number;
+}
+
+/**
+ * Query daemon DB for sessions with state='running' belonging to a specific project scope.
+ * Uses REAL daemon session state instead of the display-only ai_status field.
+ */
+export async function getRunningSessionsForProject(scopeKey: string): Promise<RunningSessionInfo[]> {
+  try {
+    const rows = await getDB().all<{
+      tracker_issue_id: string;
+      opencode_session_id: string;
+      daemon_id: number;
+    }>(
+      `SELECT i.tracker_issue_id, s.opencode_session_id, i.owner_daemon_id AS daemon_id
+       FROM {{d_op_sessions}} s
+       JOIN {{d_issues}} i ON i.uid = s.issue_id
+       WHERE s.state = 'running'
+         AND i.tracker_scope_key = ?
+         AND s.opencode_session_id IS NOT NULL`,
+      [scopeKey],
+    );
+    return rows.map((r) => ({
+      issueNumber: r.tracker_issue_id,
+      sessionId: r.opencode_session_id,
+      daemonId: r.daemon_id,
+    }));
+  } catch (e) {
+    log.info(`coordination: running-sessions query failed (${e instanceof Error ? e.message : String(e)})`);
+    return [];
+  }
+}

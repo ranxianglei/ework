@@ -756,7 +756,7 @@ export async function emitStatusChanged(
     const project = await getProjectById(projectId);
     if (!project) return;
     const issue = await getIssueById(issueId);
-    if (!issue) return;
+    if (!issue) { log.warn(`emitStatusChanged: issue ${issueId} not found (project=${projectId}) — silent skip prevented`); return; }
     const commentCount = await countCommentsSafe(issueId);
     const repo = buildRepository(project, origin);
     const sender = buildUser(actor, origin);
