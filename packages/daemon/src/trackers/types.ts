@@ -18,6 +18,7 @@ export type TrackerEventType = "issue_opened" | "comment_created" | "issue_close
 export interface TrackerEvent {
   type: TrackerEventType;
   ref: TrackerRef;
+  dispatch_off?: boolean;
   issue: {
     title: string;
     body: string;

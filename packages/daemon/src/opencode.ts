@@ -667,6 +667,11 @@ export class Engine {
       return;
     }
 
+    if (event.dispatch_off && event.type === "issue_opened") {
+      log.info(`engine: dispatch_off (global/project) — skipping issue_opened for ${ref.trackerType}:${scopeKey}#${ref.issueId}`);
+      return;
+    }
+
     if (event.type === "comment_created" && event.comment?.author) {
       const author = event.comment.author;
       const authorKind = event.comment.author_kind ?? "human";

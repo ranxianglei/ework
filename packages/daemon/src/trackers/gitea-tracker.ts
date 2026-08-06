@@ -141,11 +141,13 @@ export class GiteaTracker implements IssueTracker {
 
     const issueUser = issue.user as Record<string, string>;
     const aiStatus = typeof issue.ai_status === "string" ? issue.ai_status : "";
+    const dispatchOff = payload.dispatch_off === true;
 
     if (action === "opened" || action === "reopened") {
       return {
         type: "issue_opened",
         ref,
+        dispatch_off: dispatchOff,
         issue: {
           title: issue.title as string,
           body: (issue.body as string) ?? "",
