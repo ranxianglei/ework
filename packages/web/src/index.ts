@@ -1339,6 +1339,22 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     }
   }
 
+  if (url.pathname === "/api/v1/dispatch-state" && req.method === "GET") {
+    const owner = url.searchParams.get("owner") ?? "";
+    const repo = url.searchParams.get("repo") ?? "";
+    const number = url.searchParams.get("number") ?? "";
+    if (!owner || !repo || !number) return json({ error: "owner, repo, number required" }, 400);
+    const project = await getProject(owner, repo);
+    if (!project) return json({ dispatchOff: false, aiStatus: "" });
+    const issue = await getIssueWithMeta(project.id, Number(number));
+    const cfgKv = await getConfigAll();
+    const globalOff = cfgKv["dispatchEnabled"] === "false";
+    const projectOff = cfgKv[`dispatchOff:${owner}/${repo}`] === "1";
+    const aiStatus = issue?.ai_status ?? "";
+    const issueOff = aiStatus === "dispatch_off" || aiStatus === "halted";
+    return json({ dispatchOff: globalOff || projectOff || issueOff, aiStatus });
+  }
+
   if (url.pathname === "/api/router/strategy") {
     if (!ctx.user || ctx.user.is_admin !== 1) return json({ error: "admin required" }, 403);
     const routerUrl = cfg.daemonWebhookUrl.replace(/\/$/, "");
