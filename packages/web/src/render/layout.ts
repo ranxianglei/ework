@@ -61,6 +61,7 @@ header.topbar .num{opacity:.7}
 .card{background:var(--bg-elev);border:1px solid var(--border);border-radius:8px;overflow:hidden;min-width:0}
 .card-h{display:flex;align-items:center;gap:.5rem;padding:.4rem .7rem;background:var(--bg-muted);font-size:13px;flex-wrap:wrap}
 .card-h .who{font-weight:600;color:var(--text)}
+.card-h .who-login{font-weight:400;color:var(--text-muted);font-size:.85em;margin-left:.25rem}
 .tag{font-size:11px;font-weight:600;padding:.05rem .4rem;border-radius:4px;line-height:1.5}
 .tag-human{background:color-mix(in srgb,var(--human) 18%,transparent);color:var(--human)}
 .tag-bot{background:color-mix(in srgb,var(--bot) 18%,transparent);color:var(--bot)}

@@ -19,6 +19,7 @@ export interface CommentView {
   avatar: string;
   created_at: string;
   body_html: string;
+  display_name?: string | null;
   reactions?: { e: string; n: number }[];
 }
 
@@ -59,7 +60,8 @@ export function renderCommentCard(c: CommentView, cfg?: { translateUrl?: string;
     `<div class="item item-${esc(tag)}" id="comment-${c.id}" data-id="${c.id}">` +
     `<div class="card"><div class="card-h">` +
     `<span class="tag tag-${esc(tag)}">${label} ${esc(tag)}</span>` +
-    `<span class="who">${esc(c.login)}</span>` +
+    `<span class="who">${esc(c.display_name || c.login)}</span>` +
+    (c.display_name ? `<span class="who-login">${esc(c.login)}</span>` : "") +
     `<span class="when" data-ts="${esc(c.created_at)}" title="${esc(c.created_at)}">${relTime(c.created_at)}</span>` +
     rx +
     `<span class="card-actions">` + actionBarHTML({ cid: String(c.id), copy: true, link: true, translate: true, tts: true, translateEnabled, ttsEnabled }) + `</span>` +

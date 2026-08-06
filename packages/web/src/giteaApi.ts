@@ -126,12 +126,13 @@ export async function handleGiteaApi(
     if (!(await canSudo(caller))) return giteaError(403, "sudo requires permission");
     if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/.test(sudoLogin)) return giteaError(400, "invalid sudo login");
     const sudoKindRaw = req.headers.get("Sudo-Kind")?.trim();
+    const sudoDisplayName = req.headers.get("Sudo-Display-Name")?.trim() || null;
     const existing = await getUserByLogin(sudoLogin);
     if (existing) {
       user = existing;
     } else {
       const kind = sudoKindRaw === "bot" || sudoKindRaw === "system" ? sudoKindRaw : "human";
-      user = await ensureUser(sudoLogin, kind);
+      user = await ensureUser(sudoLogin, kind, sudoDisplayName);
     }
     if (!user.is_active) return giteaError(403, "sudo target inactive");
   }

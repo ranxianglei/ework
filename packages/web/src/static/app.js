@@ -116,7 +116,8 @@
       `<div class="item item-${esc(tag)}${isNew}" id="comment-${c.id}" data-id="${c.id}">` +
       `<div class="card"><div class="card-h">` +
       `<span class="tag tag-${esc(tag)}">${label} ${esc(tag)}</span>` +
-      `<span class="who">${esc(c.login)}</span>` +
+      `<span class="who">${esc(c.display_name || c.login)}</span>` +
+      (c.display_name ? `<span class="who-login">${esc(c.login)}</span>` : "") +
       `<span class="when" data-ts="${esc(c.created_at)}" title="${esc(c.created_at)}">${relTime(c.created_at)}</span>` +
       rx +
       `<span class="card-actions">` +

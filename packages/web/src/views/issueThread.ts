@@ -44,6 +44,7 @@ function toView(c: CommentRow): CommentView {
     avatar: "",
     created_at: c.created_at,
     body_html: renderMarkdown(c.body),
+    display_name: c.author_display_name ?? null,
   };
 }
 

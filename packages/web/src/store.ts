@@ -90,6 +90,7 @@ export interface CommentRow {
   created_at: string;
   updated_at: string;
   author_kind?: UserKind;
+  author_display_name?: string | null;
 }
 
 export interface LabelRow {
@@ -134,19 +135,24 @@ function now(): string {
   return new Date().toISOString();
 }
 
-export async function ensureUser(login: string, kind: UserKind = "human"): Promise<UserRow> {
+export async function ensureUser(login: string, kind: UserKind = "human", displayName?: string | null): Promise<UserRow> {
   const db = getDB();
   const existing = await db.get<UserRow>("SELECT * FROM {{users}} WHERE login = ?", [login]);
-  if (existing) return existing;
+  if (existing) {
+    if (displayName && displayName.trim() && existing.display_name !== displayName) {
+      await db.run("UPDATE {{users}} SET display_name = ?, updated_at = ? WHERE login = ?", [displayName, now(), login]);
+    }
+    return existing;
+  }
   const ts = now();
   await db.run(
-    "INSERT INTO {{users}} (login, kind, created_at, updated_at) VALUES (?, ?, ?, ?)",
-    [login, kind, ts, ts]
+    "INSERT INTO {{users}} (login, kind, display_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+    [login, kind, displayName ?? null, ts, ts]
   );
   return {
     login,
     kind,
-    display_name: null,
+    display_name: displayName ?? null,
     password_hash: null,
     email: null,
     is_admin: 0,
@@ -570,7 +576,7 @@ export async function listCommentsPage(issueId: number, page: number, pageSize: 
   const clamped = Math.min(Math.max(1, page), totalPages);
   const offset = (clamped - 1) * pageSize;
   const rows = await getDB().all<CommentRow>(
-    `SELECT c.*, u.kind AS author_kind
+    `SELECT c.*, u.kind AS author_kind, u.display_name AS author_display_name
      FROM {{comments}} c
      LEFT JOIN {{users}} u ON u.login = c.author
      WHERE c.issue_id = ?
@@ -583,7 +589,7 @@ export async function listCommentsPage(issueId: number, page: number, pageSize: 
 
 export async function listCommentsSince(issueId: number, sinceISO: string): Promise<CommentRow[]> {
   return await getDB().all<CommentRow>(
-    `SELECT c.*, u.kind AS author_kind
+    `SELECT c.*, u.kind AS author_kind, u.display_name AS author_display_name
      FROM {{comments}} c
      LEFT JOIN {{users}} u ON u.login = c.author
      WHERE c.issue_id = ? AND c.created_at > ?
@@ -594,7 +600,7 @@ export async function listCommentsSince(issueId: number, sinceISO: string): Prom
 
 export async function listCommentsForIssue(issueId: number): Promise<CommentRow[]> {
   return await getDB().all<CommentRow>(
-    `SELECT c.*, u.kind AS author_kind
+    `SELECT c.*, u.kind AS author_kind, u.display_name AS author_display_name
      FROM {{comments}} c
      LEFT JOIN {{users}} u ON u.login = c.author
      WHERE c.issue_id = ?
@@ -628,7 +634,7 @@ export async function postComment(
     const row = await getDB().get<{ project_id: number }>("SELECT project_id FROM {{issues}} WHERE id = ?", [issueId]);
     await getDB().run("UPDATE {{projects}} SET updated_at = ? WHERE id = ?", [updatedAt, row!.project_id]);
     return (await getDB().get<CommentRow>(
-      `SELECT c.*, u.kind AS author_kind
+      `SELECT c.*, u.kind AS author_kind, u.display_name AS author_display_name
        FROM {{comments}} c LEFT JOIN {{users}} u ON u.login = c.author
        WHERE c.id = ?`,
       [info.insertId]
@@ -638,7 +644,7 @@ export async function postComment(
 
 export async function getComment(commentId: number): Promise<CommentRow | null> {
   const row = await getDB().get<CommentRow>(
-    `SELECT c.*, u.kind AS author_kind
+    `SELECT c.*, u.kind AS author_kind, u.display_name AS author_display_name
      FROM {{comments}} c LEFT JOIN {{users}} u ON u.login = c.author
      WHERE c.id = ?`,
     [commentId]
