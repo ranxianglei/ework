@@ -388,6 +388,25 @@ export class Engine {
     } catch { /* non-critical */ }
   }
 
+  private async webGateAllows(issue: Issue): Promise<{ allowed: boolean; reason: string }> {
+    const parts = issue.trackerScopeKey.split("/");
+    const owner = parts[0] ?? "";
+    const repo = parts.slice(1).join("/");
+    if (!owner || !repo) return { allowed: true, reason: "unparseable scope" };
+    const url = `${this.cfg.gitea.url}/api/v1/dispatch-state?owner=${encodeURIComponent(owner)}&repo=${encodeURIComponent(repo)}&number=${encodeURIComponent(issue.trackerIssueId)}`;
+    try {
+      const resp = await fetch(url, { signal: AbortSignal.timeout(5000), headers: { Authorization: `token ${this.cfg.gitea.token}` } });
+      if (!resp.ok) return { allowed: false, reason: `web returned ${resp.status}` };
+      const data = await resp.json() as { dispatchOff?: boolean; aiStatus?: string };
+      if (data.dispatchOff) return { allowed: false, reason: "dispatch off" };
+      if (data.aiStatus === "halted" || data.aiStatus === "dispatch_off") return { allowed: false, reason: `ai_status=${data.aiStatus}` };
+      return { allowed: true, reason: "ok" };
+    } catch (err) {
+      log.warn(`engine: web gate query failed for ${issue.trackerScopeKey}#${issue.trackerIssueId}: ${(err as Error).message} — fail-closed (skipping)`);
+      return { allowed: false, reason: `web unreachable: ${(err as Error).message}` };
+    }
+  }
+
   setMaxConcurrent(n: number): void {
     if (!Number.isFinite(n) || n < 1) return;
     this.maxConcurrent = Math.floor(n);
@@ -1555,6 +1574,11 @@ export class Engine {
 
     for (const issue of ownedIssues) {
       try {
+        const gate = await this.webGateAllows(issue);
+        if (!gate.allowed) {
+          log.info(`engine: observer — web gate blocked ${issue.trackerScopeKey}#${issue.trackerIssueId} (${gate.reason})`);
+          continue;
+        }
         await this.observeIssue(issue);
       } catch (err) {
         log.error(`engine: observer error for ${issue.trackerScopeKey}#${issue.trackerIssueId}:`, (err as Error).message);
@@ -1786,6 +1810,13 @@ export class Engine {
       if (!session) continue;
       const issue = await this.store.getIssue(session.issueId);
       if (!issue || issue.state === "closed") continue;
+
+      const gate = await this.webGateAllows(issue);
+      if (!gate.allowed) {
+        log.info(`engine: recover — web gate blocked ${issue.trackerScopeKey}#${issue.trackerIssueId} (${gate.reason}), marking pending messages as skipped`);
+        for (const m of msgs) await this.store.updateMessageStatus(m.id, "failed", `web gate: ${gate.reason}`);
+        continue;
+      }
 
       const k = this.sessionKey(session, issue);
       if (this.running.has(k)) continue;
