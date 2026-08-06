@@ -28,6 +28,7 @@ import {
   resolveModel,
   listLabelsForIssue,
   getUserByLogin,
+  type UserRow,
   type IssueRow,
   type ProjectRow,
   type CommentRow,
@@ -229,6 +230,9 @@ interface PayloadUser {
   html_url: string;
   is_admin: boolean;
   language: string;
+  kind?: string;
+  display_name?: string | null;
+  is_active?: boolean;
 }
 
 interface PayloadLabel {
@@ -345,6 +349,18 @@ function buildUser(login: string, origin: string): PayloadUser {
     html_url: origin,
     is_admin: false,
     language: "",
+  };
+}
+
+function buildUserFromRow(user: UserRow, origin: string): PayloadUser {
+  return {
+    ...buildUser(user.login, origin),
+    full_name: user.display_name ?? user.login,
+    email: user.email ?? `${user.login}@${new URL(origin).host ?? "localhost"}.noreply.ework`,
+    is_admin: user.is_admin === 1,
+    kind: user.kind,
+    display_name: user.display_name,
+    is_active: user.is_active === 1,
   };
 }
 
@@ -656,6 +672,11 @@ export async function emitIssueEvent(
     const payload = buildIssuePayload(issue, project, commentCount, action, origin, model, labels);
     (payload as IssueEventPayload).event_id = randomUUID();
     (payload as IssueEventPayload).dispatch_off = dispatchOff;
+    const authorUser = await getUserByLogin(issue.author);
+    if (authorUser) {
+      payload.sender = buildUserFromRow(authorUser, origin);
+      payload.issue.user = buildUserFromRow(authorUser, origin);
+    }
     const rawBody = JSON.stringify(payload);
     await fanOut(projectId, "issues", rawBody);
   } catch (e) {
@@ -690,7 +711,13 @@ export async function emitCommentEvent(
     const labels = await toPayloadLabels(issueId);
     const payload = buildCommentPayload(issue, comment, project, commentCount, origin, model, labels);
     (payload as CommentEventPayload).event_id = randomUUID();
-    (payload as CommentEventPayload).comment.author_kind = authorUser?.kind ?? "human";
+    if (authorUser) {
+      payload.sender = buildUserFromRow(authorUser, origin);
+      payload.comment.user = buildUserFromRow(authorUser, origin);
+      (payload as CommentEventPayload).comment.author_kind = authorUser.kind;
+    } else {
+      (payload as CommentEventPayload).comment.author_kind = "human";
+    }
     const rawBody = JSON.stringify(payload);
     await fanOut(projectId, "issue_comment", rawBody);
   } catch (e) {
@@ -718,8 +745,9 @@ export async function emitStatusChanged(
     const issue = await getIssueById(issueId);
     if (!issue) { log.warn(`emitStatusChanged: issue ${issueId} not found (project=${projectId}) — silent skip prevented`); return; }
     const commentCount = await countCommentsSafe(issueId);
+    const actorUser = await getUserByLogin(actor);
+    const sender = actorUser ? buildUserFromRow(actorUser, origin) : buildUser(actor, origin);
     const repo = buildRepository(project, origin);
-    const sender = buildUser(actor, origin);
     const issuePayload = buildIssue(issue, project, commentCount, origin);
     const payload: StatusChangedPayload = {
       event_id: randomUUID(),
