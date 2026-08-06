@@ -1813,7 +1813,7 @@ export class Engine {
     // Reset running messages to pending
     for (const msg of stuck) {
       if (msg.status === "running") {
-        await this.store.updateMessageStatus(msg.id, "pending");
+        await this.store.updateMessageStatus(msg.id, "interrupted");
       }
     }
 
@@ -1831,15 +1831,25 @@ export class Engine {
       const issue = await this.store.getIssue(session.issueId);
       if (!issue || issue.state === "closed") continue;
 
-      const gate = await this.webGateAllows(issue);
+      const gate = await this.gateChecker(issue);
       if (!gate.allowed) {
-        log.info(`engine: recover — web gate blocked ${issue.trackerScopeKey}#${issue.trackerIssueId} (${gate.reason}), marking pending messages as skipped`);
-        for (const m of msgs) await this.store.updateMessageStatus(m.id, "failed", `web gate: ${gate.reason}`);
+        log.info(`engine: recover — web gate blocked ${issue.trackerScopeKey}#${issue.trackerIssueId} (${gate.reason}), discarding queued (pending) messages`);
+        for (const m of msgs) {
+          if (m.status === "pending") {
+            await this.store.updateMessageStatus(m.id, "failed", `web gate: ${gate.reason}`);
+          }
+        }
         continue;
       }
 
       const k = this.sessionKey(session, issue);
       if (this.running.has(k)) continue;
+
+      for (const m of msgs) {
+        if (m.status === "running") {
+          await this.store.updateMessageStatus(m.id, "pending");
+        }
+      }
 
       const first = msgs.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())[0]!;
 

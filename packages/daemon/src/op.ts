@@ -520,7 +520,7 @@ export class Store {
       `SELECT m.* FROM {{messages}} m
        INNER JOIN {{op_sessions}} s ON s.uid = m.session_id
        INNER JOIN {{issues}} i ON i.uid = s.issue_id
-       WHERE i.owner_daemon_id = ? AND m.status IN ('pending', 'running')
+       WHERE i.owner_daemon_id = ? AND m.status IN ('pending', 'running', 'interrupted')
        ORDER BY m.created_at ASC`,
       [daemonId]
     );
