@@ -1311,6 +1311,22 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     return json({ ok: true });
   }
 
+  if (url.pathname === "/api/sudo-policy" && req.method === "GET") {
+    if (!ctx.user || ctx.user.is_admin !== 1) return json({ error: "admin required" }, 403);
+    const cfg = await getConfigAll();
+    const list = (k: string, d: string) => (cfg[k] ?? d).split(",").map((s) => s.trim()).filter(Boolean);
+    return json({ sudoLogins: list("sudoLogins", "") });
+  }
+
+  if (url.pathname === "/api/sudo-policy" && req.method === "POST") {
+    if (!ctx.user || ctx.user.is_admin !== 1) return json({ error: "admin required" }, 403);
+    const payload = await req.json().catch(() => ({} as Record<string, unknown>));
+    const join = (v: unknown) => Array.isArray(v) ? v.filter((s) => typeof s === "string").join(",") : (typeof v === "string" ? v : "");
+    const sl = join((payload as { sudoLogins?: unknown }).sudoLogins);
+    if (sl) await setConfig("sudoLogins", sl); else await deleteConfig("sudoLogins");
+    return json({ ok: true });
+  }
+
   if (url.pathname === "/api/router/daemons" && req.method === "GET") {
     if (!ctx.user || ctx.user.is_admin !== 1) return json({ error: "admin required" }, 403);
     try {

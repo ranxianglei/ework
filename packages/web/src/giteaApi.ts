@@ -12,7 +12,7 @@
 // bg audit) plus a few cheap stubs (/version, /user, /repos/:o/:r) that
 // Gitea clients commonly hit during connection bootstrap.
 
-import { getDB } from "./db";
+import { getDB, getConfigAll } from "./db";
 import {
   StoreError,
   getProject,
@@ -32,6 +32,8 @@ import {
   listReactionsFor,
   canWriteProject,
   canReadProject,
+  ensureUser,
+  getUserByLogin,
   type UserRow,
 } from "./store";
 import {
@@ -95,6 +97,12 @@ function asContent(v: unknown): string | undefined {
   return trimmed;
 }
 
+async function canSudo(u: UserRow): Promise<boolean> {
+  const cfg = await getConfigAll();
+  const allow = (cfg["sudoLogins"] ?? "").split(",").map((s: string) => s.trim()).filter(Boolean);
+  return allow.includes(u.login);
+}
+
 export async function handleGiteaApi(
   req: Request,
   url: URL,
@@ -103,8 +111,30 @@ export async function handleGiteaApi(
   const path = url.pathname;
   if (!path.startsWith("/api/v1/")) return null;
   const origin = new URL(req.url).origin;
-  const user = ctx.user;
-  if (!user) return giteaError(401, "requires authentication");
+  const caller = ctx.user;
+  if (!caller) return giteaError(401, "requires authentication");
+
+  // ─── Sudo: Gitea convention for impersonation ───
+  // Allows bridge/integration processes to post on behalf of real users.
+  // Permission gated by config KV `sudoLogins` whitelist (not is_admin — bridges
+  // should not be admins). Sudo-Kind header controls kind for first-creation
+  // only; existing users' kind is never changed via sudo.
+  const sudoLoginRaw = req.headers.get("Sudo") ?? url.searchParams.get("sudo");
+  const sudoLogin = sudoLoginRaw?.trim() || null;
+  let user: UserRow = caller;
+  if (sudoLogin && sudoLogin !== caller.login) {
+    if (!(await canSudo(caller))) return giteaError(403, "sudo requires permission");
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/.test(sudoLogin)) return giteaError(400, "invalid sudo login");
+    const sudoKindRaw = req.headers.get("Sudo-Kind")?.trim();
+    const existing = await getUserByLogin(sudoLogin);
+    if (existing) {
+      user = existing;
+    } else {
+      const kind = sudoKindRaw === "bot" || sudoKindRaw === "system" ? sudoKindRaw : "human";
+      user = await ensureUser(sudoLogin, kind);
+    }
+    if (!user.is_active) return giteaError(403, "sudo target inactive");
+  }
 
   if (ROUTES.version.test(path) && req.method === "GET") {
     return { status: 200, body: { version: "1.22.0" } };
