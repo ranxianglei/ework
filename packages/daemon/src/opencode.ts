@@ -669,8 +669,19 @@ export class Engine {
 
     if (event.type === "comment_created" && event.comment?.author) {
       const author = event.comment.author;
-      if (this.cfg.daemon.nonWakingAuthors.includes(author)) {
+      const authorKind = event.comment.author_kind ?? "human";
+      const d = this.cfg.daemon;
+      const noWake = [...d.nonWakingAuthors, ...d.noWakeLogins];
+      if (noWake.includes(author)) {
         log.info(`engine: non-waking author ${author} — skipping comment_created for ${ref.trackerType}:${scopeKey}#${ref.issueId}`);
+        return;
+      }
+      if (d.wakeLogins.length > 0 && !d.wakeLogins.includes(author)) {
+        log.info(`engine: author ${author} not in wakeLogins — skipping comment_created for ${ref.trackerType}:${scopeKey}#${ref.issueId}`);
+        return;
+      }
+      if (!d.wakeKinds.includes(authorKind)) {
+        log.info(`engine: author kind ${authorKind} not in wakeKinds [${d.wakeKinds.join(",")}] — skipping comment_created for ${ref.trackerType}:${scopeKey}#${ref.issueId}`);
         return;
       }
     }

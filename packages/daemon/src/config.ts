@@ -26,6 +26,9 @@ export const configSchema = z.object({
     host: z.string().default("0.0.0.0"),
     endpoint: z.string().default(""),
     nonWakingAuthors: z.array(z.string()).default([]),
+    wakeKinds: z.array(z.string()).default(["human"]),
+    wakeLogins: z.array(z.string()).default([]),
+    noWakeLogins: z.array(z.string()).default([]),
   }),
   opencode: z.object({
     binary: z.string().default("opencode"),
@@ -144,6 +147,9 @@ export function loadConfig(): Config {
         host: process.env.DAEMON_HOST ?? TEST_DEFAULTS.daemon.host,
         endpoint: process.env.DAEMON_ENDPOINT ?? "",
         nonWakingAuthors: (process.env.WORK_NON_WAKING_AUTHORS ?? "").split(",").map((s) => s.trim()).filter(Boolean),
+        wakeKinds: (process.env.WORK_WAKE_KINDS ?? "human").split(",").map((s) => s.trim()).filter(Boolean),
+        wakeLogins: (process.env.WORK_WAKE_LOGINS ?? "").split(",").map((s) => s.trim()).filter(Boolean),
+        noWakeLogins: (process.env.WORK_NO_WAKE_LOGINS ?? "").split(",").map((s) => s.trim()).filter(Boolean),
       },
       opencode: {
         binary: process.env.OPENCODE_BINARY ?? TEST_DEFAULTS.opencode.binary,

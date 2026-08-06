@@ -29,6 +29,7 @@ export interface TrackerEvent {
     id: string;
     body: string;
     author: string;
+    author_kind?: string;
   };
   // Resolved "provider/model" string from ework-web (project override or
   // global default). Empty/undefined = no override; engine omits --model
