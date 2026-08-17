@@ -134,6 +134,17 @@ function migrateIssuesTable(db: Database): void {
   if (!have.has("model")) {
     db.exec(applyPrefix("ALTER TABLE {{issues}} ADD COLUMN model TEXT NOT NULL DEFAULT ''"));
   }
+  if (!have.has("upstream_issue_number")) {
+    db.exec(applyPrefix("ALTER TABLE {{issues}} ADD COLUMN upstream_issue_number INTEGER"));
+  }
+}
+
+function migrateCommentsTable(db: Database): void {
+  const have = tableColumns(db, "comments");
+  if (have.size === 0) return;
+  if (!have.has("upstream_comment_id")) {
+    db.exec(applyPrefix("ALTER TABLE {{comments}} ADD COLUMN upstream_comment_id INTEGER"));
+  }
 }
 
 function migrateLabelsTable(db: Database): void {
@@ -242,6 +253,7 @@ class SqliteDriver implements AsyncDatabase {
   migratePatTable(db);
   migrateProjectsTable(db);
   migrateIssuesTable(db);
+  migrateCommentsTable(db);
   migrateLabelsTable(db);
   migrateAddSurrogateId(db);
     db.exec(applyPrefix(readFileSync(join(import.meta.dir, "schema.sql"), "utf8")));
@@ -360,25 +372,41 @@ async function migrateMysqlProjectsVisibility(pool: Pool): Promise<void> {
   }
 }
 
-async function migrateMysqlIssuesAiStatus(pool: Pool): Promise<void> {
-  const [cols] = await pool.query(
-    applyPrefix("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '{{issues}}' AND COLUMN_NAME = 'ai_status'")
-  );
-  if (Array.isArray(cols) && cols.length > 0) return;
+async function migrateMysqlColumn(pool: Pool, table: string, column: string, ddl: string): Promise<void> {
   try {
-    await pool.query(applyPrefix("ALTER TABLE {{issues}} ADD COLUMN ai_status VARCHAR(32) NOT NULL DEFAULT ''"));
-  } catch (e) {
-    console.warn("[db] MySQL issues ai_status column add failed:", (e as Error).message);
-  }
-  try {
-    const [mcols] = await pool.query(
-      applyPrefix("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '{{issues}}' AND COLUMN_NAME = 'model'")
+    const [cols] = await pool.query(
+      `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?`,
+      [DB_PREFIX + table, column]
     );
-    if (!(Array.isArray(mcols) && mcols.length > 0)) {
-      await pool.query(applyPrefix("ALTER TABLE {{issues}} ADD COLUMN model VARCHAR(128) NOT NULL DEFAULT ''"));
-    }
+    if (Array.isArray(cols) && cols.length > 0) return;
+    await pool.query(applyPrefix(`ALTER TABLE {{${table}}} ADD COLUMN ${ddl}`));
   } catch (e) {
-    console.warn("[db] MySQL issues model column add failed:", (e as Error).message);
+    console.warn(`[db] MySQL ${table}.${column} column add failed:`, (e as Error).message);
+  }
+}
+
+async function migrateMysqlIssuesAiStatus(pool: Pool): Promise<void> {
+  await migrateMysqlColumn(pool, "issues", "ai_status", "ai_status VARCHAR(32) NOT NULL DEFAULT ''");
+  await migrateMysqlColumn(pool, "issues", "model", "model VARCHAR(128) NOT NULL DEFAULT ''");
+  await migrateMysqlColumn(pool, "issues", "upstream_issue_number", "upstream_issue_number INT DEFAULT NULL");
+  await migrateMysqlColumn(pool, "comments", "upstream_comment_id", "upstream_comment_id BIGINT DEFAULT NULL");
+  const indexes: Array<[string, string]> = [
+    ["uq_issues_project_upstream", applyPrefix("CREATE UNIQUE INDEX uq_issues_project_upstream ON {{issues}} (project_id, upstream_issue_number)")],
+    ["uq_comments_upstream", applyPrefix("CREATE UNIQUE INDEX uq_comments_upstream ON {{comments}} (upstream_comment_id)")],
+  ];
+  for (const [name, sql] of indexes) {
+    try {
+      const [rows] = await pool.query(
+        `SELECT INDEX_NAME FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND INDEX_NAME = ? LIMIT 1`,
+        [name]
+      );
+      if (Array.isArray(rows) && rows.length > 0) continue;
+      await pool.query(sql);
+    } catch (e) {
+      const errno = (e as { errno?: number }).errno;
+      if (errno === 1061 || errno === 30000) continue;
+      console.warn(`[db] MySQL index ${name} create failed:`, (e as Error).message);
+    }
   }
 }
 

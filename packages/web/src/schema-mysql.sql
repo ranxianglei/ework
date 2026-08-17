@@ -55,7 +55,9 @@ CREATE TABLE IF NOT EXISTS {{issues}} (
   closed_at  VARCHAR(40) DEFAULT NULL,
   ai_status  VARCHAR(32) NOT NULL DEFAULT '',
   model      VARCHAR(128) NOT NULL DEFAULT '',
+  upstream_issue_number INT DEFAULT NULL,
   UNIQUE (project_id, number),
+  UNIQUE uq_issues_project_upstream (project_id, upstream_issue_number),
   CONSTRAINT {{fk_issues_project}} FOREIGN KEY (project_id) REFERENCES {{projects}}(id) ON DELETE CASCADE,
   CONSTRAINT {{fk_issues_author}} FOREIGN KEY (author)     REFERENCES {{users}}(login)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -72,11 +74,32 @@ CREATE TABLE IF NOT EXISTS {{comments}} (
   body       TEXT NOT NULL,
   created_at VARCHAR(40) NOT NULL,
   updated_at VARCHAR(40) NOT NULL DEFAULT '',
+  upstream_comment_id BIGINT DEFAULT NULL,
+  UNIQUE uq_comments_upstream (upstream_comment_id),
   CONSTRAINT {{fk_comments_issue}} FOREIGN KEY (issue_id) REFERENCES {{issues}}(id) ON DELETE CASCADE,
   CONSTRAINT {{fk_comments_author}} FOREIGN KEY (author)  REFERENCES {{users}}(login)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE INDEX comments_issue_created ON {{comments}} (issue_id, created_at);
 CREATE INDEX comments_author ON {{comments}} (author);
+
+CREATE TABLE IF NOT EXISTS {{upstream_sync}} (
+  id               BIGINT AUTO_INCREMENT PRIMARY KEY,
+  project_id       BIGINT NOT NULL,
+  base_url         VARCHAR(512) NOT NULL,
+  upstream_owner   VARCHAR(255) NOT NULL,
+  upstream_repo    VARCHAR(255) NOT NULL,
+  token            VARCHAR(512) NOT NULL DEFAULT '',
+  enabled          TINYINT NOT NULL DEFAULT 0,
+  poll_interval_ms INT NOT NULL DEFAULT 60000,
+  issue_cursor     VARCHAR(40) DEFAULT NULL,
+  comment_cursor   VARCHAR(40) DEFAULT NULL,
+  last_poll_at     VARCHAR(40) DEFAULT NULL,
+  last_error       TEXT,
+  created_at       VARCHAR(40) NOT NULL,
+  updated_at       VARCHAR(40) NOT NULL,
+  UNIQUE (project_id),
+  CONSTRAINT {{fk_upsync_project}} FOREIGN KEY (project_id) REFERENCES {{projects}}(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS {{labels}} (
   id          BIGINT AUTO_INCREMENT PRIMARY KEY,

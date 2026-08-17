@@ -452,6 +452,7 @@ export interface CreateIssueOpts {
   state?: "open" | "closed";
   closedAt?: string | null;
   model?: string;
+  upstreamIssueNumber?: number;
 }
 
 function isoOr(value: string | undefined, fallback: string): string {
@@ -482,8 +483,8 @@ export async function createIssue(
       "SELECT COALESCE(MAX(number), 0) + 1 AS n FROM {{issues}} WHERE project_id = ?", [projectId]
     ))!;
     const info = await getDB().run(
-      "INSERT INTO {{issues}} (project_id, number, title, body, state, author, created_at, updated_at, closed_at, model) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      [projectId, next.n, title, body, state, author, createdAt, updatedAt, closedAt, opts.model ?? ""]
+      "INSERT INTO {{issues}} (project_id, number, title, body, state, author, created_at, updated_at, closed_at, model, upstream_issue_number) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [projectId, next.n, title, body, state, author, createdAt, updatedAt, closedAt, opts.model ?? "", opts.upstreamIssueNumber ?? null]
     );
     await getDB().run("UPDATE {{projects}} SET updated_at = ? WHERE id = ?", [updatedAt, projectId]);
     return (await getIssueById(info.insertId))!;
@@ -521,6 +522,107 @@ export async function getIssueAiStatus(issueId: number): Promise<string> {
 export async function updateIssueModel(issueId: number, model: string): Promise<void> {
   const clean = model.trim().slice(0, 128);
   await getDB().run("UPDATE {{issues}} SET model = ?, updated_at = ? WHERE id = ?", [clean, now(), issueId]);
+}
+
+export interface UpstreamSyncRow {
+  id: number;
+  project_id: number;
+  base_url: string;
+  upstream_owner: string;
+  upstream_repo: string;
+  token: string;
+  enabled: number;
+  poll_interval_ms: number;
+  issue_cursor: string | null;
+  comment_cursor: string | null;
+  last_poll_at: string | null;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface UpsertUpstreamSyncOpts {
+  baseUrl: string;
+  upstreamOwner: string;
+  upstreamRepo: string;
+  token?: string;
+  enabled?: boolean;
+  pollIntervalMs?: number;
+}
+
+export async function getUpstreamSync(projectId: number): Promise<UpstreamSyncRow | null> {
+  return await getDB().get<UpstreamSyncRow>("SELECT * FROM {{upstream_sync}} WHERE project_id = ?", [projectId]);
+}
+
+export async function listEnabledUpstreamSyncs(): Promise<UpstreamSyncRow[]> {
+  return await getDB().all<UpstreamSyncRow>("SELECT * FROM {{upstream_sync}} WHERE enabled = 1");
+}
+
+export async function upsertUpstreamSync(projectId: number, opts: UpsertUpstreamSyncOpts): Promise<UpstreamSyncRow> {
+  const baseUrl = opts.baseUrl
+    .trim()
+    .replace(/\/+$/, "")
+    .replace(/\/api\/v1$/i, "");
+  if (!/^https?:\/\//.test(baseUrl)) throw new StoreError(400, "上游地址必须是 http(s) URL");
+  const owner = opts.upstreamOwner.trim();
+  const repo = opts.upstreamRepo.trim();
+  if (!owner || !repo) throw new StoreError(400, "上游 owner/repo 不能为空");
+  const interval = opts.pollIntervalMs ?? 60_000;
+  if (!Number.isFinite(interval) || interval < 10_000) throw new StoreError(400, "轮询间隔不能小于 10 秒");
+  const existing = await getUpstreamSync(projectId);
+  const token = opts.token !== undefined ? opts.token.trim() : existing?.token ?? "";
+  const enabled = opts.enabled ?? (existing?.enabled === 1);
+  const ts = now();
+  if (existing) {
+    await getDB().run(
+      "UPDATE {{upstream_sync}} SET base_url = ?, upstream_owner = ?, upstream_repo = ?, token = ?, enabled = ?, poll_interval_ms = ?, updated_at = ? WHERE project_id = ?",
+      [baseUrl, owner, repo, token, enabled ? 1 : 0, Math.floor(interval), ts, projectId]
+    );
+  } else {
+    await getDB().run(
+      "INSERT INTO {{upstream_sync}} (project_id, base_url, upstream_owner, upstream_repo, token, enabled, poll_interval_ms, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [projectId, baseUrl, owner, repo, token, enabled ? 1 : 0, Math.floor(interval), ts, ts]
+    );
+  }
+  return (await getUpstreamSync(projectId))!;
+}
+
+export async function updateUpstreamSyncState(
+  projectId: number,
+  patch: { issueCursor?: string | null; commentCursor?: string | null; lastError?: string | null }
+): Promise<void> {
+  const sets: string[] = [];
+  const args: (string | number | null)[] = [];
+  if (patch.issueCursor !== undefined) {
+    sets.push("issue_cursor = ?");
+    args.push(patch.issueCursor);
+  }
+  if (patch.commentCursor !== undefined) {
+    sets.push("comment_cursor = ?");
+    args.push(patch.commentCursor);
+  }
+  if (patch.lastError !== undefined) {
+    sets.push("last_error = ?");
+    args.push(patch.lastError);
+  }
+  if (sets.length === 0) return;
+  sets.push("last_poll_at = ?", "updated_at = ?");
+  args.push(now(), now(), projectId);
+  await getDB().run(`UPDATE {{upstream_sync}} SET ${sets.join(", ")} WHERE project_id = ?`, args);
+}
+
+export async function getIssueByUpstreamNumber(projectId: number, upstreamNumber: number): Promise<IssueRow | null> {
+  return await getDB().get<IssueRow>(
+    "SELECT * FROM {{issues}} WHERE project_id = ? AND upstream_issue_number = ?",
+    [projectId, upstreamNumber]
+  );
+}
+
+export async function getCommentByUpstreamId(upstreamCommentId: number): Promise<CommentRow | null> {
+  return await getDB().get<CommentRow>(
+    "SELECT * FROM {{comments}} WHERE upstream_comment_id = ?",
+    [upstreamCommentId]
+  );
 }
 
 export interface IssuePatch {
@@ -621,6 +723,7 @@ export async function listCommentsForIssue(issueId: number): Promise<CommentRow[
 export interface CreateCommentOpts {
   createdAt?: string;
   updatedAt?: string;
+  upstreamCommentId?: number;
 }
 
 export async function postComment(
@@ -636,8 +739,8 @@ export async function postComment(
   const updatedAt = opts.updatedAt ? isoOr(opts.updatedAt, createdAt) : createdAt;
   return await getDB().transaction(async () => {
     const info = await getDB().run(
-      "INSERT INTO {{comments}} (issue_id, author, body, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-      [issueId, author, body, createdAt, updatedAt]
+      "INSERT INTO {{comments}} (issue_id, author, body, created_at, updated_at, upstream_comment_id) VALUES (?, ?, ?, ?, ?, ?)",
+      [issueId, author, body, createdAt, updatedAt, opts.upstreamCommentId ?? null]
     );
     await getDB().run("UPDATE {{issues}} SET updated_at = ? WHERE id = ?", [updatedAt, issueId]);
     const row = await getDB().get<{ project_id: number }>("SELECT project_id FROM {{issues}} WHERE id = ?", [issueId]);

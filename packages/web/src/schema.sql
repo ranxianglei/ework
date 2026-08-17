@@ -67,12 +67,16 @@ CREATE TABLE IF NOT EXISTS {{issues}} (
   ai_status  TEXT NOT NULL DEFAULT '',
   -- Resolved "provider/model" for this issue. Empty = inherit project/global default.
   model      TEXT NOT NULL DEFAULT '',
+  -- Upstream Gitea issue number this row was imported from (NULL = native).
+  upstream_issue_number INTEGER,
   UNIQUE (project_id, number)
 );
 CREATE INDEX IF NOT EXISTS issues_project_state_updated
   ON {{issues}} (project_id, state, updated_at DESC);
 CREATE INDEX IF NOT EXISTS issues_state_updated
   ON {{issues}} (state, updated_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS issues_project_upstream
+  ON {{issues}} (project_id, upstream_issue_number) WHERE upstream_issue_number IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS {{comments}} (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -80,10 +84,31 @@ CREATE TABLE IF NOT EXISTS {{comments}} (
   author     TEXT NOT NULL REFERENCES {{users}}(login),
   body       TEXT NOT NULL,
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL DEFAULT ''
+  updated_at TEXT NOT NULL DEFAULT '',
+  upstream_comment_id INTEGER
 );
 CREATE INDEX IF NOT EXISTS comments_issue_created
   ON {{comments}} (issue_id, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS comments_upstream
+  ON {{comments}} (upstream_comment_id) WHERE upstream_comment_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS {{upstream_sync}} (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id       INTEGER NOT NULL REFERENCES {{projects}}(id) ON DELETE CASCADE,
+  base_url         TEXT NOT NULL,
+  upstream_owner   TEXT NOT NULL,
+  upstream_repo    TEXT NOT NULL,
+  token            TEXT NOT NULL DEFAULT '',
+  enabled          INTEGER NOT NULL DEFAULT 0,
+  poll_interval_ms INTEGER NOT NULL DEFAULT 60000,
+  issue_cursor     TEXT,
+  comment_cursor   TEXT,
+  last_poll_at     TEXT,
+  last_error       TEXT,
+  created_at       TEXT NOT NULL,
+  updated_at       TEXT NOT NULL,
+  UNIQUE (project_id)
+);
 
 CREATE TABLE IF NOT EXISTS {{labels}} (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
