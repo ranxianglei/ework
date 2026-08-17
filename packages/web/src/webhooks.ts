@@ -667,7 +667,7 @@ export async function emitIssueEvent(
     // override (daemon omits --model, lets opencode pick). globalDefault
     // comes from the config table via loadConfig() — cheap DB read.
     const globalDefault = (await loadConfig()).defaultModel;
-    const model = resolveModel(project.model, globalDefault);
+    const model = resolveModel(project.model, globalDefault, issue.model);
     const labels = await toPayloadLabels(issueId);
     const payload = buildIssuePayload(issue, project, commentCount, action, origin, model, labels);
     (payload as IssueEventPayload).event_id = randomUUID();
@@ -707,7 +707,7 @@ export async function emitCommentEvent(
     const authorUser = await getUserByLogin(comment.author);
     const commentCount = await countCommentsSafe(issueId);
     const globalDefault = (await loadConfig()).defaultModel;
-    const model = resolveModel(project.model, globalDefault);
+    const model = resolveModel(project.model, globalDefault, issue.model);
     const labels = await toPayloadLabels(issueId);
     const payload = buildCommentPayload(issue, comment, project, commentCount, origin, model, labels);
     (payload as CommentEventPayload).event_id = randomUUID();

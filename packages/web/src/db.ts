@@ -131,6 +131,9 @@ function migrateIssuesTable(db: Database): void {
   if (!have.has("ai_status")) {
     db.exec(applyPrefix("ALTER TABLE {{issues}} ADD COLUMN ai_status TEXT NOT NULL DEFAULT ''"));
   }
+  if (!have.has("model")) {
+    db.exec(applyPrefix("ALTER TABLE {{issues}} ADD COLUMN model TEXT NOT NULL DEFAULT ''"));
+  }
 }
 
 function migrateLabelsTable(db: Database): void {
@@ -366,6 +369,16 @@ async function migrateMysqlIssuesAiStatus(pool: Pool): Promise<void> {
     await pool.query(applyPrefix("ALTER TABLE {{issues}} ADD COLUMN ai_status VARCHAR(32) NOT NULL DEFAULT ''"));
   } catch (e) {
     console.warn("[db] MySQL issues ai_status column add failed:", (e as Error).message);
+  }
+  try {
+    const [mcols] = await pool.query(
+      applyPrefix("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '{{issues}}' AND COLUMN_NAME = 'model'")
+    );
+    if (!(Array.isArray(mcols) && mcols.length > 0)) {
+      await pool.query(applyPrefix("ALTER TABLE {{issues}} ADD COLUMN model VARCHAR(128) NOT NULL DEFAULT ''"));
+    }
+  } catch (e) {
+    console.warn("[db] MySQL issues model column add failed:", (e as Error).message);
   }
 }
 

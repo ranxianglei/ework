@@ -197,6 +197,7 @@ export async function handleGiteaApi(
         updatedAt: asString(body.updated_at),
         state: asIssueState(body.state) ?? "open",
         closedAt: asString(body.closed_at) || undefined,
+        model: asString(body.model) || undefined,
       });
       void emitIssueEvent(project.id, created.id, "opened", origin);
       if (created.state === "closed") {

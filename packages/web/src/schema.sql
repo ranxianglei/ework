@@ -65,6 +65,8 @@ CREATE TABLE IF NOT EXISTS {{issues}} (
   closed_at  TEXT,
   -- AI processing status: '' (none) | 'processing' | 'halted' | 'completed' | 'failed'
   ai_status  TEXT NOT NULL DEFAULT '',
+  -- Resolved "provider/model" for this issue. Empty = inherit project/global default.
+  model      TEXT NOT NULL DEFAULT '',
   UNIQUE (project_id, number)
 );
 CREATE INDEX IF NOT EXISTS issues_project_state_updated

@@ -74,6 +74,7 @@ export interface IssueRow {
   updated_at: string;
   closed_at: string | null;
   ai_status: string;
+  model: string;
 }
 
 export interface IssueWithMeta extends IssueRow {
@@ -316,7 +317,9 @@ export async function setProjectModel(projectId: number, model: string): Promise
 // Resolve the effective model for a project: project override > global
 // default. Returns "" when neither is set (caller omits --model and lets
 // opencode pick per its own config).
-export function resolveModel(projectModel: string, globalDefault: string): string {
+export function resolveModel(projectModel: string, globalDefault: string, issueModel?: string): string {
+  const i = String(issueModel ?? "").trim();
+  if (i) return i;
   const p = String(projectModel ?? "").trim();
   if (p) return p;
   return String(globalDefault ?? "").trim();
@@ -448,6 +451,7 @@ export interface CreateIssueOpts {
   updatedAt?: string;
   state?: "open" | "closed";
   closedAt?: string | null;
+  model?: string;
 }
 
 function isoOr(value: string | undefined, fallback: string): string {
@@ -478,8 +482,8 @@ export async function createIssue(
       "SELECT COALESCE(MAX(number), 0) + 1 AS n FROM {{issues}} WHERE project_id = ?", [projectId]
     ))!;
     const info = await getDB().run(
-      "INSERT INTO {{issues}} (project_id, number, title, body, state, author, created_at, updated_at, closed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      [projectId, next.n, title, body, state, author, createdAt, updatedAt, closedAt]
+      "INSERT INTO {{issues}} (project_id, number, title, body, state, author, created_at, updated_at, closed_at, model) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [projectId, next.n, title, body, state, author, createdAt, updatedAt, closedAt, opts.model ?? ""]
     );
     await getDB().run("UPDATE {{projects}} SET updated_at = ? WHERE id = ?", [updatedAt, projectId]);
     return (await getIssueById(info.insertId))!;
@@ -512,6 +516,11 @@ export async function updateIssueAiStatus(issueId: number, status: string): Prom
 export async function getIssueAiStatus(issueId: number): Promise<string> {
   const row = await getDB().get<{ ai_status: string }>("SELECT ai_status FROM {{issues}} WHERE id = ?", [issueId]);
   return row?.ai_status ?? "";
+}
+
+export async function updateIssueModel(issueId: number, model: string): Promise<void> {
+  const clean = model.trim().slice(0, 128);
+  await getDB().run("UPDATE {{issues}} SET model = ?, updated_at = ? WHERE id = ?", [clean, now(), issueId]);
 }
 
 export interface IssuePatch {

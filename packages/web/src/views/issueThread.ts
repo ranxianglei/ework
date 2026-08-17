@@ -14,6 +14,7 @@ import {
   getDefaultUpstreamUrl,
   listLabelsForIssue,
   getUserByLogin,
+  listCachedModels,
   type CommentRow,
   type IssueWithMeta,
 } from "../store";
@@ -156,6 +157,9 @@ export async function buildIssueThread(
       viewerIsAdmin,
       customActions,
       extraStatusBadges,
+      modelSelect: cfg.writesEnabled !== false
+        ? { current: issue.model ?? "", options: (await listCachedModels()).map((m) => ({ id: m.id, label: m.label })) }
+        : null,
     },
     safeJsonEmbed(payload),
     displayViews.map((v) => renderCommentCard(v, cfg)).join("")

@@ -38,6 +38,7 @@ import {
   postComment,
   setIssueState,
   updateIssueAiStatus,
+  updateIssueModel,
   listIssues,
   createAttachment,
   getAttachment,
@@ -385,6 +386,7 @@ const REPO_LABELS_RE = /^\/([^/]+)\/([^/]+)\/settings\/labels$/;
 const REPO_LABEL_ADD_RE = /^\/([^/]+)\/([^/]+)\/settings\/labels\/add$/;
 const REPO_LABEL_ACTION_RE = /^\/([^/]+)\/([^/]+)\/settings\/labels\/(\d+)\/(update|archive|unarchive|delete)$/;
 const REPO_ISSUE_HALT_RE = /^\/([^/]+)\/([^/]+)\/issues\/(\d+)\/(halt|resume|dispatch-off|dispatch-on)$/;
+const REPO_ISSUE_MODEL_RE = /^\/([^/]+)\/([^/]+)\/issues\/(\d+)\/model$/;
 const API_ISSUE_LABELS_RE = /^\/api\/([^/]+)\/([^/]+)\/issues\/(\d+)\/labels$/;
 const WH_ACTION_RE = /^\/__wh\/(\d+)\/(delete|toggle|test)$/;
 const SESSIONS_RE = /^\/sessions$/;
@@ -1832,6 +1834,28 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
       }
     }
 
+    const mp = url.pathname.match(REPO_ISSUE_MODEL_RE);
+    if (mp) {
+      const [, owner, repo, numStr] = mp;
+      if (!(owner && repo && numStr)) return json({ error: "bad path" }, 400);
+      const number = Number(numStr);
+      try {
+        const project = await getProject(owner, repo);
+        if (!project) return json({ error: "project not found" }, 404);
+        const issue = await getIssueWithMeta(project.id, number);
+        if (!issue) return json({ error: "issue not found" }, 404);
+        if (!(await canWriteProject(project.id, ctx.user))) {
+          return json({ error: "writer role required" }, 403);
+        }
+        const form = await req.formData().catch(() => new FormData());
+        const model = String(form.get("model") ?? "").trim().slice(0, 128);
+        await updateIssueModel(issue.id, model);
+        return json({ ok: true, model });
+      } catch (e) {
+        return json({ error: errMsg(e) }, e instanceof StoreError ? e.status : 500);
+      }
+    }
+
     const ci = url.pathname.match(REPO_LIST_RE);
     if (ci) {
       const [, owner, repo] = ci;
@@ -1840,6 +1864,7 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
         const form = await req.formData().catch(() => new FormData());
         const title = String(form.get("title") ?? "").trim();
         const body = String(form.get("body") ?? "");
+        const model = String(form.get("model") ?? "").trim().slice(0, 128);
         if (!title) return html(errorPage("标题不能为空", "回到上一页填写标题后重试"), 400);
         let project = await getProject(owner, repo);
         let createdProject = false;
@@ -1854,7 +1879,7 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
           await ensureProjectBootstrapAdmin(project.id, ctx.user!.login);
           await autoWireDaemon(project.id, url.origin);
         }
-        const issue = await createIssue(project.id, title, body, ctx.user!.login);
+        const issue = await createIssue(project.id, title, body, ctx.user!.login, model ? { model } : {});
         void emitIssueEvent(project.id, issue.id, "opened", url.origin);
         return Response.redirect(
           `${url.origin}/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${issue.number}`,
@@ -2193,7 +2218,7 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
   if (isNew) {
     const [, owner, repo] = isNew;
     if (!(owner && repo)) return html(errorPage("404", "bad path"), 404);
-    return html(buildIssueNew(owner, repo, cfg.writesEnabled));
+    return html(buildIssueNew(owner, repo, cfg.writesEnabled, await listCachedModels()));
   }
 
   const view = url.pathname.match(REPO_ISSUE_RE);

@@ -23,6 +23,7 @@ export interface LayoutProps {
   viewerIsAdmin?: boolean;
   customActions?: IssueAction[];
   extraStatusBadges?: Record<string, { cls: string; label: string }>;
+  modelSelect?: { current: string; options: { id: string; label: string }[] } | null;
 }
 
 export const THEME_CSS = `
@@ -127,6 +128,9 @@ header.topbar .num{opacity:.7}
 .issue-label{display:inline-flex;align-items:center;font-size:12px;font-weight:500;padding:.05rem .5rem;border:1px solid;border-radius:99px;line-height:1.6;background:color-mix(in srgb,currentColor 8%,transparent)}
 .label-edit-btn{background:none;border:1px solid var(--border);border-radius:6px;padding:.05rem .35rem;cursor:pointer;font-size:13px;line-height:1.5;color:var(--text-muted)}
 .label-edit-btn:hover{border-color:var(--accent);color:var(--accent)}
+.model-select-wrap{display:inline-flex;align-items:center;gap:.25rem}
+.model-select{background:var(--bg-elev);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:.15rem .3rem;font:12px system-ui,sans-serif;max-width:180px}
+.model-save-btn{padding:.15rem .45rem;font-size:13px}
 #labelDlg{border:1px solid var(--border);border-radius:10px;background:var(--bg-elev);color:var(--text);padding:1.1rem;max-width:380px;width:90vw}
 #labelDlg::backdrop{background:rgba(0,0,0,.5)}
 #labelDlg h3{margin:0 0 .6rem;font-size:14px}
@@ -199,6 +203,12 @@ export function renderLayout(props: LayoutProps, inner: string, initialItems: st
         ? `<button type="button" class="action-btn dispatch-btn" data-action-href="${escapeAttr(repoIssuesHref)}/${props.issueNumber}/dispatch-on" title="允许自动接单">🔔 接单</button>`
         : `<button type="button" class="action-btn dispatch-btn" data-action-href="${escapeAttr(repoIssuesHref)}/${props.issueNumber}/dispatch-off" data-action-confirm="设为不自动接单？" title="设为不自动接单">🔕 不接单</button>`
     : "";
+  const modelSelectHtml = props.modelSelect && props.modelSelect.options.length > 0 && showActions
+    ? `<span class="model-select-wrap"><select class="model-select" id="issueModelSelect" title="此 issue 的模型（覆盖项目/全局默认）">
+  <option value="">默认模型</option>
+  ${props.modelSelect.options.map((m) => `<option value="${escapeAttr(m.id)}" ${m.id === props.modelSelect!.current ? "selected" : ""}>${escapeHtml(m.label)}</option>`).join("")}
+</select><button type="button" class="action-btn model-save-btn" id="issueModelSave" title="保存模型选择">💾</button></span>`
+    : "";
   return `<!doctype html>
 <html lang="zh">
 <head>
@@ -221,7 +231,7 @@ export function renderLayout(props: LayoutProps, inner: string, initialItems: st
   <div class="meta-status">
     <span class="state-badge ${stateClass}">${stateLabel}</span>
     ${aiBadgeHtml}
-    ${(haltBtnHtml || dispatchBtnHtml || (props.customActions ?? []).length) ? `<span class="action-group">${haltBtnHtml}${dispatchBtnHtml}${(props.customActions ?? []).map((a) => {
+    ${(haltBtnHtml || dispatchBtnHtml || (props.customActions ?? []).length) ? `<span class="action-group">${haltBtnHtml}${dispatchBtnHtml}${modelSelectHtml}${(props.customActions ?? []).map((a) => {
       const attrs = [`data-action-href="${escapeAttr(a.href)}"`];
       if (a.method && a.method !== "POST") attrs.push(`data-action-method="${escapeAttr(a.method)}"`);
       if (a.confirm) attrs.push(`data-action-confirm="${escapeAttr(a.confirm)}"`);

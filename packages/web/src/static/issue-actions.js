@@ -35,4 +35,30 @@
         btn.textContent = orig;
       });
   });
+
+  document.addEventListener("click", function (e) {
+    var saveBtn = e.target.closest("#issueModelSave");
+    if (!saveBtn) return;
+    e.preventDefault();
+    var sel = document.getElementById("issueModelSelect");
+    if (!sel) return;
+    var m = sel.value;
+    saveBtn.disabled = true;
+    var path = location.pathname.split("/").slice(0, 5).join("/");
+    fetch(path + "/model", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: "model=" + encodeURIComponent(m)
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        saveBtn.disabled = false;
+        if (d.ok) { saveBtn.textContent = "✓"; setTimeout(function () { saveBtn.textContent = "💾"; }, 1200); }
+        else alert(d.error || "保存失败");
+      })
+      .catch(function (err) {
+        saveBtn.disabled = false;
+        alert("网络错误: " + err);
+      });
+  });
 })();
