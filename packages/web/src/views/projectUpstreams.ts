@@ -3,8 +3,10 @@ import {
   getDefaultUpstreamUrl,
   getProjectUpstreamUrls,
   setProjectUpstreamUrls,
+  upsertUpstreamSync,
   StoreError,
   type ProjectRow,
+  type UpstreamSyncRow,
   type UserRow,
 } from "../store";
 
@@ -56,10 +58,59 @@ function urlRowHtml(url: string, idx: number): string {
   </tr>`;
 }
 
+function fmtDate(iso: string | null): string {
+  if (!iso) return "—";
+  const t = Date.parse(iso);
+  return Number.isNaN(t) ? "—" : new Date(t).toLocaleString("zh-CN", { hour12: false });
+}
+
+function syncCardHtml(project: ProjectRow, sync: UpstreamSyncRow | null): string {
+  const action = `/${encodeURIComponent(project.owner)}/${encodeURIComponent(project.name)}/settings/upstream-sync`;
+  const enabled = sync?.enabled === 1;
+  const statusHtml = sync
+    ? `<table>
+<thead><tr><th>状态</th><th>最近轮询</th><th>进度游标</th></tr></thead>
+<tbody><tr>
+<td>${enabled ? '<span class="badge default">运行中</span>' : "已停用"}</td>
+<td>${escapeHtml(fmtDate(sync.last_poll_at))}${sync.last_error ? `<div class="err-text">⚠️ ${escapeHtml(sync.last_error)}</div>` : ""}</td>
+<td>issue #${sync.issue_cursor ? String(sync.issue_cursor).slice(0, 10) : "未同步"} · 评论 #${sync.comment_cursor ? String(sync.comment_cursor).slice(0, 10) : "未同步"}</td>
+</tr></tbody></table>`
+    : `<div class="hint">尚未配置。填写下方表单后，web 会定时从上游 Gitea 拉取 issue/评论（单向同步：上游 → 本地），首次会静默回填全部开放 issue，之后新事件按正常消息分发。</div>`;
+  const baseUrl = sync?.base_url ?? guessUpstreamBase(project) ?? "";
+  return `<form class="card" method="POST" action="${escapeAttr(action)}">
+<h2>🔄 上游 Gitea 同步（单向拉取）</h2>
+${statusHtml}
+<div class="form-grid">
+<div><label for="s-base">上游地址（Gitea 根地址，如 http://host:3000）</label>
+<input id="s-base" name="base_url" type="url" placeholder="http://192.168.10.96:3300" value="${escapeAttr(baseUrl)}" required></div>
+<div><label for="s-owner">上游 owner</label>
+<input id="s-owner" name="upstream_owner" value="${escapeAttr(sync?.upstream_owner ?? project.owner)}" required></div>
+<div><label for="s-repo">上游 repo</label>
+<input id="s-repo" name="upstream_repo" value="${escapeAttr(sync?.upstream_repo ?? project.name)}" required></div>
+<div><label for="s-token">访问 token（留空保持不变）</label>
+<input id="s-token" name="token" type="password" placeholder="${sync?.token ? "已保存（留空不变）" : "可选，私有仓库必填"}"></div>
+<div><label for="s-interval">轮询间隔（秒，最小 10）</label>
+<input id="s-interval" name="poll_interval" type="number" min="10" step="1" value="${sync ? Math.round(sync.poll_interval_ms / 1000) : 60}"></div>
+</div>
+<label class="check"><input type="checkbox" name="enabled" value="1"${enabled ? " checked" : ""}> 启用同步</label>
+<div class="hint">注意：上游需为 Gitea。地址填站点根地址即可（带不带 <code>/api/v1</code> 都可以，会自动归一）。回填阶段不触发 AI；之后的 opened/评论 事件会按正常策略唤醒 AI。</div>
+<button class="primary" type="submit">保存同步配置</button>
+</form>`;
+}
+
+// Heuristic: http(s) clone URL → Gitea host root; null otherwise.
+function guessUpstreamBase(project: ProjectRow): string | null {
+  const url = getDefaultUpstreamUrl(project);
+  if (!url) return null;
+  const m = url.match(/^(https?:\/\/[^\/]+)\//i);
+  return m && m[1] ? m[1] : null;
+}
+
 export function buildProjectUpstreamsPage(
   _viewer: UserRow,
   project: ProjectRow,
   flash: Flash | null,
+  sync: UpstreamSyncRow | null = null,
 ): string {
   const urls = getProjectUpstreamUrls(project);
   const rowsHtml = urls.length
@@ -101,6 +152,11 @@ td.idx{width:60px;color:var(--text-muted);white-space:nowrap}
 label{display:block;font-size:12px;color:var(--text-muted);margin:0 0 .25rem}
 textarea{width:100%;box-sizing:border-box;padding:.5rem .65rem;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font:inherit;font-family:ui-monospace,monospace;font-size:13px;margin-bottom:.7rem;min-height:120px;resize:vertical}
 button.primary{padding:.5rem 1rem;border:0;border-radius:6px;background:var(--accent);color:#fff;font-size:13px;cursor:pointer}
+.form-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:.6rem;margin:.6rem 0}
+.form-grid label{margin:0 0 .25rem}
+input[type=url],input[type=text],input[type=password],input[type=number]{width:100%;box-sizing:border-box;padding:.45rem .6rem;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font:inherit;font-size:13px}
+label.check{display:flex;align-items:center;gap:.4rem;font-size:13px;color:var(--text);margin:.4rem 0 .6rem}
+.err-text{color:#f85149;font-size:12px;margin-top:.3rem;word-break:break-all}
 </style></head><body>
 <header class="topbar"><span style="font-weight:600">🔗 ${escapeHtml(project.owner)}/${escapeHtml(project.name)} · 上游</span></header>
 ${tabNavHTML("projects")}
@@ -121,6 +177,8 @@ ${rowsHtml}
 <div class="hint">支持协议：<code>http(s)://</code>、<code>ssh://</code>、<code>git@host:owner/repo</code>。最多 10 个。空行会被忽略，重复会被去重。</div>
 <button class="primary" type="submit">保存</button>
 </form>
+
+${syncCardHtml(project, sync)}
 </main></body></html>`;
 }
 
@@ -129,6 +187,46 @@ export function parseUpstreamUrlsForm(text: string): string[] {
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => line.length > 0);
+}
+
+export interface UpstreamSyncFormInput {
+  baseUrl: string;
+  upstreamOwner: string;
+  upstreamRepo: string;
+  token?: string;
+  enabled: boolean;
+  pollIntervalMs: number;
+}
+
+export function parseUpstreamSyncForm(form: { get(name: string): string | File | null }): UpstreamSyncFormInput {
+  const val = (name: string): string => {
+    const v = form.get(name);
+    return typeof v === "string" ? v.trim() : "";
+  };
+  const intervalRaw = Number.parseInt(val("poll_interval") || "60", 10);
+  const intervalSec = Number.isFinite(intervalRaw) && intervalRaw >= 10 ? intervalRaw : 60;
+  const token = val("token");
+  return {
+    baseUrl: val("base_url"),
+    upstreamOwner: val("upstream_owner"),
+    upstreamRepo: val("upstream_repo"),
+    token: token.length ? token : undefined,
+    enabled: val("enabled") === "1",
+    pollIntervalMs: intervalSec * 1000,
+  };
+}
+
+export async function trySetUpstreamSync(
+  projectId: number,
+  input: UpstreamSyncFormInput,
+): Promise<{ ok: true } | { ok: false; msg: string }> {
+  try {
+    await upsertUpstreamSync(projectId, input);
+    return { ok: true };
+  } catch (e) {
+    const msg = e instanceof StoreError ? e.message : e instanceof Error ? e.message : "保存失败";
+    return { ok: false, msg };
+  }
 }
 
 export async function trySetUpstreamUrls(

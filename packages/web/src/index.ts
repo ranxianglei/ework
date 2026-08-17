@@ -75,9 +75,11 @@ import {
   deleteLabel,
   setIssueLabels,
   listAllProjectIds,
+  getUpstreamSync,
   type ProjectRole,
   type UserRow,
 } from "./store";
+import { startUpstreamSyncPoller } from "./upstream-sync";
 import {
   newAttachmentUUID,
   saveAttachmentBlob,
@@ -106,7 +108,12 @@ import { buildWebhooksPage } from "./views/webhooks";
 import { buildWebhookDeliveriesPage } from "./views/webhookDeliveries";
 import { browseRemoteFile, proxyFileSince, RemoteFileError } from "./remote-file";
 import { buildProjectMembersPage } from "./views/projectMembers";
-import { buildProjectUpstreamsPage, trySetUpstreamUrls } from "./views/projectUpstreams";
+import {
+  buildProjectUpstreamsPage,
+  parseUpstreamSyncForm,
+  trySetUpstreamSync,
+  trySetUpstreamUrls,
+} from "./views/projectUpstreams";
 import { buildProjectLabelsPage } from "./views/projectLabels";
 import { buildProjectModelPage } from "./views/projectModel";
 import { buildProjectAiPage } from "./views/projectAi";
@@ -136,6 +143,8 @@ async function refreshOpencodeClient(): Promise<void> {
 
 await refreshOpencodeClient();
 setInterval(refreshOpencodeClient, 10_000);
+
+startUpstreamSyncPoller(cfg);
 
 async function autoWireDaemon(projectId: number, origin: string): Promise<void> {
   if (!cfg.autowireActive) {
@@ -380,6 +389,7 @@ const REPO_DISPATCH_RE = /^\/([^/]+)\/([^/]+)\/settings\/dispatch$/;
 const REPO_HALT_ALL_RE = /^\/([^/]+)\/([^/]+)\/settings\/ai\/halt-all$/;
 const SETTINGS_DISPATCH_RE = /^\/settings\/dispatch$/;
 const REPO_UPSTREAMS_RE = /^\/([^/]+)\/([^/]+)\/settings\/upstreams$/;
+const REPO_UPSTREAM_SYNC_RE = /^\/([^/]+)\/([^/]+)\/settings\/upstream-sync$/;
 const REPO_MODEL_RE = /^\/([^/]+)\/([^/]+)\/settings\/model$/;
 const REPO_AI_RE = /^\/([^/]+)\/([^/]+)\/settings\/ai$/;
 const REPO_LABELS_RE = /^\/([^/]+)\/([^/]+)\/settings\/labels$/;
@@ -2105,6 +2115,28 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
       return Response.redirect(`${back}?err=${encodeURIComponent(result.msg)}`, 303);
     }
 
+    const syncSave = url.pathname.match(REPO_UPSTREAM_SYNC_RE);
+    if (syncSave) {
+      const [, owner, repo] = syncSave;
+      if (!(owner && repo)) return html(errorPage("bad path", ""), 400);
+      const project = await getProject(owner, repo);
+      if (!project) return html(errorPage("项目不存在", ""), 404);
+      const back = `${url.origin}/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/settings/upstreams`;
+      if (!(await canAdminProject(project.id, ctx.user))) {
+        return Response.redirect(`${back}?err=${encodeURIComponent("无权限")}`, 303);
+      }
+      const form = await req.formData().catch(() => new FormData());
+      const input = parseUpstreamSyncForm(form);
+      const result = await trySetUpstreamSync(project.id, input);
+      if (result.ok) {
+        return Response.redirect(
+          `${back}?ok=1&ok_msg=${encodeURIComponent(input.enabled ? "同步配置已保存并启用" : "同步配置已保存（未启用）")}`,
+          303,
+        );
+      }
+      return Response.redirect(`${back}?err=${encodeURIComponent(result.msg)}`, 303);
+    }
+
     const modelSave = url.pathname.match(REPO_MODEL_RE);
     if (modelSave) {
       const [, owner, repo] = modelSave;
@@ -2320,7 +2352,7 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     const flashKind = url.searchParams.get("ok") === "1" ? "ok" : url.searchParams.get("err") ? "err" : null;
     const flashMsg = flashKind === "ok" ? (url.searchParams.get("ok_msg") ?? "") : (url.searchParams.get("err") ?? "");
     const flash = flashKind ? { kind: flashKind as "ok" | "err", msg: flashMsg } : null;
-    return html(buildProjectUpstreamsPage(ctx.user!, project, flash));
+    return html(buildProjectUpstreamsPage(ctx.user!, project, flash, await getUpstreamSync(project.id)));
   }
 
   const labelsPage = url.pathname.match(REPO_LABELS_RE);
