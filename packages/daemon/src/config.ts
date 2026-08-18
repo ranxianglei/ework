@@ -193,6 +193,10 @@ export function loadConfig(): Config {
       port: process.env.DAEMON_PORT ?? 3101,
       host: process.env.DAEMON_HOST ?? "0.0.0.0",
       endpoint: process.env.DAEMON_ENDPOINT ?? "",
+      nonWakingAuthors: (process.env.WORK_NON_WAKING_AUTHORS ?? "").split(",").map((s) => s.trim()).filter(Boolean),
+      wakeKinds: (process.env.WORK_WAKE_KINDS ?? "human").split(",").map((s) => s.trim()).filter(Boolean),
+      wakeLogins: (process.env.WORK_WAKE_LOGINS ?? "").split(",").map((s) => s.trim()).filter(Boolean),
+      noWakeLogins: (process.env.WORK_NO_WAKE_LOGINS ?? "").split(",").map((s) => s.trim()).filter(Boolean),
     },
     opencode: {
       binary: process.env.OPENCODE_BINARY ?? "opencode",
