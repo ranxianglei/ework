@@ -70,7 +70,7 @@ export async function buildHome(
 .flash.ok{background:rgba(63,185,80,.12);color:#3fb950;border-color:rgba(63,185,80,.4)}
 .flash.err{background:rgba(248,81,73,.12);color:#f85149;border-color:rgba(248,81,73,.4)}
 </style></head><body>
-<header class="topbar"><span style="font-weight:600">📦 ework</span></header>
+<header class="topbar"><a href="/" style="font-weight:600;color:var(--header-text)">🏠 ework</a></header>
 ${tabNavHTML("projects", viewer ? { login: viewer.login, is_admin: viewer.is_admin } : undefined)}
 <main class="home-wrap">
   ${flashHtml}
