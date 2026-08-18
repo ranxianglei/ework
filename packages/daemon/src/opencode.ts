@@ -1385,8 +1385,7 @@ export class Engine {
         try {
           await tracker.setReaction(ref, lastMsg.sourceCommentId, "eyes", true);
           const reaction = exitCode === 0 ? "+1" : "-1";
-          const botReply = hasRecent ? this.lastBotReply(commentsNow, tracker) : undefined;
-          const targetId = botReply?.id ?? lastMsg.sourceCommentId;
+          const targetId = lastMsg.sourceCommentId;
           await tracker.setReaction(ref, targetId, reaction);
         } catch { /* non-critical */ }
       }
