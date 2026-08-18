@@ -207,15 +207,28 @@ export class RecloneStrategy implements TakeoverStrategy {
         const gitArgs = ["git"];
         if (credHelper) gitArgs.push("-c", `credential.helper=${credHelper}`);
         gitArgs.push("clone", url, dir);
-        const r = Bun.spawnSync({ cmd: gitArgs, stdout: "ignore", stderr: "pipe", env: { ...process.env, ...env } });
-        if (r.exitCode !== 0) {
+        let r: { exitCode: number | null; stderr?: Uint8Array | undefined };
+        try {
+          // async spawn: a slow/hung remote (e.g. SSH host-key prompt) must never
+          // block the daemon event loop — spawnSync froze healthz+heartbeats for
+          // the whole clone duration. Capped at 10 minutes.
+          const proc = Bun.spawn({ cmd: gitArgs, stdout: "ignore", stderr: "pipe", env: { ...process.env, ...env } });
+          const killTimer = setTimeout(() => proc.kill("SIGKILL"), 10 * 60_000);
+          const [exitCode, stderr] = await Promise.all([proc.exited, new Response(proc.stderr).arrayBuffer()]);
+          clearTimeout(killTimer);
+          r = { exitCode, stderr: new Uint8Array(stderr) };
+        } catch {
+          r = { exitCode: -1 };
+        }
+        const exitCode = r.exitCode ?? -1;
+        if (exitCode !== 0) {
           if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
           if (existsSync(dir) && readdirSync(dir).length === 0) {
             Bun.spawnSync({ cmd: ["git", "init", dir], stdout: "ignore", stderr: "ignore" });
           }
           const stderrBuf = r.stderr as Uint8Array | undefined;
           const stderrText = stderrBuf ? new TextDecoder().decode(stderrBuf).slice(0, 500) : "";
-          log.warn(`acquireWorkdir: git clone failed (exit ${r.exitCode}) for ${url}${stderrText ? `: ${stderrText}` : ""}; fell back to empty workdir`);
+          log.warn(`acquireWorkdir: git clone failed (exit ${exitCode}) for ${url}${stderrText ? `: ${stderrText}` : ""}; fell back to empty workdir`);
         }
       }
     } catch {
