@@ -49,9 +49,6 @@
   }
 
   if (document.getElementById("aiStatusBadge")) {
-    var bc = document.getElementById("aiStatusBadge");
-    var items = document.querySelectorAll('[id^="comment-"]');
-    bc.setAttribute("data-comment-count", String(items.length));
     setInterval(refreshBadge, 8000);
   }
 

@@ -189,7 +189,7 @@ export function renderLayout(props: LayoutProps, inner: string, initialItems: st
       ...props.extraStatusBadges,
     };
     const m = map[s] ?? { cls: "ai-idle", label: "💤 空闲" };
-    return `<span class="ai-badge ${m.cls}" id="aiStatusBadge" data-status="${escapeAttr(s)}">${m.label}</span>`;
+    return `<span class="ai-badge ${m.cls}" id="aiStatusBadge" data-status="${escapeAttr(s)}" data-comment-count="${props.totalComments}">${m.label}</span>`;
   })();
   const showActions = props.writesEnabled !== false;
   const haltBtnHtml = showActions
