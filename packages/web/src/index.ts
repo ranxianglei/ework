@@ -397,6 +397,7 @@ const REPO_LABEL_ADD_RE = /^\/([^/]+)\/([^/]+)\/settings\/labels\/add$/;
 const REPO_LABEL_ACTION_RE = /^\/([^/]+)\/([^/]+)\/settings\/labels\/(\d+)\/(update|archive|unarchive|delete)$/;
 const REPO_ISSUE_HALT_RE = /^\/([^/]+)\/([^/]+)\/issues\/(\d+)\/(halt|resume|dispatch-off|dispatch-on)$/;
 const REPO_ISSUE_MODEL_RE = /^\/([^/]+)\/([^/]+)\/issues\/(\d+)\/model$/;
+const REPO_ISSUE_STATUS_RE = /^\/([^/]+)\/([^/]+)\/issues\/(\d+)\/ai-status$/;
 const API_ISSUE_LABELS_RE = /^\/api\/([^/]+)\/([^/]+)\/issues\/(\d+)\/labels$/;
 const WH_ACTION_RE = /^\/__wh\/(\d+)\/(delete|toggle|test)$/;
 const SESSIONS_RE = /^\/sessions$/;
@@ -1694,6 +1695,17 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     } catch (e) {
       return json({ error: errMsg(e) }, e instanceof OpencodeError ? e.status : 502);
     }
+  }
+
+  const aiStatusMatch = url.pathname.match(REPO_ISSUE_STATUS_RE);
+  if (aiStatusMatch && req.method === "GET") {
+    const [, owner, repo, numStr] = aiStatusMatch;
+    if (!(owner && repo && numStr)) return json({ error: "bad path" }, 400);
+    const project = await getProject(owner, repo);
+    if (!project) return json({ error: "project not found" }, 404);
+    const issue = await getIssueWithMeta(project.id, Number(numStr));
+    if (!issue) return json({ error: "issue not found" }, 404);
+    return json({ aiStatus: issue.ai_status ?? "", commentCount: issue.comment_count ?? 0 });
   }
 
   const issueLabelsApi = url.pathname.match(API_ISSUE_LABELS_RE);

@@ -149,6 +149,7 @@ header.topbar .num{opacity:.7}
 .ai-dispatch-off{background:#6f7781;color:#fff}
 .ai-completed{background:#1a7f37;color:#fff}
 .ai-failed{background:#cf222e;color:#fff}
+.ai-idle{background:#eaeef2;color:#57606a}
 @keyframes ai-pulse{0%,100%{opacity:1}50%{opacity:.6}}
 .action-btn{font-size:12px;padding:.15rem .6rem;border-radius:6px;border:1px solid var(--border);background:var(--bg-elev);color:#cf222e;cursor:pointer;font-weight:600}
 .action-btn:hover{background:#cf222e;color:#fff}
@@ -178,31 +179,32 @@ export function renderLayout(props: LayoutProps, inner: string, initialItems: st
     : "";
   const aiBadgeHtml = (() => {
     const s = props.aiStatus ?? "";
-    // halted/dispatch_off are represented by their action buttons — skip badge
-    if (!s || s === "halted" || s === "dispatch_off") return "";
     const map: Record<string, { cls: string; label: string }> = {
-      processing: { cls: "ai-processing", label: "⚙️ 处理中" },
-      completed: { cls: "ai-completed", label: "✓ 已完成" },
-      failed: { cls: "ai-failed", label: "✗ 失败" },
+      processing: { cls: "ai-processing", label: "🔄 AI 处理中" },
+      completed: { cls: "ai-completed", label: "✅ AI 已完成" },
+      failed: { cls: "ai-failed", label: "⚠️ AI 失败" },
+      halted: { cls: "ai-halted", label: "⏹ 已停止" },
+      dispatch_off: { cls: "ai-dispatch-off", label: "🔕 不接单中" },
+      idle: { cls: "ai-idle", label: "💤 空闲" },
       ...props.extraStatusBadges,
     };
-    const m = map[s];
-    if (!m) return "";
-    return `<span class="ai-badge ${m.cls}">${m.label}</span>`;
+    const m = map[s] ?? { cls: "ai-idle", label: "💤 空闲" };
+    return `<span class="ai-badge ${m.cls}" id="aiStatusBadge" data-status="${escapeAttr(s)}">${m.label}</span>`;
   })();
-  const isTerminal = props.aiStatus === "completed";
-  const showActions = props.writesEnabled !== false && !isTerminal;
+  const showActions = props.writesEnabled !== false;
   const haltBtnHtml = showActions
     ? (props.aiStatus === "halted" || props.aiStatus === "failed")
       ? `<button type="button" class="action-btn resume-btn" data-action-href="${escapeAttr(repoIssuesHref)}/${props.issueNumber}/resume" data-action-confirm="确认恢复 AI 处理？" title="恢复 AI 处理">▶ 恢复</button>`
-      : `<button type="button" class="action-btn" data-action-href="${escapeAttr(repoIssuesHref)}/${props.issueNumber}/halt" data-action-confirm="确认停止 AI 处理？" title="停止 AI 处理">⏹ 停止</button>`
+      : props.aiStatus === "processing"
+        ? `<button type="button" class="action-btn" id="aiStopBtn" data-action-href="${escapeAttr(repoIssuesHref)}/${props.issueNumber}/halt" data-action-confirm="确认停止 AI 处理？" title="停止正在运行的 AI">⏹ 停止运行</button>`
+        : ""
     : "";
   const dispatchBtnHtml = showActions
     ? props.projectDispatchOff
       ? `<span class="action-btn dispatch-btn" style="opacity:.5;cursor:not-allowed" title="项目已关闭自动接单">🔕 项目不接单</span>`
       : props.aiStatus === "dispatch_off"
-        ? `<button type="button" class="action-btn dispatch-btn" data-action-href="${escapeAttr(repoIssuesHref)}/${props.issueNumber}/dispatch-on" title="允许自动接单">🔔 接单</button>`
-        : `<button type="button" class="action-btn dispatch-btn" data-action-href="${escapeAttr(repoIssuesHref)}/${props.issueNumber}/dispatch-off" data-action-confirm="设为不自动接单？" title="设为不自动接单">🔕 不接单</button>`
+        ? `<button type="button" class="action-btn dispatch-btn" data-action-href="${escapeAttr(repoIssuesHref)}/${props.issueNumber}/dispatch-on" title="允许自动接单">🔔 恢复接单</button>`
+        : `<button type="button" class="action-btn dispatch-btn" data-action-href="${escapeAttr(repoIssuesHref)}/${props.issueNumber}/dispatch-off" data-action-confirm="设为不自动接单？" title="关闭此 issue 的自动接单">🔕 暂停接单</button>`
     : "";
   const modelSelectHtml = props.modelSelect && props.modelSelect.options.length > 0 && showActions
     ? `<span class="model-select-wrap"><select class="model-select" id="issueModelSelect" title="此 issue 的模型（覆盖项目/全局默认）">
