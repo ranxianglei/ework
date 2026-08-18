@@ -1,6 +1,6 @@
 {
   "name": "ework-web",
-  "version": "0.10.73",
+  "version": "0.10.74",
   "type": "module",
   "description": "ework-web — standalone multi-project issue tracker. Local SQLite-backed, no external API dependency. Bun + TypeScript + SSR HTML.",
   "license": "MIT",
