@@ -191,6 +191,27 @@ describe("Store: messages", () => {
     await store.close();
   });
 
+  it("model override survives a DB round-trip (queued/nudged/recovered paths)", async () => {
+    const { store, session } = await seed();
+    const msg = await store.createMessage(session.id, "x", "c1", undefined, "zhipuai/glm-4.6");
+    expect(msg.model).toBe("zhipuai/glm-4.6");
+
+    const reread = await store.getMessage(msg.id);
+    expect(reread?.model).toBe("zhipuai/glm-4.6");
+
+    const pending = await store.getNextPendingMessage(session.id);
+    expect(pending?.model).toBe("zhipuai/glm-4.6");
+    await store.close();
+  });
+
+  it("model defaults to undefined when no override given", async () => {
+    const { store, session } = await seed();
+    const msg = await store.createMessage(session.id, "x");
+    expect(msg.model).toBeUndefined();
+    expect((await store.getMessage(msg.id))?.model).toBeUndefined();
+    await store.close();
+  });
+
   it("getNextPendingMessage returns the oldest pending for the session", async () => {
     const { store, session } = await seed();
     const first = await store.createMessage(session.id, "first");

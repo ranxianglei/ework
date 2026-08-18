@@ -42,6 +42,7 @@ interface MessageRow {
   content: string;
   source_comment_id: string | null;
   reaction_comment_id: string | null;
+  model: string | null;
   status: string;
   attempts: number;
   error: string | null;
@@ -96,6 +97,7 @@ function rowToMessage(row: MessageRow): Message {
     content: row.content,
     sourceCommentId: row.source_comment_id ?? undefined,
     reactionCommentId: row.reaction_comment_id ?? undefined,
+    model: row.model ?? undefined,
     status: row.status as Message["status"],
     attempts: row.attempts,
     error: row.error ?? undefined,
@@ -287,8 +289,8 @@ export class Store {
     const now = new Date().toISOString();
     const id = crypto.randomUUID();
     await getDB().run(
-      "INSERT OR IGNORE INTO {{messages}} (uid, session_id, content, source_comment_id, reaction_comment_id, status, attempts, error, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      [id, sessionId, content, sourceCommentId ?? null, reactionCommentId ?? null, "pending", 0, null, now, now]
+      "INSERT OR IGNORE INTO {{messages}} (uid, session_id, content, source_comment_id, reaction_comment_id, model, status, attempts, error, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [id, sessionId, content, sourceCommentId ?? null, reactionCommentId ?? null, model ?? null, "pending", 0, null, now, now]
     );
     return {
       id, sessionId, content, sourceCommentId, reactionCommentId,

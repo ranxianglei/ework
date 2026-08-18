@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS {{messages}} (
   content             LONGTEXT    NOT NULL,
   source_comment_id   VARCHAR(64),
   reaction_comment_id VARCHAR(64),
+  model               VARCHAR(128),
   status              VARCHAR(16) NOT NULL DEFAULT 'pending',
   attempts            INT         NOT NULL DEFAULT 0,
   error               TEXT,

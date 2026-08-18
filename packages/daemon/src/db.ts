@@ -543,6 +543,15 @@ async function runMigrations(db: AsyncDatabase): Promise<void> {
     sqlite ? "generation INTEGER NOT NULL DEFAULT 0" : "generation INT NOT NULL DEFAULT 0"
   );
 
+  // messages.model — per-message model override from the webhook payload.
+  // Persisted so queued/nudged/recovered messages keep their model instead of
+  // silently falling back to the daemon default.
+  await ensureColumn(
+    tMessages,
+    "model",
+    sqlite ? "model TEXT" : "model VARCHAR(128)"
+  );
+
   // Index over owner_daemon_id — added after the column exists. SQLite tolerates
   // IF NOT EXISTS; MySQL lacks it, so we tolerate ER_DUP_KEYNAME (1061) on re-runs.
   if (sqlite) {
