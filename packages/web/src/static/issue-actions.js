@@ -36,12 +36,9 @@
       });
   });
 
-  document.addEventListener("click", function (e) {
-    var saveBtn = e.target.closest("#issueModelSave");
-    if (!saveBtn) return;
-    e.preventDefault();
+  function saveModel(saveBtn) {
     var sel = document.getElementById("issueModelSelect");
-    if (!sel) return;
+    if (!sel || !saveBtn) return;
     var m = sel.value;
     saveBtn.disabled = true;
     var path = location.pathname.split("/").slice(0, 5).join("/");
@@ -60,5 +57,16 @@
         saveBtn.disabled = false;
         alert("网络错误: " + err);
       });
+  }
+
+  document.addEventListener("click", function (e) {
+    var saveBtn = e.target.closest("#issueModelSave");
+    if (!saveBtn) return;
+    e.preventDefault();
+    saveModel(saveBtn);
+  });
+
+  document.addEventListener("change", function (e) {
+    if (e.target && e.target.id === "issueModelSelect") saveModel(document.getElementById("issueModelSave"));
   });
 })();
