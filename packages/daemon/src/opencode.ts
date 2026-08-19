@@ -335,6 +335,7 @@ export class Engine {
   private lastOutputAt = new Map<string, number>();
   private startedAt = new Map<string, number>();
   private progressCommentId = new Map<string, string>();
+  private pickupCommentId = new Map<string, string>();
 
   private nudgeRounds = new Map<string, number>();
   private emptyResponseRounds = new Map<string, number>();
@@ -805,7 +806,12 @@ export class Engine {
 
     // Ack before resolving the workdir: a first-touch clone can take minutes
     // (or hit the 10-min cap), and the user must see pickup feedback immediately.
-    await tracker.createComment(ref, `[system] 🔄 **${session.name}** picked up this issue — preparing workspace…\n> session: ${this.sessionRef(session)}`);
+    // The session link is a placeholder until the backend reports its session id;
+    // the onSessionId callback rewrites this comment with the real reference.
+    await tracker.createComment(ref, `[system] 🔄 **${session.name}** picked up this issue — preparing workspace…`).then(
+      (c) => this.pickupCommentId.set(k, c.id),
+      () => {},
+    );
     void tracker.updateStatus(ref, "processing");
     const workdir = await this.resolveWorkdir(session, issue);
     log.info(`engine: session "${session.name}" created for ${k}, workdir=${workdir}`);
@@ -1210,6 +1216,13 @@ export class Engine {
               await this.store.updateSession(session.id, { opencodeSessionId: id });
               session.opencodeSessionId = id;
               log.info(`engine: captured sessionID=${id.slice(0, 8)} for ${k} (early persist)`);
+              const pickupId = this.pickupCommentId.get(k);
+              if (pickupId) {
+                this.pickupCommentId.delete(k);
+                await tracker
+                  .editComment(ref, pickupId, `[system] 🔄 **${session.name}** picked up this issue.\n> session: ${this.sessionRef(session)} | workdir: ${this.workdirLink(workdir)}`)
+                  .catch((err) => log.error(`engine: failed to rewrite pickup comment for ${k}:`, (err as Error).message));
+              }
             }
           },
         },
@@ -1306,6 +1319,7 @@ export class Engine {
       return;
     }
     this.progressCommentId.delete(k);
+    this.pickupCommentId.delete(k);
     this.currentPrompt.delete(k);
     await this.persistRuntimeState(session.id);
 
