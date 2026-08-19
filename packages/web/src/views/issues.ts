@@ -63,7 +63,8 @@ export async function buildIssuesFeed(
 .tabs-sub a.active{background:var(--bg-muted);color:var(--text);font-weight:600}
 .row{display:block;padding:.6rem .2rem;border-bottom:1px solid var(--border);color:var(--text);text-decoration:none}
 .row:hover{text-decoration:none;background:var(--bg-muted)}
-.row-title{font-weight:500;overflow-wrap:anywhere}
+.row-title{font-weight:600;overflow-wrap:anywhere}
+.row:hover .row-title{color:var(--accent)}
 .row-meta{color:var(--text-muted);font-size:12px;margin-top:.2rem}
 .empty{color:var(--text-muted);text-align:center;padding:2rem;font-size:13px}
   .row-labels{display:inline;margin-left:.3rem}
