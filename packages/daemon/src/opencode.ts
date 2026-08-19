@@ -1520,7 +1520,9 @@ export class Engine {
   ): string {
     const who = authorKind === "bot" ? `@${commentUser} (bot)` : `@${commentUser} (user)`;
     return [
-      `New comment from ${who} on ${instructions.issueRef} "${issueTitle}":`,
+      `[SYSTEM FORWARD] User ${who} posted a new comment on ${instructions.issueRef} "${issueTitle}".`,
+      `The platform forwarded it to you; the user cannot see your terminal output —`,
+      `your reply tool posts a \`[bot]\` comment into the thread they read.`,
       ``,
       `---`,
       commentBody,
@@ -1528,7 +1530,7 @@ export class Engine {
       ``,
       `Working directory: ${workdir}`,
       ``,
-      `Reply with the \`reply\` tool (posted to the thread as a \`[bot]\` comment).`,
+      `Reply using the \`reply\` tool.`,
     ].join("\n");
   }
 
