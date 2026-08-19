@@ -211,3 +211,10 @@ CREATE TABLE IF NOT EXISTS {{project_members}} (
   CONSTRAINT {{fk_pm_user}} FOREIGN KEY (user_login) REFERENCES {{users}}(login) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE INDEX project_members_user ON {{project_members}} (user_login);
+
+CREATE TABLE IF NOT EXISTS {{config}} (
+  id          BIGINT AUTO_INCREMENT PRIMARY KEY,
+  akey        VARCHAR(255) NOT NULL UNIQUE,
+  value       TEXT NOT NULL,
+  updated_at  VARCHAR(40) NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
