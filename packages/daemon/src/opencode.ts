@@ -817,6 +817,8 @@ export class Engine {
     log.info(`engine: session "${session.name}" created for ${k}, workdir=${workdir}`);
 
     const instructions = tracker.getTrackerInstructions(ref);
+    const payloadClone = this.cloneUrls.get(`${ref.trackerType}:${scopeKey}#${ref.issueId}`);
+    if (payloadClone) instructions.clone = `git clone ${payloadClone} .`;
     const prompt = this.buildInitialPrompt(
       session.name, issueData.title,
       this.handleLargeContent(workdir, issueData.body, "issue-body.txt"),
@@ -911,6 +913,8 @@ export class Engine {
         await tracker.createComment(ref, `[system] 🔄 **${session.name}** joined the conversation.`);
 
         const instructions = tracker.getTrackerInstructions(ref);
+        const payloadClone = this.cloneUrls.get(`${ref.trackerType}:${scopeKey}#${ref.issueId}`);
+        if (payloadClone) instructions.clone = `git clone ${payloadClone} .`;
         const prompt = this.buildInitialPrompt(
           session.name, issueData.title,
           this.handleLargeContent(workdir, issueData.body, "issue-body.txt"),
@@ -1487,26 +1491,18 @@ export class Engine {
   ): string {
     return [
       `You are ${opName}, an AI development assistant.`,
-      `Your identity is "${opName}" — this name was assigned when you were initialized.`,
-      ``,
       `A new issue needs your attention:`,
       `- Issue: "${title}" (${instructions.issueRef})`,
       `- Author: @${author}`,
-      `- Working directory: ${workdir}`,
       ``,
       `### Issue Body`,
       body,
       ``,
       `### Repository`,
       `Working directory: \`${workdir}\``,
-      `If the directory is empty or doesn't contain the code, clone it:`,
-      `\`${instructions.clone}\``,
+      `If it's empty, clone the repo: \`${instructions.clone}\``,
       ``,
-      `Read the issue, understand what's needed, work on it, and reply to the user.`,
-      ``,
-      `**IMPORTANT**: After finishing your work, you MUST post a reply using the \`reply\` tool. Do NOT skip this step. Users are waiting for your response.`,
-      `**IMPORTANT**: Reply as soon as possible, then continue working. Don't make users wait.`,
-      `**IMPORTANT**: Every reply MUST start with \`[bot]\` prefix.`,
+      `Read the issue, work on it, and reply via the \`reply\` tool — every reply starts with \`[bot]\`. Post the reply as soon as possible, then continue working if needed.`,
     ].filter(Boolean).join("\n");
   }
 
