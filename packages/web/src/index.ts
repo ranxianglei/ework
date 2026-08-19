@@ -661,7 +661,7 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
   }
 
   if (url.pathname === "/") {
-    return Response.redirect(`${url.origin}/projects`, 302);
+    return Response.redirect(`${url.origin}/issues`, 302);
   }
 
   if (url.pathname === "/projects") {

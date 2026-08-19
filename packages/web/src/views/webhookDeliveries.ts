@@ -79,7 +79,7 @@ h1{font-size:18px;margin:0 0 .3rem}
 .tab{padding:.3rem .7rem;border-radius:6px 6px 0 0;text-decoration:none;color:var(--text-muted)}
 .tab.active{background:var(--accent);color:#fff}
 </style></head><body>
-<header class="nav"><a href="/" style="color:var(--header-text)">🏠 ework-web</a></header>
+<header class="nav"><a href="/" title="ework 主页" style="color:var(--header-text)">🏠</a></header>
 ${tabNavHTML("projects", viewer)}
 <main class="wrap">
 <h1>Webhook 投递记录</h1>

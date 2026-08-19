@@ -165,7 +165,7 @@ button.secondary{background:transparent;color:var(--text-muted);border:1px solid
 .daemon-list button.remove{padding:.25rem .6rem;font-size:11px;background:transparent;color:var(--text-muted);border:1px solid var(--border)}
 .daemon-empty{color:var(--text-muted);font-size:13px;padding:.5rem 0}
 </style></head><body>
-<header class="nav"><a href="/" style="color:var(--header-text)">🏠 ework-web</a><span style="opacity:.8"> · 设置</span><span style="margin-left:auto;opacity:.85">👤 ${escapeHtml(viewer.login)}</span><form method="post" action="/logout" style="display:inline"><button type="submit" style="background:none;border:1px solid rgba(255,255,255,.3);color:var(--header-text);border-radius:6px;padding:.2rem .7rem;font-size:12px;cursor:pointer;font:inherit">退出</button></form></header>
+<header class="nav"><a href="/" title="ework 主页" style="color:var(--header-text)">🏠</a><span style="opacity:.8"> · 设置</span><span style="margin-left:auto;opacity:.85">👤 ${escapeHtml(viewer.login)}</span><form method="post" action="/logout" style="display:inline"><button type="submit" style="background:none;border:1px solid rgba(255,255,255,.3);color:var(--header-text);border-radius:6px;padding:.2rem .7rem;font-size:12px;cursor:pointer;font:inherit">退出</button></form></header>
 <main class="wrap">
 <h1>后台配置</h1>
 <p class="hint">改完保存立即生效，无需重启。密钥/启动项（token、端口等）仍在 <code>.env</code>，不在此处。</p>

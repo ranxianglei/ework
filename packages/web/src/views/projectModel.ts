@@ -60,7 +60,7 @@ button{padding:.5rem 1.2rem;border:0;border-radius:6px;background:var(--accent);
 .flash.ok{background:#1f6feb;color:#fff}
 .flash.err{background:#da3633;color:#fff}
 </style></head><body>
-<header class="nav"><a href="/" style="color:var(--header-text)">🏠 ework-web</a><span style="opacity:.8"> · ${escapeHtml(project.owner + "/" + project.name)}</span></header>
+<header class="nav"><a href="/" title="ework 主页" style="color:var(--header-text)">🏠</a><span style="opacity:.8"> · ${escapeHtml(project.owner + "/" + project.name)}</span></header>
 <main class="wrap">
 ${projectSettingsTabsHTML(project.owner, project.name, "model")}
 <h1>🤖 模型设置</h1>

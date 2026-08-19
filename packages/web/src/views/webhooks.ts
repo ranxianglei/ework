@@ -142,7 +142,7 @@ button[type=submit]{padding:.5rem 1.2rem;border:0;border-radius:6px;background:v
 .subtab{padding:.35rem .8rem;border-radius:6px 6px 0 0;font-size:13px;color:var(--text-muted)}
 .subtab.active{background:var(--bg-muted);color:var(--text);font-weight:600}
 </style></head><body>
-<header class="nav"><a href="/" style="color:var(--header-text)">🏠 ework-web</a></header>
+<header class="nav"><a href="/" title="ework 主页" style="color:var(--header-text)">🏠</a></header>
 ${tabNavHTML("projects")}
 <main class="wrap">
 <div class="crumb"><a href="/projects">项目</a> · <a href="/${encodeURIComponent(project.owner)}/${encodeURIComponent(project.name)}">${escapeHtml(project.owner + "/" + project.name)}</a> · 设置</div>

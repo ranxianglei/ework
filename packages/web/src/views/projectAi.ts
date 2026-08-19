@@ -71,7 +71,7 @@ button.danger{background:#da3633;color:#fff}
 button:disabled{opacity:.5;cursor:not-allowed}
 .future{opacity:.5;pointer-events:none}
 </style></head><body>
-<header class="nav"><a href="/" style="color:var(--header-text)">🏠 ework-web</a><span style="opacity:.8"> · ${escapeHtml(project.owner + "/" + project.name)}</span></header>
+<header class="nav"><a href="/" title="ework 主页" style="color:var(--header-text)">🏠</a><span style="opacity:.8"> · ${escapeHtml(project.owner + "/" + project.name)}</span></header>
 <main class="wrap">
 ${projectSettingsTabsHTML(project.owner, project.name, "ai")}
 <h1>🤖 AI 设置</h1>

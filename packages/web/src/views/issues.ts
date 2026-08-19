@@ -73,7 +73,7 @@ export async function buildIssuesFeed(
 .label-filter{font-size:13px;color:var(--text-muted);margin-bottom:.4rem}
 .label-filter strong{color:var(--text)}
 </style></head><body>
-<header class="topbar"><a href="/" style="font-weight:600;color:var(--header-text)">🏠 ework</a></header>
+<header class="topbar"><a href="/" title="ework 主页" style="color:var(--header-text)">🏠</a></header>
 ${tabNavHTML("issues", viewer ? { login: viewer.login, is_admin: viewer.is_admin } : undefined)}
 <main class="feed-wrap">
   <form class="search" method="GET" action="/issues">
