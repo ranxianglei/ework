@@ -110,7 +110,6 @@ header.topbar .num{opacity:.7}
 .composer .btn-close.armed{background:#d23f31;color:#fff;border-color:#d23f31}
 .composer-ro{max-width:900px;margin:0 auto .9rem;padding:.7rem 1rem;color:var(--text-muted);font-size:13px;text-align:center;border:1px dashed var(--border);border-radius:8px}
 .tabs{display:flex;gap:.4rem;padding:.6rem 1rem;border-bottom:1px solid var(--border);max-width:900px;margin:0 auto;align-items:center}
-.tabs .brand-tab{font-weight:600;margin-right:.4rem}
 .tab{padding:.4rem 1rem;border-radius:6px;font-size:14px;color:var(--text-muted)}
 .tab.active{background:var(--bg-muted);color:var(--text);font-weight:600}
 .tab-spacer{flex:1}
@@ -338,7 +337,7 @@ export function tabNavHTML(active: "projects" | "issues" | "sessions" | "me", us
   const userArea = user
     ? `<span class="user-area"><a class="tab${m}" href="/me" title="${escapeAttr(user.login)}">👤 ${escapeHtml(user.login)}</a><form method="post" action="/logout" class="logout-form"><button type="submit" class="logout-btn" title="退出登录">退出</button></form></span>`
     : "";
-  return `<nav class="tabs"><a class="tab brand-tab" href="/" title="ework 主页">🏠 ework</a><a class="tab${p}" href="/projects">项目</a><a class="tab${i}" href="/issues">Issues</a><a class="tab${s}" href="/sessions">会话</a><span style="margin-left:auto" class="tab-spacer"></span><a class="tab" href="/settings">⚙️ 设置</a>${userArea}</nav>`;
+  return `<nav class="tabs"><a class="tab${p}" href="/projects">项目</a><a class="tab${i}" href="/issues">Issues</a><a class="tab${s}" href="/sessions">会话</a><span style="margin-left:auto" class="tab-spacer"></span><a class="tab" href="/settings">⚙️ 设置</a>${userArea}</nav>`;
 }
 
 export interface ActionBarOpts {
