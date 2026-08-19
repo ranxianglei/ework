@@ -6,7 +6,7 @@ import { homedir } from "os";
 import { loadConfig, DB_OVERRIDABLE, parseOverride, resolveTtsBackend } from "./config";
 import type { Config } from "./config";
 import { setConfig, deleteConfig, getConfigAll, initDB, getDB } from "./db";
-import { getActiveDaemons, listAllDaemons, getSessionDaemonMap, resolveDaemonEndpoint, getRunningSessionsForProject } from "./coordination";
+import { getActiveDaemons, listAllDaemons, getSessionDaemonMap, resolveDaemonEndpoint, getRunningSessionsForProject, resolveSessionUid } from "./coordination";
 import { testMysqlConnection, migrateSqliteToMysql, writeMysqlEnv, migrateMysqlToSqlite, writeSqliteEnv, migrateDaemonSqliteToMysql, generateMysqlDDL } from "./db-admin";
 import type { MysqlTargetOpts } from "./db-admin";
 import { checkAuth, makeAuthCookieHeader, clearAuthCookieHeader, loginHTML, sanitizeNext, ensureBootstrapAdmin, ensureBootstrapSystem, isReservedSystemLogin } from "./auth";
@@ -709,8 +709,22 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
 
   const sessionView = url.pathname.match(SESSION_VIEW_RE);
   if (sessionView) {
-    const [, sid] = sessionView;
-    if (!sid) return html(errorPage("404", "bad session path"), 404);
+    const [, rawSid] = sessionView;
+    if (!rawSid) return html(errorPage("404", "bad session path"), 404);
+    // Daemon-internal session UIDs (36-char uuid) appear in pickup acks before
+    // the backend reports its opencode id: redirect once known, hold page if not.
+    let sid = rawSid;
+    if (!sid.startsWith("ses_")) {
+      const uidInfo = await resolveSessionUid(rawSid);
+      if (uidInfo?.opencodeSessionId) {
+        const qs = new URLSearchParams(url.searchParams);
+        qs.set("daemon_id", String(uidInfo.daemonId));
+        return Response.redirect(`${url.origin}/sessions/${encodeURIComponent(uidInfo.opencodeSessionId)}?${qs}`, 302);
+      }
+      if (uidInfo) {
+        return html(errorPage("等待启动", "会话已创建，后端会话 ID 尚未生成（正在准备工作目录）。稍后刷新此页。"), 200);
+      }
+    }
     const desc = url.searchParams.get("asc") !== "1";
     const all = url.searchParams.get("all") === "1";
     const limit = Math.min(5000, Math.max(1, Number(url.searchParams.get("limit")) || 30));

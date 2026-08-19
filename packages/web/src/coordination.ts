@@ -75,6 +75,30 @@ export interface SessionDaemonInfo {
   endpoint: string;
 }
 
+export interface SessionUidInfo {
+  daemonId: number;
+  opencodeSessionId: string | null;
+}
+
+export async function resolveSessionUid(uid: string): Promise<SessionUidInfo | null> {
+  try {
+    const rows = await getDB().all<{ daemon_id: number; opencode_session_id: string | null }>(
+      `SELECT i.owner_daemon_id AS daemon_id, s.opencode_session_id
+       FROM {{d_op_sessions}} s
+       JOIN {{d_issues}} i ON i.uid = s.issue_id
+       WHERE s.uid = ?
+       LIMIT 1`,
+      [uid],
+    );
+    const r = rows[0];
+    if (!r || !r.daemon_id) return null;
+    return { daemonId: r.daemon_id, opencodeSessionId: r.opencode_session_id && r.opencode_session_id !== "" ? r.opencode_session_id : null };
+  } catch (e) {
+    log.info(`coordination: session uid resolve failed (${e instanceof Error ? e.message : String(e)})`);
+    return null;
+  }
+}
+
 export async function getSessionDaemonMap(): Promise<Map<string, SessionDaemonInfo>> {
   try {
     const rows = await getDB().all<{
