@@ -717,7 +717,7 @@ export class Engine {
 
     if (event.type === "comment_created" && event.comment?.author) {
       const author = event.comment.author;
-      const authorKind = event.comment.author_kind ?? "human";
+      const authorKind = event.comment.authorKind ?? "human";
       const d = this.cfg.daemon;
       const noWake = [...d.nonWakingAuthors, ...d.noWakeLogins];
       if (noWake.includes(author)) {
@@ -894,7 +894,7 @@ export class Engine {
         const instructions = tracker.getTrackerInstructions(ref);
         const prompt = this.buildForwardPrompt(
           session.name, this.handleLargeContent(workdir, comment.body, `comment-${comment.id}.txt`),
-          comment.author, issueData.title, workdir, instructions
+          comment.author, comment.authorKind, issueData.title, workdir, instructions
         );
 
         // Immediate ack
@@ -945,7 +945,7 @@ export class Engine {
       const instructions = tracker.getTrackerInstructions(ref);
       const prompt = this.buildForwardPrompt(
         session.name, this.handleLargeContent(workdir, comment.body, `comment-${comment.id}.txt`),
-        comment.author, issueData.title, workdir, instructions
+        comment.author, comment.authorKind, issueData.title, workdir, instructions
       );
       await tracker.createComment(ref, `[system] ✓ Message forwarded to **${session.name}**${this.running.has(this.sessionKey(session, issue)) ? " (running)" : ""}.\n> session: ${this.sessionRef(session)} | workdir: ${this.workdirLink(workdir)}`);
       await this.enqueueOrRun(session, issue, prompt, comment.id, model);
@@ -1490,7 +1490,10 @@ export class Engine {
     instructions: { clone: string; issueRef: string; closeIssue?: string }
   ): string {
     return [
-      `You are ${opName}, an AI development assistant.`,
+      `You are ${opName}, the AI agent for this project on ework (a self-hosted, issue-driven dev platform).`,
+      `Who's who: issue comments come from the project's users (humans like @${author}; bots are labelled "bot") and are forwarded to you verbatim. Your \`reply\` tool posts a comment they read (prefixed \`[bot]\`). Lines starting with \`[system]\` are platform plumbing, not user speech.`,
+      `The working directory below is your own clone of the repo. Only claim actions you actually performed — verify with tools (git status/log) before asserting any push, merge, or change.`,
+      ``,
       `A new issue needs your attention:`,
       `- Issue: "${title}" (${instructions.issueRef})`,
       `- Author: @${author}`,
@@ -1510,12 +1513,14 @@ export class Engine {
     opName: string,
     commentBody: string,
     commentUser: string,
+    authorKind: string | undefined,
     issueTitle: string,
     workdir: string,
     instructions: { issueRef: string }
   ): string {
+    const who = authorKind === "bot" ? `@${commentUser} (bot)` : `@${commentUser} (user)`;
     return [
-      `[SYSTEM FORWARD] User @${commentUser} posted a new comment on ${instructions.issueRef} "${issueTitle}":`,
+      `New comment from ${who} on ${instructions.issueRef} "${issueTitle}":`,
       ``,
       `---`,
       commentBody,
@@ -1523,7 +1528,7 @@ export class Engine {
       ``,
       `Working directory: ${workdir}`,
       ``,
-      `Reply using the \`reply\` tool with \`[bot]\` prefix.`,
+      `Reply with the \`reply\` tool (posted to the thread as a \`[bot]\` comment).`,
     ].join("\n");
   }
 

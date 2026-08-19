@@ -177,7 +177,7 @@ export class GiteaTracker implements IssueTracker {
           id: String(comment.id),
           body: comment.body as string,
           author: commentUser?.login ?? "",
-          author_kind: (comment as Record<string, unknown>).author_kind as string | undefined,
+          authorKind: (comment as Record<string, unknown>).author_kind as string | undefined,
         },
         model,
         cloneUrl,

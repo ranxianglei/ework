@@ -30,7 +30,7 @@ export interface TrackerEvent {
     id: string;
     body: string;
     author: string;
-    author_kind?: string;
+    authorKind?: string;
   };
   // Resolved "provider/model" string from ework-web (project override or
   // global default). Empty/undefined = no override; engine omits --model
@@ -50,6 +50,7 @@ export interface TrackerComment {
   id: string;
   body: string;
   author: string;
+  authorKind?: string;
   createdAt?: string; // ISO timestamp
 }
 
