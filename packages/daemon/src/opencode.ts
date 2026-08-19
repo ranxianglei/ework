@@ -207,13 +207,20 @@ export class RecloneStrategy implements TakeoverStrategy {
         const gitArgs = ["git"];
         if (credHelper) gitArgs.push("-c", `credential.helper=${credHelper}`);
         gitArgs.push("clone", url, dir);
+        // ssh without these can sleep forever: no TCP keepalive on a blackholed
+        // connection, and host-key/passphrase prompts block a headless daemon.
+        const sshCmd = process.env.WORK_GIT_SSH_COMMAND
+          ?? "ssh -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o BatchMode=yes";
         let r: { exitCode: number | null; stderr?: Uint8Array | undefined };
         try {
-          // async spawn: a slow/hung remote (e.g. SSH host-key prompt) must never
-          // block the daemon event loop — spawnSync froze healthz+heartbeats for
-          // the whole clone duration. Capped at 10 minutes.
-          const proc = Bun.spawn({ cmd: gitArgs, stdout: "ignore", stderr: "pipe", env: { ...process.env, ...env } });
-          const killTimer = setTimeout(() => proc.kill("SIGKILL"), 10 * 60_000);
+          // async spawn: a slow/hung remote must never block the daemon event
+          // loop — spawnSync froze healthz+heartbeats for the whole clone
+          // duration. Capped at 10 minutes.
+          const proc = Bun.spawn({
+            cmd: gitArgs, stdout: "ignore", stderr: "pipe",
+            env: { ...process.env, ...env, GIT_SSH_COMMAND: sshCmd },
+          });
+          const killTimer = setTimeout(() => { try { proc.kill("SIGKILL"); } catch { /* already dead */ } }, 10 * 60_000);
           const [exitCode, stderr] = await Promise.all([proc.exited, new Response(proc.stderr).arrayBuffer()]);
           clearTimeout(killTimer);
           r = { exitCode, stderr: new Uint8Array(stderr) };
@@ -795,11 +802,13 @@ export class Engine {
     }
 
     const k = this.sessionKey(session, issue);
+
+    // Ack before resolving the workdir: a first-touch clone can take minutes
+    // (or hit the 10-min cap), and the user must see pickup feedback immediately.
+    await tracker.createComment(ref, `[system] 🔄 **${session.name}** picked up this issue — preparing workspace…\n> session: ${this.sessionRef(session)}`);
+    void tracker.updateStatus(ref, "processing");
     const workdir = await this.resolveWorkdir(session, issue);
     log.info(`engine: session "${session.name}" created for ${k}, workdir=${workdir}`);
-
-    await tracker.createComment(ref, `[system] 🔄 **${session.name}** picked up this issue.\n> session: ${this.sessionRef(session)} | workdir: ${this.workdirLink(workdir)}`);
-    void tracker.updateStatus(ref, "processing");
 
     const instructions = tracker.getTrackerInstructions(ref);
     const prompt = this.buildInitialPrompt(
