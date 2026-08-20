@@ -94,7 +94,7 @@ export async function runInstall(
 
   // 1. Preflight: bun/npm/opencode must exist on PATH.
   const preflight = checkPreflight([...REQUIRED_COMMANDS], {
-    optionalCommands: ["systemctl"],
+    optionalCommands: ["systemctl", "pi"],
   });
   if (preflight.missing.length > 0) {
     throw new InstallError(
@@ -104,6 +104,21 @@ export async function runInstall(
   }
   const opencodeBin = preflight.found.get("opencode")!;
   logger.ok(`preflight: bun, npm, opencode all on PATH`);
+
+  const piBin = preflight.found.get("pi") ?? "";
+  let piProvider = "";
+  let piModel = "";
+  if (piBin) {
+    try {
+      const settingsPath = path.join(process.env.HOME || "~", ".pi", "agent", "settings.json");
+      const settings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+      piProvider = typeof settings.defaultProvider === "string" ? settings.defaultProvider : "";
+      piModel = typeof settings.defaultModel === "string" ? settings.defaultModel : "";
+      logger.ok(`preflight: pi found (${piBin}) — provider=${piProvider || "?"} model=${piModel || "?"}`);
+    } catch {
+      logger.warn(`pi found (${piBin}) but ~/.pi/agent/settings.json unreadable — set WORK_PI_PROVIDER manually`);
+    }
+  }
 
   ensureSelfBinSymlink(logger);
 
@@ -184,6 +199,9 @@ export async function runInstall(
     botName: opts.botName,
     operatorLogin,
     opencodeBin,
+    piBin,
+    piProvider,
+    piModel,
   };
   const webEnvResult = await ensureEnvFile({ file: "web", filePath: paths.webEnvFile, ctx });
   if (webEnvResult.created) {

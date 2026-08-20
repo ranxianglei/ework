@@ -28,6 +28,9 @@ export interface InstallContext {
   operatorLogin: string;
   // opencode binary path (looked up via preflight)
   opencodeBin: string;
+  piBin: string;
+  piProvider: string;
+  piModel: string;
 }
 
 export interface EnvKeySpec {
@@ -94,6 +97,10 @@ export const DAEMON_ENV_KEYS: readonly EnvKeySpec[] = [
   { envVar: "BOT_TOKEN",              file: "daemon", secret: true, generate: () => "" },
   { envVar: "OPENCODE_BINARY",        file: "daemon", generate: (c) => c.opencodeBin },
   { envVar: "OPENCODE_BASE_WORKDIR",  file: "daemon", generate: (c) => c.paths.opencodeWorkdir },
+  { envVar: "WORK_RUNTIME",           file: "daemon", generate: () => "opencode" },
+  { envVar: "WORK_PI_BINARY",         file: "daemon", generate: (c) => c.piBin },
+  { envVar: "WORK_PI_PROVIDER",       file: "daemon", generate: (c) => c.piProvider },
+  { envVar: "WORK_PI_DEFAULT_MODEL",  file: "daemon", generate: (c) => c.piModel },
 ] as const;
 
 export const ROUTER_ENV_KEYS: readonly EnvKeySpec[] = [
