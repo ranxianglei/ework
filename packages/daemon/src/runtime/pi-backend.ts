@@ -99,14 +99,8 @@ export class PiBackend implements RuntimeBackend {
   }
 
   async sessionExists(sessionId: string): Promise<boolean> {
-    const sessionDir = this.resolveSessionDir();
-    if (!existsSync(sessionDir)) return false;
-    try {
-      const files = readdirSync(sessionDir);
-      return files.some((f) => f.includes(sessionId) && f.endsWith(".jsonl"));
-    } catch {
-      return false;
-    }
+    if (!sessionId) return false;
+    return this.findSessionFile(sessionId) !== null;
   }
 
   async getSessionOutputTokens(sessionId: string | undefined): Promise<SessionOutputResult> {
