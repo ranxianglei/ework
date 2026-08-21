@@ -11,6 +11,10 @@ export interface RuntimeSpawnCallbacks {
   onSessionId: (id: string) => Promise<void> | void;
 }
 
+export interface LastModelResult {
+  model: string;
+}
+
 export interface RuntimeHandle {
   pid: number;
   exited: Promise<number>;
@@ -26,6 +30,7 @@ export interface RuntimeBackend {
   readonly name: string;
 
   spawn(opts: RuntimeSpawnOpts, callbacks: RuntimeSpawnCallbacks): Promise<RuntimeHandle>;
+  lastSessionModel(sessionId: string | undefined): Promise<LastModelResult>;
 
   sessionExists(sessionId: string): Promise<boolean>;
 

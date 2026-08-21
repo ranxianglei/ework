@@ -1365,8 +1365,11 @@ export class Engine {
       // is undefined; pick the LAST qualifying comment instead.
       const matched = [...commentsNow].reverse().find(c => tracker.isBotUser(c.author) && !this.isSystemComment(c) && c.createdAt && new Date(c.createdAt).getTime() > (started ?? 0));
       log.info(`engine: [bot] reply found for ${k} after prompt (comment ${matched?.id ?? "?"} createdAt ${matched?.createdAt ?? "?"}), marking done`);
-      if (matched && usedModel) {
-        void tracker.setCommentModel(ref, matched.id, usedModel).catch(() => { /* display-only */ });
+      if (matched && !usedModel) {
+        const fromSession = await this.backend.lastSessionModel(session.opencodeSessionId).catch(() => ({ model: "" }));
+        if (fromSession.model) {
+          void tracker.setCommentModel(ref, matched.id, fromSession.model).catch(() => { /* display-only */ });
+        }
       }
       this.nudgeRounds.delete(k);
       this.emptyResponseRounds.delete(k);

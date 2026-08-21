@@ -8,6 +8,7 @@ import type {
   RuntimeSpawnCallbacks,
   RuntimeHandle,
   SessionOutputResult,
+  LastModelResult,
 } from "./types";
 
 export class PiBackend implements RuntimeBackend {
@@ -96,6 +97,10 @@ export class PiBackend implements RuntimeBackend {
         }
       }
     }
+  }
+
+  async lastSessionModel(_sessionId: string | undefined): Promise<LastModelResult> {
+    return { model: "" };
   }
 
   async sessionExists(sessionId: string): Promise<boolean> {

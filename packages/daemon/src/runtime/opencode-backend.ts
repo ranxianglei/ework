@@ -7,6 +7,7 @@ import type {
   RuntimeSpawnCallbacks,
   RuntimeHandle,
   SessionOutputResult,
+  LastModelResult,
 } from "./types";
 
 const ENV_DENY_ALWAYS = ["OPENCODE", "OPENCODE_PID", "OPENCODE_RUN_ID", "OPENCODE_PROCESS_ROLE"] as const;
@@ -100,6 +101,28 @@ export class OpencodeBackend implements RuntimeBackend {
       return !!row;
     } catch {
       return false;
+    } finally {
+      db.close();
+    }
+  }
+
+  async lastSessionModel(sessionId: string | undefined): Promise<LastModelResult> {
+    if (!sessionId) return { model: "" };
+    let db: Database;
+    try {
+      db = new Database(this.dbPath, { readonly: true });
+    } catch {
+      return { model: "" };
+    }
+    try {
+      const row = db.prepare(
+        "SELECT json_extract(data,'$.modelID') AS model FROM message " +
+        "WHERE session_id = ? AND json_extract(data,'$.modelID') IS NOT NULL AND json_extract(data,'$.modelID') != '' " +
+        "ORDER BY time_created DESC LIMIT 1"
+      ).get(sessionId) as { model: string | null } | null;
+      return { model: row?.model ?? "" };
+    } catch {
+      return { model: "" };
     } finally {
       db.close();
     }
