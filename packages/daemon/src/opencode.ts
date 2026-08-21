@@ -1363,6 +1363,10 @@ export class Engine {
     if (hasRecent) {
       const matched = commentsNow.find(c => tracker.isBotUser(c.author) && !this.isSystemComment(c) && c.createdAt && new Date(c.createdAt).getTime() > (started ?? 0));
       log.info(`engine: [bot] reply found for ${k} after prompt (comment ${matched?.id ?? "?"} createdAt ${matched?.createdAt ?? "?"}), marking done`);
+      const usedModel = this.currentModel.get(k) ?? "";
+      if (matched && usedModel) {
+        void tracker.setCommentModel(ref, matched.id, usedModel).catch(() => { /* display-only */ });
+      }
       this.nudgeRounds.delete(k);
       this.emptyResponseRounds.delete(k);
       await this.persistRuntimeState(session.id);

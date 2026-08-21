@@ -134,6 +134,15 @@ export class GiteaClient {
     );
   }
 
+  async setCommentModel(owner: string, repo: string, commentId: number, model: string) {
+    return this.request(
+      "POST",
+      `/repos/${owner}/${repo}/issues/comments/${commentId}/model`,
+      { model },
+      true
+    );
+  }
+
   async addCommentReaction(owner: string, repo: string, commentId: number, content: string) {
     return this.request(
       "POST",

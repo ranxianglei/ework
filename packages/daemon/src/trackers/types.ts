@@ -138,6 +138,7 @@ export interface IssueTracker {
   updateStatus(ref: TrackerRef, status: string, detail?: string): Promise<void>;
 
   setReaction(ref: TrackerRef, commentId: string, content: string, remove?: boolean): Promise<void>;
+  setCommentModel(ref: TrackerRef, commentId: string, model: string): Promise<void>;
 
   getTrackerInstructions(ref: TrackerRef): TrackerInstructions;
 

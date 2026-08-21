@@ -105,6 +105,7 @@ class FakeTracker implements IssueTracker {
   async updateStatus(_ref: TrackerRef, state: string, detail?: string): Promise<void> {
     this.statusUpdates.push({ state, detail });
   }
+  async setCommentModel(_ref: unknown, _commentId: string, _model: string): Promise<void> {}
   async setReaction(): Promise<void> {}
 
   getTrackerInstructions(_ref: TrackerRef): TrackerInstructions {

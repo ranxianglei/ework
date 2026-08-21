@@ -71,6 +71,12 @@ export class GiteaTracker implements IssueTracker {
     );
   }
 
+  async setCommentModel(ref: TrackerRef, commentId: string, model: string) {
+    await this.client.setCommentModel(
+      this.owner(ref), this.repo(ref), Number(commentId), model
+    );
+  }
+
   async setReaction(ref: TrackerRef, commentId: string, content: string, remove = false) {
     if (remove) {
       await this.client.removeCommentReaction(
