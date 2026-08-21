@@ -359,6 +359,7 @@ export class Engine {
   private static MAX_NUDGE_ROUNDS = 1;
   private static MAX_EMPTY_RESPONSE_ROUNDS = 1;
   private static MAX_STUCK_NUDGE_ROUNDS = 1;
+  private static MAX_RUNTIME_MS = 3 * 60 * 60 * 1000;
   private static OBSERVER_INTERVAL_MS = 5 * 60 * 1000;
   private static STUCK_THRESHOLD_MS = 30 * 60 * 1000;
   private static MAX_PROCESS_EXIT_NUDGE_ROUNDS = 1;
@@ -555,6 +556,10 @@ export class Engine {
 
   private get maxStuckNudges(): number {
     return this.cfg.stuck?.maxNudges ?? Engine.MAX_STUCK_NUDGE_ROUNDS;
+  }
+
+  private get maxRuntimeMs(): number {
+    return this.cfg.stuck?.maxRuntimeMs ?? Engine.MAX_RUNTIME_MS;
   }
 
   private getTracker(type: string): IssueTracker {
@@ -1746,6 +1751,19 @@ export class Engine {
           if (nextMsg) {
             await this.dequeueOrIdle(k, session, issue, nextMsg);
           }
+          continue;
+        }
+
+        // Process alive — cap total run time. Output-silence detection cannot
+        // catch loops that keep emitting (observed: 6h of failing compress calls
+        // every ~5s), so any single run is hard-stopped after maxRuntimeMs.
+        const started = this.startedAt.get(k);
+        if (started && Date.now() - started >= this.maxRuntimeMs) {
+          const hrs = (this.maxRuntimeMs / 3600000).toFixed(1);
+          log.warn(`engine: run exceeded max runtime (${hrs}h) on ${k}, stopping`);
+          await tracker.createComment(this.sessionToRef(session, issue), `[system] ⏹ **${session.name}** run exceeded ${hrs}h — stopped. Reply again on the issue to continue.`).catch(() => { /* best-effort */ });
+          this.nudgeRounds.set(k, Engine.MAX_NUDGE_ROUNDS);
+          this.forceStop(k);
           continue;
         }
 

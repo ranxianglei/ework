@@ -72,6 +72,7 @@ export const configSchema = z.object({
   stuck: z.object({
     thresholdMs: z.coerce.number().positive(),
     maxNudges: z.coerce.number().int().nonnegative(),
+    maxRuntimeMs: z.coerce.number().positive(),
   }).optional(),
   file: z.object({
     roots: z.array(z.string()).default([]),
@@ -170,9 +171,10 @@ export function loadConfig(): Config {
         baseURL: process.env.COMPLETION_CHECK_BASE_URL ?? "",
         model: process.env.COMPLETION_CHECK_MODEL ?? "",
       } : undefined,
-      stuck: process.env.DAEMON_STUCK_THRESHOLD_MS || process.env.DAEMON_MAX_STUCK_NUDGES ? {
+      stuck: process.env.DAEMON_STUCK_THRESHOLD_MS || process.env.DAEMON_MAX_STUCK_NUDGES || process.env.DAEMON_STUCK_MAX_RUNTIME_MS ? {
         thresholdMs: Number(process.env.DAEMON_STUCK_THRESHOLD_MS) || 30 * 60 * 1000,
         maxNudges: Number(process.env.DAEMON_MAX_STUCK_NUDGES) || 1,
+        maxRuntimeMs: Number(process.env.DAEMON_STUCK_MAX_RUNTIME_MS) || 3 * 60 * 60 * 1000,
       } : undefined,
       childEnvDeny: (process.env.WORK_CHILD_ENV_DENY ?? "").split(",").map((s) => s.trim()).filter(Boolean),
     });
@@ -217,9 +219,10 @@ export function loadConfig(): Config {
       baseURL: process.env.COMPLETION_CHECK_BASE_URL ?? "",
       model: process.env.COMPLETION_CHECK_MODEL ?? "",
     } : undefined,
-    stuck: process.env.DAEMON_STUCK_THRESHOLD_MS || process.env.DAEMON_MAX_STUCK_NUDGES ? {
+    stuck: process.env.DAEMON_STUCK_THRESHOLD_MS || process.env.DAEMON_MAX_STUCK_NUDGES || process.env.DAEMON_STUCK_MAX_RUNTIME_MS ? {
       thresholdMs: Number(process.env.DAEMON_STUCK_THRESHOLD_MS) || 30 * 60 * 1000,
       maxNudges: Number(process.env.DAEMON_MAX_STUCK_NUDGES) || 1,
+      maxRuntimeMs: Number(process.env.DAEMON_STUCK_MAX_RUNTIME_MS) || 3 * 60 * 60 * 1000,
     } : undefined,
     file: {
       roots: (process.env.WORK_FILE_ROOTS ?? "").split(":").filter(Boolean).length > 0
