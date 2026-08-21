@@ -18,9 +18,10 @@ function issueRow(it: IssueWithMeta, q: string, state: string, labels: LabelRow[
     ? `<span class="row-labels">${labels.map((l) => labelChip(l, it.project_owner, it.project_name, state)).join("")}</span>`
     : "";
   const aiBadge = aiStatusBadge(it.ai_status);
+  const modelChip = it.model ? ` · <span class="row-model" title="模型">${escapeHtml(it.model)}</span>` : "";
   return `<a class="row" href="${escapeAttr(href)}">
     <div class="row-title">${title}${chips}</div>
-    <div class="row-meta">${projectStr} · #${it.number} · 💬 ${it.comment_count} · ${relTime(it.updated_at)}${aiBadge ? ` · ${aiBadge}` : ""}</div>
+    <div class="row-meta">${projectStr} · #${it.number} · 💬 ${it.comment_count} · ${relTime(it.updated_at)}${aiBadge ? ` · ${aiBadge}` : ""}${modelChip}</div>
   </a>`;
 }
 
@@ -66,6 +67,7 @@ export async function buildIssuesFeed(
 .row-title{font-weight:600;overflow-wrap:anywhere}
 .row:hover .row-title{color:var(--accent)}
 .row-meta{color:var(--text-muted);font-size:12px;margin-top:.2rem}
+  .row-model{background:var(--bg-muted);border:1px solid var(--border);border-radius:4px;padding:0 .3rem;font-size:11px}
 .empty{color:var(--text-muted);text-align:center;padding:2rem;font-size:13px}
   .row-labels{display:inline;margin-left:.3rem}
   .issue-label{display:inline;color:var(--text-muted);font-size:11px;text-decoration:none;margin-left:.35rem;white-space:nowrap;cursor:pointer}
