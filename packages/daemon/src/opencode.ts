@@ -332,6 +332,7 @@ export class Engine {
   private startedAt = new Map<string, number>();
   private progressCommentId = new Map<string, string>();
   private pickupCommentId = new Map<string, string>();
+  private forwardCommentId = new Map<string, string>();
 
   private nudgeRounds = new Map<string, number>();
   private emptyResponseRounds = new Map<string, number>();
@@ -894,7 +895,10 @@ export class Engine {
         );
 
         // Immediate ack
-        await tracker.createComment(ref, `[system] ✓ Message forwarded to **${session.name}**${this.running.has(this.sessionKey(session, issue)) ? " (running)" : ""}.\n> session: ${this.sessionRef(session)} | workdir: ${this.workdirLink(workdir)}`);
+        {
+          const c = await tracker.createComment(ref, `[system] ✓ Message forwarded to **${session.name}**${this.running.has(this.sessionKey(session, issue)) ? " (running)" : ""}.\n> session: ${this.sessionRef(session)} | workdir: ${this.workdirLink(workdir)}`);
+          if (!session.opencodeSessionId) this.forwardCommentId.set(this.sessionKey(session, issue), c.id);
+        }
 
         await this.enqueueOrRun(session, issue, prompt, comment.id, model);
       } else {
@@ -1230,9 +1234,16 @@ export class Engine {
               const pickupId = this.pickupCommentId.get(k);
               if (pickupId) {
                 this.pickupCommentId.delete(k);
+    this.forwardCommentId.delete(k);
                 await tracker
                   .editComment(ref, pickupId, `[system] 🔄 **${session.name}** picked up this issue.\n> session: ${this.sessionRef(session)} | workdir: ${this.workdirLink(workdir)}`)
                   .catch((err) => log.error(`engine: failed to rewrite pickup comment for ${k}:`, (err as Error).message));
+              }
+              const forwardId = this.forwardCommentId.get(k);
+              if (forwardId) {
+                this.forwardCommentId.delete(k);
+                const body = `[system] ✓ Message forwarded to **${session.name}**${this.running.has(k) ? " (running)" : ""}.\n> session: ${this.sessionRef(session)} | workdir: ${this.workdirLink(workdir)}`;
+                await tracker.editComment(ref, forwardId, body).catch(() => { /* cosmetic rewrite */ });
               }
             }
           },
