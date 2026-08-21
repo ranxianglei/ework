@@ -1148,6 +1148,17 @@ export class Engine {
     // Update session state
     await this.store.updateSession(session.id, { state: "running" });
 
+    // Every execution path funnels through here (opened, commented, new-session
+    // on comment, preempt re-run, retry) — the badge must flip for all of them,
+    // not only for the initial issue-opened ack.
+    const tracker = this.trackers.get(issue.trackerType);
+    if (tracker) {
+      void tracker.updateStatus(
+        { trackerType: issue.trackerType, scope: issue.trackerScope, issueId: issue.trackerIssueId },
+        "processing",
+      );
+    }
+
     void this.execProcess(k, session, issue, msg);
   }
 
