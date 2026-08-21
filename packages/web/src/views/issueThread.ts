@@ -41,6 +41,7 @@ function toView(c: CommentRow): CommentView {
   return {
     id: c.id,
     tag: classifyActor(c.body, c.author_kind),
+    model: c.model || undefined,
     login: c.author,
     avatar: "",
     created_at: c.created_at,

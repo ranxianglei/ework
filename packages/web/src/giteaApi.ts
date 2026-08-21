@@ -35,6 +35,7 @@ import {
   ensureUser,
   getUserByLogin,
   type UserRow,
+  updateCommentModel,
 } from "./store";
 import {
   buildUser,
@@ -59,6 +60,7 @@ const ROUTES = {
   issueReactions: /^\/api\/v1\/repos\/([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+)\/issues\/(\d+)\/reactions$/,
   commentShow: /^\/api\/v1\/repos\/([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+)\/issues\/comments\/(\d+)$/,
   commentReactions: /^\/api\/v1\/repos\/([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+)\/issues\/comments\/(\d+)\/reactions$/,
+  commentModel: /^\/api\/v1\/repos\/([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+)\/issues\/comments\/(\d+)\/model$/,
 } as const;
 
 export interface GiteaApiResult {
@@ -332,6 +334,24 @@ export async function handleGiteaApi(
       return giteaError(405, `method ${req.method} not allowed`);
     } catch (e) {
       return giteaError(e instanceof StoreError ? e.status : 500, e instanceof Error ? e.message : "error");
+    }
+  }
+
+  m = path.match(ROUTES.commentModel);
+  if (m) {
+    const [, owner, repo, cidStr] = m;
+    if (!(owner && repo && cidStr)) return giteaError(404, "not found");
+    const cid = Number(cidStr);
+    try {
+      const project = await getProject(owner, repo);
+      if (!project) return giteaError(404, "repository not found");
+      if (!(await canWriteProject(project.id, user))) return giteaError(403, "requires writer role");
+      const body = (await readJson(req).catch(() => ({}))) as { model?: unknown };
+      const model = typeof body.model === "string" ? body.model.trim() : "";
+      await updateCommentModel(cid, model);
+      return { status: 200, body: { ok: true, model } };
+    } catch (e) {
+      return giteaError(500, e instanceof Error ? e.message : String(e));
     }
   }
 

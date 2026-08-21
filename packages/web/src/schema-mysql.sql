@@ -77,8 +77,8 @@ CREATE TABLE IF NOT EXISTS {{comments}} (
   upstream_comment_id BIGINT DEFAULT NULL,
   UNIQUE uq_comments_upstream (upstream_comment_id),
   CONSTRAINT {{fk_comments_issue}} FOREIGN KEY (issue_id) REFERENCES {{issues}}(id) ON DELETE CASCADE,
-  CONSTRAINT {{fk_comments_author}} FOREIGN KEY (author)  REFERENCES {{users}}(login)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  CONSTRAINT {{fk_comments_author}} FOREIGN KEY (author)  REFERENCES {{users}}(login),
+  model VARCHAR(128) NOT NULL DEFAULT '') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE INDEX comments_issue_created ON {{comments}} (issue_id, created_at);
 CREATE INDEX comments_author ON {{comments}} (author);
 

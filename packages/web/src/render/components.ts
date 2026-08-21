@@ -21,6 +21,7 @@ export interface CommentView {
   body_html: string;
   display_name?: string | null;
   reactions?: { e: string; n: number }[];
+  model?: string;
 }
 
 const TAG_LABEL: Record<ActorTag, string> = { human: "👤", bot: "🤖", system: "⚙️" };
@@ -63,6 +64,7 @@ export function renderCommentCard(c: CommentView, cfg?: { translateUrl?: string;
     `<span class="who">${esc(c.display_name || c.login)}</span>` +
     (c.display_name ? `<span class="who-login">${esc(c.login)}</span>` : "") +
     `<span class="when" data-ts="${esc(c.created_at)}" title="${esc(c.created_at)}">${relTime(c.created_at)}</span>` +
+    (c.model ? `<span class="cmodel" title="生成模型">${esc(c.model)}</span>` : "") +
     rx +
     `<span class="card-actions">` + actionBarHTML({ cid: String(c.id), copy: true, link: true, translate: true, tts: true, translateEnabled, ttsEnabled }) + `</span>` +
     `</div><div class="card-b">${c.body_html}</div></div></div>`

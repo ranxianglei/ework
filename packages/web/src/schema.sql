@@ -85,7 +85,8 @@ CREATE TABLE IF NOT EXISTS {{comments}} (
   body       TEXT NOT NULL,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL DEFAULT '',
-  upstream_comment_id INTEGER
+  upstream_comment_id INTEGER,
+  model TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS comments_issue_created
   ON {{comments}} (issue_id, created_at);

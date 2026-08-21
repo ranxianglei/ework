@@ -1820,6 +1820,7 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
           view = {
             id: c.id,
             tag: classifyActor(c.body, c.author_kind),
+            model: c.model ?? undefined,
             login: c.author,
             avatar: "",
             created_at: c.created_at,

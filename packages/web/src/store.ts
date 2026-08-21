@@ -92,6 +92,7 @@ export interface CommentRow {
   updated_at: string;
   author_kind?: UserKind;
   author_display_name?: string | null;
+  model?: string;
 }
 
 export interface LabelRow {
@@ -625,6 +626,12 @@ export async function getCommentByUpstreamId(upstreamCommentId: number): Promise
   );
 }
 
+export async function updateCommentModel(commentId: number, model: string): Promise<void> {
+  await getDB().run(
+    "UPDATE {{comments}} SET model = ? WHERE id = ?",
+    [model.slice(0, 128), commentId],
+  );
+}
 export interface IssuePatch {
   title?: string;
   body?: string;

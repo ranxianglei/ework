@@ -29,6 +29,7 @@ export interface SessionListItem {
   directory?: string;
   peakTokens?: number;
   msgCount?: number;
+  model?: string;
   daemon?: { displayName: string; endpoint: string };
 }
 
@@ -117,14 +118,15 @@ export class OpencodeClient {
       const rows = db
         .prepare(
           "SELECT s.id AS id, s.title AS title, s.time_created AS created, s.time_updated AS updated, s.directory AS directory, " +
-            "m.peak AS peakTokens, m.calls AS msgCount " +
+            "m.peak AS peakTokens, m.calls AS msgCount, " +
+            "(SELECT json_extract(m2.data,'$.modelID') FROM message m2 WHERE m2.session_id = s.id AND json_extract(m2.data,'$.modelID') IS NOT NULL AND json_extract(m2.data,'$.modelID') != '' ORDER BY m2.time_created DESC LIMIT 1) AS model " +
             "FROM session s LEFT JOIN (" +
             "SELECT session_id, MAX(CAST(json_extract(data,'$.tokens.input') AS INT) + CAST(json_extract(data,'$.tokens.cache.read') AS INT) + CAST(json_extract(data,'$.tokens.cache.write') AS INT)) AS peak, " +
             "COUNT(*) AS calls FROM message WHERE json_extract(data,'$.tokens.input') > 0 GROUP BY session_id" +
             ") m ON m.session_id = s.id " +
             "WHERE s.time_archived IS NULL ORDER BY s.time_updated DESC LIMIT ?"
         )
-        .all(limit) as Array<{ id: unknown; title: unknown; created: unknown; updated: unknown; directory: unknown; peakTokens: unknown; msgCount: unknown }>;
+        .all(limit) as Array<{ id: unknown; title: unknown; created: unknown; updated: unknown; directory: unknown; peakTokens: unknown; msgCount: unknown; model: unknown }>;
       return rows
         .map((r) => {
           const id = typeof r.id === "string" ? r.id : "";
@@ -137,6 +139,7 @@ export class OpencodeClient {
             directory: typeof r.directory === "string" ? r.directory : undefined,
             peakTokens: typeof r.peakTokens === "number" && r.peakTokens > 0 ? r.peakTokens : undefined,
             msgCount: typeof r.msgCount === "number" && r.msgCount > 0 ? r.msgCount : undefined,
+            model: typeof r.model === "string" && r.model ? r.model : undefined,
           } as SessionListItem;
         })
         .filter((x): x is SessionListItem => x !== null);

@@ -65,6 +65,7 @@ function sessionRow(s: SessionListItem): string {
     s.peakTokens ? `<span>🧮 峰值 ${kfmt(s.peakTokens)}</span>` : "",
     s.msgCount ? `<span>💬 ${s.msgCount}</span>` : "",
     s.daemon ? `<span class="sd-badge" title="${escapeAttr(s.daemon.endpoint)}">🖥️ ${escapeHtml(s.daemon.displayName)} ${escapeHtml(s.daemon.endpoint)}</span>` : "",
+    s.model ? `<span class="sd-badge" title="最近使用的模型">🧠 ${escapeHtml(s.model)}</span>` : "",
   ].join("");
   return `<a class="srow" href="${escapeAttr(href)}">
   <div class="st">${escapeHtml(s.title)}</div>

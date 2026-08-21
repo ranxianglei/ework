@@ -145,6 +145,9 @@ function migrateCommentsTable(db: Database): void {
   if (!have.has("upstream_comment_id")) {
     db.exec(applyPrefix("ALTER TABLE {{comments}} ADD COLUMN upstream_comment_id INTEGER"));
   }
+  if (!have.has("model")) {
+    db.exec(applyPrefix("ALTER TABLE {{comments}} ADD COLUMN model TEXT NOT NULL DEFAULT ''"));
+  }
 }
 
 function migrateLabelsTable(db: Database): void {
@@ -389,7 +392,8 @@ async function migrateMysqlIssuesAiStatus(pool: Pool): Promise<void> {
   await migrateMysqlColumn(pool, "issues", "ai_status", "ai_status VARCHAR(32) NOT NULL DEFAULT ''");
   await migrateMysqlColumn(pool, "issues", "model", "model VARCHAR(128) NOT NULL DEFAULT ''");
   await migrateMysqlColumn(pool, "issues", "upstream_issue_number", "upstream_issue_number INT DEFAULT NULL");
-  await migrateMysqlColumn(pool, "comments", "upstream_comment_id", "upstream_comment_id BIGINT DEFAULT NULL");
+  await migrateMysqlColumn(pool, "comments", "model", "model VARCHAR(128) NOT NULL DEFAULT ''");
+    await migrateMysqlColumn(pool, "comments", "upstream_comment_id", "upstream_comment_id BIGINT DEFAULT NULL");
   const indexes: Array<[string, string]> = [
     ["uq_issues_project_upstream", applyPrefix("CREATE UNIQUE INDEX uq_issues_project_upstream ON {{issues}} (project_id, upstream_issue_number)")],
     ["uq_comments_upstream", applyPrefix("CREATE UNIQUE INDEX uq_comments_upstream ON {{comments}} (upstream_comment_id)")],
