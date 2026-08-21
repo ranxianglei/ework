@@ -1299,11 +1299,11 @@ export class Engine {
     const superseded = () => this.generation.get(k) !== gen;
 
     // running.delete deferred to dequeuePending
-    this.currentMessage.delete(k);
-    this.currentModel.delete(k);
-
     const started = this.startedAt.get(k);
     this.startedAt.delete(k);
+    const usedModel = this.currentModel.get(k) ?? "";
+    this.currentMessage.delete(k);
+    this.currentModel.delete(k);
 
     const progressId = this.progressCommentId.get(k);
     const ref = this.sessionToRef(session, issue);
@@ -1361,9 +1361,10 @@ export class Engine {
     const hasRecent = this.hasRecentBotReply(commentsNow, tracker, started ?? undefined);
 
     if (hasRecent) {
-      const matched = commentsNow.find(c => tracker.isBotUser(c.author) && !this.isSystemComment(c) && c.createdAt && new Date(c.createdAt).getTime() > (started ?? 0));
+      // oldest-first comment lists would match a pre-run bot reply when started
+      // is undefined; pick the LAST qualifying comment instead.
+      const matched = [...commentsNow].reverse().find(c => tracker.isBotUser(c.author) && !this.isSystemComment(c) && c.createdAt && new Date(c.createdAt).getTime() > (started ?? 0));
       log.info(`engine: [bot] reply found for ${k} after prompt (comment ${matched?.id ?? "?"} createdAt ${matched?.createdAt ?? "?"}), marking done`);
-      const usedModel = this.currentModel.get(k) ?? "";
       if (matched && usedModel) {
         void tracker.setCommentModel(ref, matched.id, usedModel).catch(() => { /* display-only */ });
       }
