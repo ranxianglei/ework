@@ -12,16 +12,22 @@ function makeComment(author: string, createdAt: string, body = "reply"): Tracker
 
 const isBot = (a: string) => a === "bot";
 
-describe("hasRecentBotReply — causal window (promptTime provided)", () => {
-  const promptTime = new Date("2025-01-15T10:00:00Z").getTime();
+describe("hasRecentBotReply — causal + recency window (promptTime provided)", () => {
+  // Run started 10 minutes ago; the 5-minute recency window also applies.
+  const promptTime = Date.now() - 10 * 60_000;
 
-  test("returns true when a bot reply was created AFTER promptTime", () => {
-    const comments = [makeComment("bot", "2025-01-15T10:00:05Z")];
+  test("returns true for a fresh causal reply (1 min old)", () => {
+    const comments = [makeComment("bot", new Date(Date.now() - 60_000).toISOString())];
     expect(hasRecentBotReply(comments, isBot, promptTime)).toBe(true);
   });
 
+  test("returns false for a causal reply older than the recency window (early-ack regression)", () => {
+    const comments = [makeComment("bot", new Date(Date.now() - 8 * 60_000).toISOString())];
+    expect(hasRecentBotReply(comments, isBot, promptTime)).toBe(false);
+  });
+
   test("returns false when the only bot reply was created BEFORE promptTime", () => {
-    const comments = [makeComment("bot", "2025-01-15T09:59:55Z")];
+    const comments = [makeComment("bot", new Date(Date.now() - 12 * 60_000).toISOString())];
     expect(hasRecentBotReply(comments, isBot, promptTime)).toBe(false);
   });
 
@@ -30,28 +36,23 @@ describe("hasRecentBotReply — causal window (promptTime provided)", () => {
     expect(hasRecentBotReply(comments, isBot, promptTime)).toBe(false);
   });
 
-  test("ignores system comments even if after promptTime", () => {
-    const comments = [makeComment("bot", "2025-01-15T10:00:10Z", "[system] ack")];
+  test("ignores system comments even if fresh and causal", () => {
+    const comments = [makeComment("bot", new Date(Date.now() - 30_000).toISOString(), "[system] ack")];
     expect(hasRecentBotReply(comments, isBot, promptTime)).toBe(false);
   });
 
   test("ignores non-bot users", () => {
-    const comments = [makeComment("human", "2025-01-15T10:00:10Z")];
+    const comments = [makeComment("human", new Date(Date.now() - 30_000).toISOString())];
     expect(hasRecentBotReply(comments, isBot, promptTime)).toBe(false);
   });
 
-  test("returns true if ANY of multiple comments is a causal bot reply", () => {
+  test("returns true if ANY of multiple comments is a fresh causal reply", () => {
     const comments = [
-      makeComment("bot", "2025-01-15T09:58:00Z"),
-      makeComment("human", "2025-01-15T10:00:10Z"),
-      makeComment("bot", "2025-01-15T10:00:20Z"),
+      makeComment("bot", new Date(Date.now() - 8 * 60_000).toISOString()),
+      makeComment("human", new Date(Date.now() - 2 * 60_000).toISOString()),
+      makeComment("bot", new Date(Date.now() - 60_000).toISOString()),
     ];
     expect(hasRecentBotReply(comments, isBot, promptTime)).toBe(true);
-  });
-
-  test("boundary: comment exactly at promptTime is NOT considered after", () => {
-    const comments = [makeComment("bot", "2025-01-15T10:00:00.000Z")];
-    expect(hasRecentBotReply(comments, isBot, promptTime)).toBe(false);
   });
 });
 

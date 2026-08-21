@@ -98,28 +98,24 @@ const RECENT_BOT_REPLY_THRESHOLD_MS = 5 * 60_000; // 5 minutes
 
 /**
  * Determine whether any non-system bot reply exists that is causally after
- * `promptTime` (when provided) or within a 5-minute absolute window (fallback).
- * Exported for unit testing — the causal vs absolute distinction is the P0
- * correctness fix for preempt/nudge false-done detection.
+ * `promptTime` (when provided) AND within a 5-minute absolute window.
+ * The causal bound prevents preempt/nudge false-done detection (a reply from
+ * the previous run must not satisfy this run); the recency bound prevents an
+ * early ack from satisfying a long run that ended silently (awork policy).
+ * Exported for unit testing.
  */
 export function hasRecentBotReply(
   comments: TrackerComment[],
   isBotUser: (author: string) => boolean,
   promptTime?: number,
 ): boolean {
-  if (promptTime) {
-    return comments.some(c => {
-      if (!isBotUser(c.author) || c.body.startsWith(SYSTEM_PREFIX)) return false;
-      if (!c.createdAt) return false;
-      return new Date(c.createdAt).getTime() > promptTime;
-    });
-  }
   const now = Date.now();
   return comments.some(c => {
     if (!isBotUser(c.author) || c.body.startsWith(SYSTEM_PREFIX)) return false;
-    if (!c.createdAt) return true;
-    const age = now - new Date(c.createdAt).getTime();
-    return age < RECENT_BOT_REPLY_THRESHOLD_MS;
+    if (!c.createdAt) return !promptTime;
+    const created = new Date(c.createdAt).getTime();
+    if (promptTime && created <= promptTime) return false;
+    return now - created < RECENT_BOT_REPLY_THRESHOLD_MS;
   });
 }
 
@@ -1361,9 +1357,13 @@ export class Engine {
     const hasRecent = this.hasRecentBotReply(commentsNow, tracker, started ?? undefined);
 
     if (hasRecent) {
-      // oldest-first comment lists would match a pre-run bot reply when started
-      // is undefined; pick the LAST qualifying comment instead.
-      const matched = [...commentsNow].reverse().find(c => tracker.isBotUser(c.author) && !this.isSystemComment(c) && c.createdAt && new Date(c.createdAt).getTime() > (started ?? 0));
+      const nowMs = Date.now();
+      const matched = [...commentsNow].reverse().find(c => {
+        if (!tracker.isBotUser(c.author) || this.isSystemComment(c) || !c.createdAt) return false;
+        const created = new Date(c.createdAt).getTime();
+        if (started && created <= started) return false;
+        return nowMs - created < RECENT_BOT_REPLY_THRESHOLD_MS;
+      });
       log.info(`engine: [bot] reply found for ${k} after prompt (comment ${matched?.id ?? "?"} createdAt ${matched?.createdAt ?? "?"}), marking done`);
       if (matched && !usedModel) {
         const fromSession = await this.backend.lastSessionModel(session.opencodeSessionId).catch(() => ({ model: "" }));
