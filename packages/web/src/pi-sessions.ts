@@ -118,6 +118,7 @@ export function buildPiSessionPage(sessionId: string, limit: number, asc = false
 
   const cards: PiCard[] = [];
   const openTools = new Map<string, PiToolCall>();
+  const seenContent = new Set<string>();
   let inputTok = 0, outputTok = 0, cacheTok = 0, peakTok = 0;
   let cwd = "";
   let first = "", last = "";
@@ -129,6 +130,13 @@ export function buildPiSessionPage(sessionId: string, limit: number, asc = false
     }
     if (e.type !== "message" || !e.message) continue;
     const m = e.message;
+    // pi re-emits identical message content as new events (streaming steps,
+    // re-persisted context, repeated tool results). Collapse exact repeats —
+    // usage excluded from the key so re-emissions still merge, and their
+    // (identical) usage is only counted once.
+    const contentKey = `${m.role ?? ""}\u0000${JSON.stringify(m.content ?? [])}`;
+    if (seenContent.has(contentKey)) continue;
+    seenContent.add(contentKey);
     const u = m.usage;
     if (u) {
       inputTok += u.input ?? 0;
