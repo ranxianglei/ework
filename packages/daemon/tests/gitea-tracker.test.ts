@@ -5,13 +5,14 @@ function makeTracker(): GiteaTracker {
   return new GiteaTracker({} as never, "http://localhost:3300", "secret", "ework-daemon");
 }
 
-function issueOpenedPayload(opts: { cloneUrl?: string; sender?: string; model?: string } = {}): string {
+function issueOpenedPayload(opts: { cloneUrl?: string; sender?: string; model?: string; runtime?: string } = {}): string {
   const repository: Record<string, unknown> = {
     owner: { login: "acme" },
     name: "widget",
   };
   if (opts.cloneUrl !== undefined) repository.clone_url = opts.cloneUrl;
   if (opts.model !== undefined) repository.ework_model = opts.model;
+  if (opts.runtime !== undefined) repository.ework_runtime = opts.runtime;
   const payload: Record<string, unknown> = {
     action: "opened",
     issue: { number: 42, title: "Bug", body: "desc", state: "open", user: { login: "alice" } },
@@ -96,6 +97,36 @@ describe("GiteaTracker.parseWebhookEvent — model override", () => {
     const event = t.parseWebhookEvent(issueOpenedPayload({ model: "  " }));
     expect(event).not.toBeNull();
     expect(event!.model).toBeUndefined();
+  });
+});
+
+describe("GiteaTracker.parseWebhookEvent — runtime override", () => {
+  test("extracts ework_runtime from repository", () => {
+    const t = makeTracker();
+    const event = t.parseWebhookEvent(issueOpenedPayload({ runtime: "pi" }));
+    expect(event).not.toBeNull();
+    expect(event!.runtime).toBe("pi");
+  });
+
+  test("extracts opencode runtime", () => {
+    const t = makeTracker();
+    const event = t.parseWebhookEvent(issueOpenedPayload({ runtime: "opencode" }));
+    expect(event).not.toBeNull();
+    expect(event!.runtime).toBe("opencode");
+  });
+
+  test("invalid ework_runtime → undefined", () => {
+    const t = makeTracker();
+    const event = t.parseWebhookEvent(issueOpenedPayload({ runtime: "codex" }));
+    expect(event).not.toBeNull();
+    expect(event!.runtime).toBeUndefined();
+  });
+
+  test("missing ework_runtime → undefined", () => {
+    const t = makeTracker();
+    const event = t.parseWebhookEvent(issueOpenedPayload());
+    expect(event).not.toBeNull();
+    expect(event!.runtime).toBeUndefined();
   });
 });
 

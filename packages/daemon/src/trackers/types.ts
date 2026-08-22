@@ -36,6 +36,8 @@ export interface TrackerEvent {
   // global default). Empty/undefined = no override; engine omits --model
   // and lets opencode pick per its own opencode.json + env.
   model?: string;
+  // Runtime backend override for this issue from ework-web ("opencode"|"pi").
+  runtime?: string;
   // Real clone URL from the upstream tracker (e.g. Gitea repository.clone_url).
   // When present, RecloneStrategy uses this instead of the ework shim URL.
   cloneUrl?: string;

@@ -138,6 +138,8 @@ export class GiteaTracker implements IssueTracker {
     // Empty/missing = no model override; engine omits --model.
     const modelRaw = repository.ework_model;
     const model = typeof modelRaw === "string" && modelRaw.trim() ? modelRaw.trim() : undefined;
+    const runtimeRaw = repository.ework_runtime;
+    const runtime = runtimeRaw === "pi" || runtimeRaw === "opencode" ? runtimeRaw : undefined;
 
     const ref: TrackerRef = {
       trackerType: "gitea",
@@ -162,6 +164,7 @@ export class GiteaTracker implements IssueTracker {
           ai_status: aiStatus,
         },
         model,
+        runtime,
         cloneUrl,
         sender,
       };
@@ -186,6 +189,7 @@ export class GiteaTracker implements IssueTracker {
           authorKind: (comment as Record<string, unknown>).author_kind as string | undefined,
         },
         model,
+        runtime,
         cloneUrl,
         sender,
       };
@@ -203,6 +207,7 @@ export class GiteaTracker implements IssueTracker {
           ai_status: aiStatus,
         },
         model,
+        runtime,
         cloneUrl,
         sender,
       };

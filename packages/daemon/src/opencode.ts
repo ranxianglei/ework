@@ -309,6 +309,13 @@ function createDefaultBackend(cfg: Config): RuntimeBackend {
   return new OpencodeBackend(cfg.opencode.binary, cfg.opencode.dbPath, cfg.childEnvDeny);
 }
 
+function createBackendFor(cfg: Config, runtime: string): RuntimeBackend {
+  if (runtime === "pi" && cfg.pi) {
+    return new PiBackend(cfg.pi.binary, cfg.pi.provider, cfg.pi.defaultModel, cfg.childEnvDeny);
+  }
+  return new OpencodeBackend(cfg.opencode.binary, cfg.opencode.dbPath, cfg.childEnvDeny);
+}
+
 export class Engine {
   private cfg: Config;
   private store: Store;
@@ -352,6 +359,11 @@ export class Engine {
 
   private groupConfigs = new Map<string, GroupConfig>();
   private cloneUrls = new Map<string, string>();
+  // Per-issue runtime override ("opencode"|"pi") from webhook payloads.
+  // Existing sessions stay pinned to their original backend via the
+  // opencodeSessionId prefix (ses_=opencode, bare uuid=pi) in backendFor().
+  private issueRuntimes = new Map<string, string>();
+  private altBackend?: RuntimeBackend;
   private senders = new Map<string, string>();
   private envInitialized = new Set<string>();
 
@@ -376,6 +388,25 @@ export class Engine {
     this.maxConcurrentExplicit = cfg.work.maxConcurrentExplicit;
     this.startGlobalObserver();
     void this.recover();
+  }
+
+  // An existing session must keep the backend that owns it: opencode session
+  // ids are "ses_..." while pi ids are bare uuids, so the prefix outvotes the
+  // per-issue override. New sessions follow the issue's runtime setting.
+  private backendFor(k: string, opencodeSessionId?: string): RuntimeBackend {
+    if (opencodeSessionId) {
+      const wants = opencodeSessionId.startsWith("ses_") ? "opencode" : "pi";
+      if (wants !== this.cfg.runtime) return this.altBackendFor(wants);
+      return this.backend;
+    }
+    const runtime = this.issueRuntimes.get(k);
+    if (!runtime || runtime === this.cfg.runtime) return this.backend;
+    return this.altBackendFor(runtime);
+  }
+
+  private altBackendFor(runtime: string): RuntimeBackend {
+    if (!this.altBackend) this.altBackend = createBackendFor(this.cfg, runtime);
+    return this.altBackend;
   }
 
   private workdirLink(workdir: string): string {
@@ -742,6 +773,9 @@ export class Engine {
     }
     if (event.cloneUrl) {
       this.cloneUrls.set(issueMapKey, event.cloneUrl);
+    }
+    if (event.runtime === "pi" || event.runtime === "opencode") {
+      this.issueRuntimes.set(issueMapKey, event.runtime);
     }
     if (event.sender) {
       this.senders.set(issueMapKey, event.sender);
@@ -1203,13 +1237,14 @@ export class Engine {
       const fromStrategy = await this.takeover.resumeOpenCodeSession(session);
       if (fromStrategy) resumeSessionId = fromStrategy;
     }
-    if (resumeSessionId && !(await this.backend.sessionExists(resumeSessionId))) {
+    if (resumeSessionId && !(await this.backendFor(k, resumeSessionId).sessionExists(resumeSessionId))) {
       log.warn(`stale session ${resumeSessionId} not found in db, starting fresh`);
       resumeSessionId = undefined;
       await this.store.updateSession(session.id, { opencodeSessionId: undefined });
     }
 
-    const model = msg.model || (this.cfg.runtime === "pi" && this.cfg.pi ? this.cfg.pi.defaultModel : this.cfg.opencode.defaultModel);
+    const backend = this.backendFor(k, resumeSessionId);
+    const model = msg.model || (backend instanceof PiBackend && this.cfg.pi ? this.cfg.pi.defaultModel : this.cfg.opencode.defaultModel);
     this.currentModel.set(k, model);
 
     if (msg.sourceCommentId) {
@@ -1221,7 +1256,7 @@ export class Engine {
     let exitCode: number | null = null;
 
     try {
-      const handle = await this.backend.spawn(
+      const handle = await backend.spawn(
         {
           workdir,
           prompt: msg.content,
@@ -1269,7 +1304,7 @@ export class Engine {
       await this.store.updateSession(session.id, { opencodePid: handle.pid });
       await this.persistRuntimeState(session.id);
 
-      log.info(`engine: spawned pid=${handle.pid} for ${k} (backend=${this.backend.name})`);
+      log.info(`engine: spawned pid=${handle.pid} for ${k} (backend=${backend.name})`);
 
       exitCode = await handle.exited;
       const stderr = await handle.stderrText;
@@ -1382,7 +1417,7 @@ export class Engine {
       });
       log.info(`engine: [bot] reply found for ${k} after prompt (comment ${matched?.id ?? "?"} createdAt ${matched?.createdAt ?? "?"}), marking done`);
       if (matched && !usedModel) {
-        const fromSession = await this.backend.lastSessionModel(session.opencodeSessionId).catch(() => ({ model: "" }));
+        const fromSession = await this.backendFor(k, session.opencodeSessionId).lastSessionModel(session.opencodeSessionId).catch(() => ({ model: "" }));
         if (fromSession.model) {
           void tracker.setCommentModel(ref, matched.id, fromSession.model).catch(() => { /* display-only */ });
         }
@@ -1392,7 +1427,7 @@ export class Engine {
       await this.persistRuntimeState(session.id);
       void tracker.updateStatus(ref, "");
     } else {
-      const sessionOutput = await this.backend.getSessionOutputTokens(session.opencodeSessionId);
+      const sessionOutput = await this.backendFor(k, session.opencodeSessionId).getSessionOutputTokens(session.opencodeSessionId);
       const emptyRound = this.emptyResponseRounds.get(k) ?? 0;
 
       if (!sessionOutput.hasOutput && emptyRound < Engine.MAX_EMPTY_RESPONSE_ROUNDS) {
