@@ -726,12 +726,14 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
         return html(errorPage("等待启动", "会话已创建，后端会话 ID 尚未生成（正在准备工作目录）。稍后刷新此页。"), 200);
       }
       const piLimit = Math.min(5000, Math.max(10, Number(url.searchParams.get("limit")) || 200));
-      const piPage = buildPiSessionPage(rawSid, piLimit);
+      const piAsc = url.searchParams.get("asc") === "1";
+      const piPage = buildPiSessionPage(rawSid, piLimit, piAsc);
       if (piPage) return html(piPage, 200);
     } else {
       // non-ses_ id that resolved to nothing: try the pi session file before 404
       const piLimit = Math.min(5000, Math.max(10, Number(url.searchParams.get("limit")) || 200));
-      const piPage = buildPiSessionPage(rawSid, piLimit);
+      const piAsc = url.searchParams.get("asc") === "1";
+      const piPage = buildPiSessionPage(rawSid, piLimit, piAsc);
       if (piPage) return html(piPage, 200);
     }
     const desc = url.searchParams.get("asc") !== "1";
