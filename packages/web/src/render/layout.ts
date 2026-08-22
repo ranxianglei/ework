@@ -24,6 +24,7 @@ export interface LayoutProps {
   customActions?: IssueAction[];
   extraStatusBadges?: Record<string, { cls: string; label: string }>;
   modelSelect?: { current: string; options: { id: string; label: string }[] } | null;
+  runtimeSelect?: { current: string } | null;
 }
 
 export const THEME_CSS = `
@@ -206,6 +207,13 @@ export function renderLayout(props: LayoutProps, inner: string, initialItems: st
         ? `<button type="button" class="action-btn dispatch-btn" data-action-href="${escapeAttr(repoIssuesHref)}/${props.issueNumber}/dispatch-on" title="允许自动接单">🔔 恢复接单</button>`
         : `<button type="button" class="action-btn dispatch-btn" data-action-href="${escapeAttr(repoIssuesHref)}/${props.issueNumber}/dispatch-off" data-action-confirm="设为不自动接单？" title="关闭此 issue 的自动接单">🔕 暂停接单</button>`
     : "";
+  const runtimeSelectHtml = props.runtimeSelect && showActions
+    ? `<span class="model-select-wrap"><select class="model-select" id="issueRuntimeSelect" title="此 issue 的运行时（新会话生效）">
+  <option value="" ${props.runtimeSelect.current === "" ? "selected" : ""}>默认运行时</option>
+  <option value="opencode" ${props.runtimeSelect.current === "opencode" ? "selected" : ""}>opencode</option>
+  <option value="pi" ${props.runtimeSelect.current === "pi" ? "selected" : ""}>pi</option>
+</select><button type="button" class="action-btn model-save-btn" id="issueRuntimeSave" title="保存运行时选择">💾</button></span>`
+    : "";
   const modelSelectHtml = props.modelSelect && props.modelSelect.options.length > 0 && showActions
     ? `<span class="model-select-wrap"><select class="model-select" id="issueModelSelect" title="此 issue 的模型（覆盖项目/全局默认）">
   <option value="">默认模型</option>
@@ -234,7 +242,7 @@ export function renderLayout(props: LayoutProps, inner: string, initialItems: st
   <div class="meta-status">
     <span class="state-badge ${stateClass}">${stateLabel}</span>
     ${aiBadgeHtml}
-    ${(haltBtnHtml || dispatchBtnHtml || (props.customActions ?? []).length) ? `<span class="action-group">${haltBtnHtml}${dispatchBtnHtml}${modelSelectHtml}${(props.customActions ?? []).map((a) => {
+    ${(haltBtnHtml || dispatchBtnHtml || (props.customActions ?? []).length) ? `<span class="action-group">${haltBtnHtml}${dispatchBtnHtml}${runtimeSelectHtml}${modelSelectHtml}${(props.customActions ?? []).map((a) => {
       const attrs = [`data-action-href="${escapeAttr(a.href)}"`];
       if (a.method && a.method !== "POST") attrs.push(`data-action-method="${escapeAttr(a.method)}"`);
       if (a.confirm) attrs.push(`data-action-confirm="${escapeAttr(a.confirm)}"`);

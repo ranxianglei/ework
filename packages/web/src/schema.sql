@@ -67,6 +67,8 @@ CREATE TABLE IF NOT EXISTS {{issues}} (
   ai_status  TEXT NOT NULL DEFAULT '',
   -- Resolved "provider/model" for this issue. Empty = inherit project/global default.
   model      TEXT NOT NULL DEFAULT '',
+  -- Runtime backend pinned for this issue ('' = daemon default, 'opencode', 'pi').
+  runtime    TEXT NOT NULL DEFAULT '',
   -- Upstream Gitea issue number this row was imported from (NULL = native).
   upstream_issue_number INTEGER,
   UNIQUE (project_id, number)
@@ -86,7 +88,8 @@ CREATE TABLE IF NOT EXISTS {{comments}} (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL DEFAULT '',
   upstream_comment_id INTEGER,
-  model TEXT NOT NULL DEFAULT ''
+  model TEXT NOT NULL DEFAULT '',
+  runtime TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS comments_issue_created
   ON {{comments}} (issue_id, created_at);

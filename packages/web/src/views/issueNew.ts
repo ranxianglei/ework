@@ -15,6 +15,11 @@ export function buildIssueNew(owner: string, repo: string, writesEnabled: boolea
   <input type="text" name="title" placeholder="标题（必填）" required maxlength="255" class="new-title">
   <textarea name="body" rows="14" placeholder="正文（支持 Markdown）…"></textarea>
   ${modelSelect}
+  <select name="runtime" class="new-model">
+  <option value="">默认运行时（daemon 设置）</option>
+  <option value="opencode">opencode</option>
+  <option value="pi">pi</option>
+</select>
   <div class="new-actions"><a class="new-cancel" href="${escapeAttr(listHref)}">取消</a><button type="submit">创建工单</button></div>
 </form>`
     : `<div class="composer-ro">只读模式：创建工单未启用（WORK_WRITES_ENABLED=false）</div>`;

@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS {{issues}} (
   closed_at  VARCHAR(40) DEFAULT NULL,
   ai_status  VARCHAR(32) NOT NULL DEFAULT '',
   model      VARCHAR(128) NOT NULL DEFAULT '',
+  runtime      VARCHAR(32) NOT NULL DEFAULT '',
   upstream_issue_number INT DEFAULT NULL,
   UNIQUE (project_id, number),
   UNIQUE uq_issues_project_upstream (project_id, upstream_issue_number),
@@ -78,7 +79,7 @@ CREATE TABLE IF NOT EXISTS {{comments}} (
   UNIQUE uq_comments_upstream (upstream_comment_id),
   CONSTRAINT {{fk_comments_issue}} FOREIGN KEY (issue_id) REFERENCES {{issues}}(id) ON DELETE CASCADE,
   CONSTRAINT {{fk_comments_author}} FOREIGN KEY (author)  REFERENCES {{users}}(login),
-  model VARCHAR(128) NOT NULL DEFAULT '') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  model VARCHAR(128) NOT NULL DEFAULT '',
 CREATE INDEX comments_issue_created ON {{comments}} (issue_id, created_at);
 CREATE INDEX comments_author ON {{comments}} (author);
 

@@ -75,6 +75,7 @@ export interface IssueRow {
   closed_at: string | null;
   ai_status: string;
   model: string;
+  runtime: string;
 }
 
 export interface IssueWithMeta extends IssueRow {
@@ -453,6 +454,7 @@ export interface CreateIssueOpts {
   state?: "open" | "closed";
   closedAt?: string | null;
   model?: string;
+  runtime?: string;
   upstreamIssueNumber?: number;
 }
 
@@ -484,8 +486,8 @@ export async function createIssue(
       "SELECT COALESCE(MAX(number), 0) + 1 AS n FROM {{issues}} WHERE project_id = ?", [projectId]
     ))!;
     const info = await getDB().run(
-      "INSERT INTO {{issues}} (project_id, number, title, body, state, author, created_at, updated_at, closed_at, model, upstream_issue_number) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      [projectId, next.n, title, body, state, author, createdAt, updatedAt, closedAt, opts.model ?? "", opts.upstreamIssueNumber ?? null]
+      "INSERT INTO {{issues}} (project_id, number, title, body, state, author, created_at, updated_at, closed_at, model, runtime, upstream_issue_number) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [projectId, next.n, title, body, state, author, createdAt, updatedAt, closedAt, opts.model ?? "", opts.runtime ?? "", opts.upstreamIssueNumber ?? null]
     );
     await getDB().run("UPDATE {{projects}} SET updated_at = ? WHERE id = ?", [updatedAt, projectId]);
     return (await getIssueById(info.insertId))!;
@@ -523,6 +525,11 @@ export async function getIssueAiStatus(issueId: number): Promise<string> {
 export async function updateIssueModel(issueId: number, model: string): Promise<void> {
   const clean = model.trim().slice(0, 128);
   await getDB().run("UPDATE {{issues}} SET model = ?, updated_at = ? WHERE id = ?", [clean, now(), issueId]);
+}
+
+export async function updateIssueRuntime(issueId: number, runtime: string): Promise<void> {
+  const v = runtime === "pi" || runtime === "opencode" ? runtime : "";
+  await getDB().run("UPDATE {{issues}} SET runtime = ? WHERE id = ?", [v, issueId]);
 }
 
 export interface UpstreamSyncRow {

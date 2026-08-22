@@ -40,6 +40,7 @@ import {
   setIssueState,
   updateIssueAiStatus,
   updateIssueModel,
+  updateIssueRuntime,
   listIssues,
   createAttachment,
   getAttachment,
@@ -398,6 +399,7 @@ const REPO_LABEL_ADD_RE = /^\/([^/]+)\/([^/]+)\/settings\/labels\/add$/;
 const REPO_LABEL_ACTION_RE = /^\/([^/]+)\/([^/]+)\/settings\/labels\/(\d+)\/(update|archive|unarchive|delete)$/;
 const REPO_ISSUE_HALT_RE = /^\/([^/]+)\/([^/]+)\/issues\/(\d+)\/(halt|resume|dispatch-off|dispatch-on)$/;
 const REPO_ISSUE_MODEL_RE = /^\/([^/]+)\/([^/]+)\/issues\/(\d+)\/model$/;
+const REPO_ISSUE_RUNTIME_RE = /^\/([^/]+)\/([^/]+)\/issues\/(\d+)\/runtime$/;
 const REPO_ISSUE_STATUS_RE = /^\/([^/]+)\/([^/]+)\/issues\/(\d+)\/ai-status$/;
 const API_ISSUE_LABELS_RE = /^\/api\/([^/]+)\/([^/]+)\/issues\/(\d+)\/labels$/;
 const WH_ACTION_RE = /^\/__wh\/(\d+)\/(delete|toggle|test)$/;
@@ -1903,6 +1905,28 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
       }
     }
 
+    const rt = url.pathname.match(REPO_ISSUE_RUNTIME_RE);
+    if (rt) {
+      const [, owner, repo, numStr] = rt;
+      if (!(owner && repo && numStr)) return json({ error: "bad path" }, 400);
+      const number = Number(numStr);
+      try {
+        const project = await getProject(owner, repo);
+        if (!project) return json({ error: "project not found" }, 404);
+        const issue = await getIssueWithMeta(project.id, number);
+        if (!issue) return json({ error: "issue not found" }, 404);
+        if (!(await canWriteProject(project.id, ctx.user))) {
+          return json({ error: "writer role required" }, 403);
+        }
+        const form = await req.formData().catch(() => new FormData());
+        const runtime = String(form.get("runtime") ?? "").trim().slice(0, 32);
+        await updateIssueRuntime(issue.id, runtime);
+        return json({ ok: true, runtime: runtime === "pi" || runtime === "opencode" ? runtime : "" });
+      } catch (e) {
+        return json({ error: errMsg(e) }, e instanceof StoreError ? e.status : 500);
+      }
+    }
+
     const ci = url.pathname.match(REPO_LIST_RE);
     if (ci) {
       const [, owner, repo] = ci;
@@ -1926,7 +1950,11 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
           await ensureProjectBootstrapAdmin(project.id, ctx.user!.login);
           await autoWireDaemon(project.id, url.origin);
         }
-        const issue = await createIssue(project.id, title, body, ctx.user!.login, model ? { model } : {});
+        const formRuntime = String(form.get("runtime") ?? "").trim();
+        const issueOpts: { model?: string; runtime?: string } = {};
+        if (model) issueOpts.model = model;
+        if (formRuntime === "pi" || formRuntime === "opencode") issueOpts.runtime = formRuntime;
+        const issue = await createIssue(project.id, title, body, ctx.user!.login, issueOpts);
         void emitIssueEvent(project.id, issue.id, "opened", url.origin);
         return Response.redirect(
           `${url.origin}/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${issue.number}`,

@@ -115,4 +115,37 @@
   document.addEventListener("change", function (e) {
     if (e.target && e.target.id === "issueModelSelect") saveModel(document.getElementById("issueModelSave"));
   });
+
+  function saveRuntime(saveBtn) {
+    var sel = document.getElementById("issueRuntimeSelect");
+    if (!sel || !saveBtn) return;
+    saveBtn.disabled = true;
+    var path = location.pathname.split("/").slice(0, 5).join("/");
+    fetch(path + "/runtime", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: "runtime=" + encodeURIComponent(sel.value)
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        saveBtn.disabled = false;
+        if (d.ok) { saveBtn.textContent = "✓"; setTimeout(function () { saveBtn.textContent = "💾"; }, 1200); }
+        else alert(d.error || "保存失败");
+      })
+      .catch(function (err) {
+        saveBtn.disabled = false;
+        alert("网络错误: " + err);
+      });
+  }
+
+  document.addEventListener("click", function (e) {
+    var saveBtn = e.target.closest("#issueRuntimeSave");
+    if (!saveBtn) return;
+    e.preventDefault();
+    saveRuntime(saveBtn);
+  });
+
+  document.addEventListener("change", function (e) {
+    if (e.target && e.target.id === "issueRuntimeSelect") saveRuntime(document.getElementById("issueRuntimeSave"));
+  });
 })();

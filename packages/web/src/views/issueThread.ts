@@ -161,6 +161,7 @@ export async function buildIssueThread(
       modelSelect: cfg.writesEnabled !== false
         ? { current: issue.model ?? "", options: (await listCachedModels()).map((m) => ({ id: m.id, label: m.label })) }
         : null,
+      runtimeSelect: cfg.writesEnabled !== false ? { current: issue.runtime ?? "" } : null,
     },
     safeJsonEmbed(payload),
     displayViews.map((v) => renderCommentCard(v, cfg)).join("")

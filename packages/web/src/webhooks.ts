@@ -269,6 +269,7 @@ interface PayloadRepository {
   // `--model <X>` on opencode spawn. Empty string = no override (let opencode
   // pick). Gitea-strict consumers ignore unknown fields per JSON POST rules.
   ework_model?: string;
+  ework_runtime?: string;
 }
 
 interface PayloadIssue {
@@ -364,7 +365,12 @@ function buildUserFromRow(user: UserRow, origin: string): PayloadUser {
   };
 }
 
-function buildRepository(project: ProjectRow, origin: string, model?: string): PayloadRepository {
+function buildRepository(
+  project: ProjectRow,
+  origin: string,
+  model?: string,
+  runtime?: string,
+): PayloadRepository {
   const fullName = `${project.owner}/${project.name}`;
   const htmlUrl = `${origin}/${encodeURIComponent(project.owner)}/${encodeURIComponent(project.name)}`;
   // clone_url must be a real Git remote (ework-web is NOT a Git server). Use the
@@ -399,6 +405,7 @@ function buildRepository(project: ProjectRow, origin: string, model?: string): P
   // Only attach ework_model when non-empty (keeps payload compact + lets
   // Gitea-strict consumers ignore the field entirely on no-op cases).
   if (model) repo.ework_model = model;
+  if (runtime) repo.ework_runtime = runtime;
   return repo;
 }
 
@@ -436,7 +443,7 @@ function buildIssue(
     closed_at: issue.closed_at,
     due_date: null,
     pull_request: null,
-    repository: buildRepository(project, origin, model),
+    repository: buildRepository(project, origin, model, issue.runtime || undefined),
     user: buildUser(issue.author, origin),
     ai_status: issue.ai_status ?? "",
   };
@@ -475,7 +482,7 @@ function buildCommentPayload(
     action: "created",
     issue: buildIssue(issue, project, commentCount, origin, model, labels),
     comment: buildComment(issue, comment, project, origin),
-    repository: buildRepository(project, origin, model),
+    repository: buildRepository(project, origin, model, issue.runtime || undefined),
     sender: buildUser(comment.author, origin),
   };
 }
@@ -492,7 +499,7 @@ function buildIssuePayload(
   return {
     action,
     issue: buildIssue(issue, project, commentCount, origin, model, labels),
-    repository: buildRepository(project, origin, model),
+    repository: buildRepository(project, origin, model, issue.runtime || undefined),
     sender: buildUser(issue.author, origin),
   };
 }
