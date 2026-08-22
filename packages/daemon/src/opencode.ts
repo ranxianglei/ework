@@ -393,13 +393,16 @@ export class Engine {
   // An existing session must keep the backend that owns it: opencode session
   // ids are "ses_..." while pi ids are bare uuids, so the prefix outvotes the
   // per-issue override. New sessions follow the issue's runtime setting.
+  // k is the session key "tracker:scope#issue@sessionName"; the runtime map is
+  // keyed by the issue part, so strip the "@sessionName" suffix.
   private backendFor(k: string, opencodeSessionId?: string): RuntimeBackend {
+    const issueKey = k.slice(0, k.lastIndexOf("@"));
     if (opencodeSessionId) {
       const wants = opencodeSessionId.startsWith("ses_") ? "opencode" : "pi";
       if (wants !== this.cfg.runtime) return this.altBackendFor(wants);
       return this.backend;
     }
-    const runtime = this.issueRuntimes.get(k);
+    const runtime = this.issueRuntimes.get(issueKey);
     if (!runtime || runtime === this.cfg.runtime) return this.backend;
     return this.altBackendFor(runtime);
   }
