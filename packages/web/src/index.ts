@@ -1,3 +1,4 @@
+import { createRequire } from "module";
 import { buildPiSessionPage } from "./pi-sessions";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
@@ -220,8 +221,10 @@ function buildCsp(cfg: Config): string {
 const hlCss = loadHighlightCss();
 
 function loadHighlightCss(): string {
-  const light = readFileSafe(join(__dirname, "..", "node_modules", "highlight.js", "styles", "github.css"));
-  const dark = readFileSafe(join(__dirname, "..", "node_modules", "highlight.js", "styles", "github-dark.css"));
+  let dir: string | null = null;
+  try { dir = dirname(createRequire(import.meta.url).resolve("highlight.js/package.json")); } catch { dir = null; }
+  const light = readFileSafe(dir ? join(dir, "styles", "github.css") : null) || readFileSafe(join(__dirname, "..", "node_modules", "highlight.js", "styles", "github.css"));
+  const dark = readFileSafe(dir ? join(dir, "styles", "github-dark.css") : null) || readFileSafe(join(__dirname, "..", "node_modules", "highlight.js", "styles", "github-dark.css"));
   if (!light && !dark) return "";
   const darkRule = dark
     ? `@media (prefers-color-scheme:dark){${stripAtMedia(dark)}}`
@@ -229,7 +232,8 @@ function loadHighlightCss(): string {
   return `${light}${darkRule}`;
 }
 
-function readFileSafe(p: string): string {
+function readFileSafe(p: string | null): string {
+  if (!p) return "";
   try {
     return readFileSync(p, "utf8");
   } catch {
