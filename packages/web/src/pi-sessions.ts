@@ -82,7 +82,11 @@ function resultText(output: unknown): string {
 
 function toolCard(t: PiToolCall): string {
   const argStr = t.args.length > 600 ? t.args.slice(0, 600) + "…" : t.args;
-  return `<details class="pi-tool"><summary>🔧 ${escapeHtml(t.name)}<span class="pi-tool-args">${escapeHtml(argStr)}</span></summary><div class="tool-io"><pre>${escapeHtml(t.result ? resultText(t.result).slice(0, 4000) : "(无返回)")}</pre></div></details>`;
+  const argsBlock = t.args && t.args !== "{}"
+    ? `<div class="pi-io-label">完整参数</div><pre>${escapeHtml(t.args.length > 20000 ? t.args.slice(0, 20000) + "\n…(截断)" : t.args)}</pre>`
+    : "";
+  const resultBlock = `<div class="pi-io-label">返回</div><pre>${escapeHtml(t.result ?? "(无返回)")}</pre>`;
+  return `<details class="pi-tool"><summary>🔧 ${escapeHtml(t.name)}<span class="pi-tool-args">${escapeHtml(argStr)}</span></summary><div class="tool-io">${argsBlock}${resultBlock}</div></details>`;
 }
 
 function renderCard(c: PiCard): string {
@@ -234,6 +238,7 @@ export function buildPiSessionPage(sessionId: string, limit: number, asc = false
 .mb .tool-io{position:relative;padding:.5rem .6rem}
 .mb .tool-io pre{margin:.2rem 0}
 .pi-tool summary .pi-tool-args{font-family:ui-monospace,monospace;font-size:11px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:60%}
+.pi-io-label{font-size:11px;color:var(--text-muted);margin:6px 0 2px;font-weight:600}
 .more-bar{max-width:900px;margin:1rem auto 0;padding:.8rem 1rem;text-align:center;border:1px dashed var(--border);border-radius:8px;color:var(--text-muted);font-size:13px}
 .more-bar a{font-weight:600}
 </style></head><body>
