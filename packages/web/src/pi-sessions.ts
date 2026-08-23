@@ -10,7 +10,10 @@ interface PiEvent {
   timestamp?: string;
   message?: {
     role?: string;
-    content?: Array<{ type?: string; text?: string; thinking?: string; name?: string; arguments?: unknown; toolCallId?: string; output?: unknown }>;
+    toolCallId?: string;
+    toolName?: string;
+    isError?: boolean;
+    content?: Array<{ type?: string; text?: string; thinking?: string; name?: string; arguments?: unknown; id?: string; output?: unknown }>;
     usage?: { input?: number; output?: number; cacheRead?: number; totalTokens?: number };
     model?: string;
   };
@@ -154,7 +157,7 @@ export function buildPiSessionPage(sessionId: string, limit: number, asc = false
         else if (p.type === "text" && p.text) card.textParts.push(p.text);
         else if (p.type === "toolCall") {
           const tc: PiToolCall = {
-            id: p.toolCallId ?? `t${openTools.size}`,
+            id: p.id ?? `t${openTools.size}`,
             name: p.name ?? "?",
             args: (() => { try { return typeof p.arguments === "string" ? p.arguments : JSON.stringify(p.arguments ?? {}); } catch { return "{}"; } })(),
           };
@@ -163,13 +166,17 @@ export function buildPiSessionPage(sessionId: string, limit: number, asc = false
         }
       }
       cards.push(card);
-    } else {
-      for (const p of m.content ?? []) {
-        if (p.type === "toolResult") {
-          const key = p.toolCallId ?? [...openTools.keys()].pop();
-          const tc = key ? openTools.get(key) : undefined;
-          if (tc) tc.result = resultText(p.output);
-        }
+    } else if (m.role === "toolResult") {
+      const payload = (m.content ?? []).filter(p => p.type === "text").map(p => p.text ?? "").join("\n");
+      const key = m.toolCallId ?? [...openTools.keys()].pop();
+      const tc = key ? openTools.get(key) : undefined;
+      const text = (payload || resultText(m.content)).slice(0, 4000);
+      const stamped = m.isError ? `⚠️ ${text}` : text;
+      if (tc) tc.result = stamped;
+      else {
+        const orphan: PiToolCall = { id: m.toolCallId ?? `t${openTools.size}`, name: m.toolName ?? "tool", args: "", result: stamped };
+        openTools.set(orphan.id, orphan);
+        cards.push({ ts: e.timestamp ?? "", role: "assistant", textParts: [], reasoning: [], tools: [orphan] });
       }
     }
   }
