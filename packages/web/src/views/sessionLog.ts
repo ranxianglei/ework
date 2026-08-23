@@ -75,8 +75,22 @@ function sessionRow(s: SessionListItem): string {
 
 export async function buildSessionView(client: OpencodeClientInterface, id: string, desc: boolean, collapseLines: number, limit = 30, all = false): Promise<{ html: string }> {
   const data = await client.exportSession(id);
+  return buildSessionViewFromData(data, { desc, collapseLines, limit, all });
+}
+
+export interface SessionViewOpts {
+  desc: boolean;
+  collapseLines: number;
+  limit: number;
+  all?: boolean;
+}
+
+// Renders any SessionExport — opencode exports and pi-converted transcripts
+// share this path so both viewers stay feature-identical.
+export function buildSessionViewFromData(data: SessionExport, opts: SessionViewOpts): { html: string } {
+  const { desc, collapseLines, limit, all = false } = opts;
   const info = data.info;
-  const title = info.title || id;
+  const title = info.title || info.id;
   const created = info.time.created ? relTimeMs(info.time.created) : "";
   const updated = info.time.updated ? relTimeMs(info.time.updated) : "";
   const total = data.messages.length;
@@ -227,6 +241,7 @@ export async function buildSessionView(client: OpencodeClientInterface, id: stri
     <span>${data.messages.length} 条消息</span>
     ${stats.peak ? `<span>🧮 当前 ${kfmt(stats.current)} · 峰值 ${kfmt(stats.peak)}${stats.p90 ? ` · P90 ${kfmt(stats.p90)}` : ""}${stats.p50 ? ` · P50 ${kfmt(stats.p50)}` : ""}</span>` : ""}
     ${stats.calls ? `<span>📊 累计 ${kfmt(stats.traffic)} · cache ${stats.cacheHit}% · ${stats.calls} 调用</span>` : ""}
+    ${info.version === "pi" ? `<span class="sd-badge" title="pi runtime session">🥧 pi</span>` : ""}
     ${acp ? `<span>🗜 压缩 ${acp.blocks} 段${acp.savedTokens ? ` · 省 ${kfmt(acp.savedTokens)}` : ""}</span>` : ""}
     ${bd && bd.total ? `<span>📂 ${ctxBreakdownStr(bd, stats.current, stats.overhead)}</span>` : ""}
   </div>

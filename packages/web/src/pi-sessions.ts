@@ -1,40 +1,34 @@
 import { readFileSync } from "fs";
-import { join, dirname } from "path";
+import { join } from "path";
 import { existsSync } from "fs";
 import { homedir } from "os";
-import { THEME_CSS, escapeHtml, escapeAttr } from "./render/layout";
-import { renderMarkdown } from "./render/markdown";
+import type { SessionExport, SessionMessage, MessagePart } from "./opencode";
+import { buildSessionViewFromData } from "./views/sessionLog";
 
-interface PiEvent {
+interface PiPart {
+  type?: string;
+  text?: string;
+  thinking?: string;
+  name?: string;
+  arguments?: unknown;
+  id?: string;
+}
+
+interface PiMessage {
+  role?: string;
+  toolCallId?: string;
+  toolName?: string;
+  isError?: boolean;
+  model?: string;
+  usage?: { input?: number; output?: number; cacheRead?: number; totalTokens?: number };
+  content?: PiPart[];
+}
+
+export interface PiEvent {
   type?: string;
   timestamp?: string;
-  message?: {
-    role?: string;
-    toolCallId?: string;
-    toolName?: string;
-    isError?: boolean;
-    content?: Array<{ type?: string; text?: string; thinking?: string; name?: string; arguments?: unknown; id?: string; output?: unknown }>;
-    usage?: { input?: number; output?: number; cacheRead?: number; totalTokens?: number };
-    model?: string;
-  };
+  message?: PiMessage;
   cwd?: string;
-}
-
-interface PiToolCall {
-  id: string;
-  name: string;
-  args: string;
-  result?: string;
-}
-
-interface PiCard {
-  ts: string;
-  role: "user" | "assistant";
-  model?: string;
-  textParts: string[];
-  reasoning: string[];
-  tools: PiToolCall[];
-  tok?: string;
 }
 
 function sessionsRoot(): string {
@@ -42,7 +36,7 @@ function sessionsRoot(): string {
     ?? join(process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent"), "sessions");
 }
 
-function findPiSessionFile(sessionId: string): string | null {
+export function findPiSessionFile(sessionId: string): string | null {
   if (!/^[0-9a-f-]{16,64}$/i.test(sessionId)) return null;
   const root = sessionsRoot();
   if (!existsSync(root)) return null;
@@ -64,204 +58,133 @@ function findPiSessionFile(sessionId: string): string | null {
   return out[out.length - 1] ?? null;
 }
 
-function fmtTs(ts: string): string {
-  return ts ? ts.replace("T", " ").replace(/\.\d+Z$/, "Z").slice(5, 19) : "";
+function outputText(m: PiMessage): string {
+  const payload = (m.content ?? []).filter(p => p.type === "text").map(p => p.text ?? "").join("\n");
+  if (payload) return payload;
+  try { return JSON.stringify(m.content ?? ""); } catch { return ""; }
 }
 
-function fmtNum(n: number): string {
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
-  if (n >= 1000) return (n / 1000).toFixed(1) + "k";
-  return String(n);
-}
-
-function resultText(output: unknown): string {
-  if (output == null) return "";
-  if (typeof output === "string") return output.slice(0, 4000);
-  try { return JSON.stringify(output).slice(0, 4000); } catch { return String(output); }
-}
-
-function toolCard(t: PiToolCall): string {
-  const argStr = t.args.length > 600 ? t.args.slice(0, 600) + "…" : t.args;
-  const argsBlock = t.args && t.args !== "{}"
-    ? `<div class="pi-io-label">完整参数</div><pre>${escapeHtml(t.args.length > 20000 ? t.args.slice(0, 20000) + "\n…(截断)" : t.args)}</pre>`
-    : "";
-  const resultBlock = `<div class="pi-io-label">返回</div><pre>${escapeHtml(t.result ?? "(无返回)")}</pre>`;
-  return `<details class="pi-tool"><summary>🔧 ${escapeHtml(t.name)}<span class="pi-tool-args">${escapeHtml(argStr)}</span></summary><div class="tool-io">${argsBlock}${resultBlock}</div></details>`;
-}
-
-function renderCard(c: PiCard): string {
-  const isUser = c.role === "user";
-  const parts: string[] = [];
-  for (const r of c.reasoning) {
-    if (!r.trim()) continue;
-    parts.push(`<details class="reasoning"><summary>💭 Reasoning</summary><div class="tool-io" data-md="${escapeAttr(r.slice(0, 8000))}">${renderMarkdown(r.slice(0, 8000))}</div></details>`);
-  }
-  for (const t of c.tools) parts.push(toolCard(t));
-  for (const tx of c.textParts) {
-    if (!tx.trim()) continue;
-    parts.push(`<div data-md="${escapeAttr(tx.slice(0, 20000))}">${renderMarkdown(tx.slice(0, 20000))}</div>`);
-  }
-  return `<div class="msg ${isUser ? "msg-u" : "msg-a"}">
-  <div class="mh">
-    <span class="role ${isUser ? "role-u" : "role-a"}">${isUser ? "👤 User" : "🤖 Assistant"}</span>
-    ${c.model ? `<span class="model">${escapeHtml(c.model)}</span>` : ""}
-    ${c.tok ? `<span class="tok">${c.tok}</span>` : ""}
-    <span class="when">${escapeHtml(fmtTs(c.ts))}</span>
-  </div>
-  <div class="mb">${parts.join("") || "<p><em>(无文本输出)</em></p>"}</div>
-</div>`;
-}
-
-export function buildPiSessionPage(sessionId: string, limit: number, asc = false): string | null {
-  const file = findPiSessionFile(sessionId);
-  if (!file) return null;
-  const raw = readFileSync(file, "utf8");
-  const events: PiEvent[] = [];
-  for (const line of raw.split("\n")) {
-    const l = line.trim();
-    if (!l) continue;
-    try { events.push(JSON.parse(l) as PiEvent); } catch { /* skip torn tail line */ }
-  }
-
-  const cards: PiCard[] = [];
-  const openTools = new Map<string, PiToolCall>();
-  const seenContent = new Set<string>();
-  let inputTok = 0, outputTok = 0, cacheTok = 0, peakTok = 0;
+// pi re-emits identical message content as new events (streaming steps,
+// re-persisted context, repeated tool results); each re-emission also repeats
+// its usage, so collapsing repeats keeps the token stats honest.
+export function piEventsToExport(sessionId: string, events: PiEvent[]): SessionExport {
+  const messages: SessionMessage[] = [];
+  const openTools = new Map<string, { part: MessagePart }>();
+  const seen = new Set<string>();
   let cwd = "";
-  let first = "", last = "";
+  let created = 0;
+  let updated = 0;
+  let title = "";
+
+  const stamp = (e: PiEvent) => {
+    const t = e.timestamp ? Date.parse(e.timestamp) : NaN;
+    if (!Number.isFinite(t)) return;
+    if (!created) created = t;
+    updated = Math.max(updated, t);
+  };
+
   for (const e of events) {
     if (e.type === "session" && e.cwd) cwd = e.cwd;
-    if (e.timestamp) {
-      if (!first) first = e.timestamp;
-      last = e.timestamp;
-    }
+    stamp(e);
     if (e.type !== "message" || !e.message) continue;
     const m = e.message;
-    // pi re-emits identical message content as new events (streaming steps,
-    // re-persisted context, repeated tool results). Collapse exact repeats —
-    // usage excluded from the key so re-emissions still merge, and their
-    // (identical) usage is only counted once.
-    const contentKey = `${m.role ?? ""}\u0000${JSON.stringify(m.content ?? [])}`;
-    if (seenContent.has(contentKey)) continue;
-    seenContent.add(contentKey);
-    const u = m.usage;
-    if (u) {
-      inputTok += u.input ?? 0;
-      outputTok += u.output ?? 0;
-      cacheTok += u.cacheRead ?? 0;
-      peakTok = Math.max(peakTok, u.totalTokens ?? 0);
-    }
+    const dedupeKey = `${m.role ?? ""}\u0000${JSON.stringify(m.content ?? [])}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+
     if (m.role === "user") {
-      const text = (m.content ?? []).filter(p => p.type === "text").map(p => p.text ?? "").join("\n");
-      cards.push({ ts: e.timestamp ?? "", role: "user", textParts: text ? [text] : [], reasoning: [], tools: [] });
-    } else if (m.role === "assistant") {
-      const card: PiCard = { ts: e.timestamp ?? "", role: "assistant", model: m.model, textParts: [], reasoning: [], tools: [], tok: u?.output ? `↗ ${fmtNum(u.output)}` : undefined };
+      const parts: MessagePart[] = [];
       for (const p of m.content ?? []) {
-        if (p.type === "thinking" && p.thinking) card.reasoning.push(p.thinking);
-        else if (p.type === "text" && p.text) card.textParts.push(p.text);
-        else if (p.type === "toolCall") {
-          const tc: PiToolCall = {
-            id: p.id ?? `t${openTools.size}`,
-            name: p.name ?? "?",
-            args: (() => { try { return typeof p.arguments === "string" ? p.arguments : JSON.stringify(p.arguments ?? {}); } catch { return "{}"; } })(),
-          };
-          card.tools.push(tc);
-          openTools.set(tc.id, tc);
+        if (p.type === "text" && p.text) parts.push({ type: "text", text: p.text });
+      }
+      if (!title) {
+        const first = parts.map(p => p.type === "text" ? p.text : "").join(" ").trim();
+        // daemon user messages are either a long system prompt or [SYSTEM
+        // FORWARD] wrappers whose header quotes the issue title
+        if (first.startsWith("[SYSTEM FORWARD]")) {
+          const quoted = first.match(/"([^"\n]{4,120})"/);
+          if (quoted?.[1]) title = quoted[1].replace(/\s+/g, " ").slice(0, 60);
+        } else if (first && first.length < 400) {
+          title = first.replace(/\s+/g, " ").slice(0, 60);
         }
       }
-      cards.push(card);
-    } else if (m.role === "toolResult") {
-      const payload = (m.content ?? []).filter(p => p.type === "text").map(p => p.text ?? "").join("\n");
-      const key = m.toolCallId ?? [...openTools.keys()].pop();
-      const tc = key ? openTools.get(key) : undefined;
-      const text = (payload || resultText(m.content)).slice(0, 4000);
-      const stamped = m.isError ? `⚠️ ${text}` : text;
-      if (tc) tc.result = stamped;
-      else {
-        const orphan: PiToolCall = { id: m.toolCallId ?? `t${openTools.size}`, name: m.toolName ?? "tool", args: "", result: stamped };
-        openTools.set(orphan.id, orphan);
-        cards.push({ ts: e.timestamp ?? "", role: "assistant", textParts: [], reasoning: [], tools: [orphan] });
+      if (parts.length) messages.push({ info: { role: "user", id: `pi_u${messages.length}`, time: { created: updated } }, parts });
+      continue;
+    }
+
+    if (m.role === "assistant") {
+      const parts: MessagePart[] = [];
+      for (const p of m.content ?? []) {
+        if (p.type === "thinking" && p.thinking) parts.push({ type: "reasoning", text: p.thinking });
+        else if (p.type === "text" && p.text) parts.push({ type: "text", text: p.text });
+        else if (p.type === "toolCall") {
+          const tool: MessagePart = {
+            type: "tool",
+            tool: p.name ?? "tool",
+            state: { title: p.name ?? "tool", input: p.arguments },
+          };
+          if (p.id) openTools.set(p.id, { part: tool });
+          parts.push(tool);
+        }
+      }
+      if (!parts.length) continue;
+      const u = m.usage;
+      messages.push({
+        info: {
+          role: "assistant",
+          id: `pi_a${messages.length}`,
+          modelID: m.model,
+          time: { created: updated },
+          tokens: u ? { input: u.input, output: u.output, cache: { read: u.cacheRead } } : undefined,
+        },
+        parts,
+      });
+      continue;
+    }
+
+    if (m.role === "toolResult") {
+      const text = outputText(m);
+      const open = m.toolCallId ? openTools.get(m.toolCallId) : undefined;
+      if (open && open.part.state) {
+        open.part.state.output = text;
+        if (m.isError) open.part.state.title = `${open.part.state.title} (error)`;
+        openTools.delete(m.toolCallId!);
+      } else {
+        const name = m.toolName ?? "tool";
+        messages.push({
+          info: { role: "assistant", id: `pi_t${messages.length}`, time: { created: updated } },
+          parts: [{ type: "tool", tool: name, state: { title: m.isError ? `${name} (error)` : name, output: text } }],
+        });
       }
     }
   }
 
-  const total = cards.length;
-  const shown = asc ? cards.slice(Math.max(0, total - limit)) : cards.slice(Math.max(0, total - limit)).reverse();
-  const truncated = total > limit;
-  const title = `pi · ${sessionId.slice(0, 13)}…`;
-
-  const qs = (over: Record<string, string>) => {
-    const params = new URLSearchParams(over);
-    return `?${params.toString()}`;
+  return {
+    info: {
+      id: sessionId,
+      title: title || `pi ${sessionId.slice(0, 8)}`,
+      directory: cwd,
+      version: "pi",
+      time: { created, updated },
+    },
+    messages,
   };
-  const moreHref = qs({ limit: String(Math.min(5000, limit * 3)) });
-  const allHref = qs({ limit: "5000" });
-  const ordBtn = (mode: "asc" | "desc") =>
-    `<a class="ord-btn ${asc === (mode === "asc") ? "active" : ""}" href="${qs({ limit: String(limit), asc: mode === "asc" ? "1" : "0" })}">${mode === "asc" ? "正序" : "倒序"}</a>`;
+}
 
-  const body = shown.map(renderCard).join("");
-  const moreBar = truncated
-    ? `<div class="more-bar">共 ${total} 条，当前显示最新 ${limit} 条 · <a href="${moreHref}">加载更多</a> · <a href="${allHref}">查看全部</a></div>`
-    : "";
+export function loadPiSessionExport(sessionId: string): SessionExport | null {
+  const file = findPiSessionFile(sessionId);
+  if (!file) return null;
+  const events: PiEvent[] = [];
+  for (const line of readFileSync(file, "utf8").split("\n")) {
+    const t = line.trim();
+    if (!t) continue;
+    try { events.push(JSON.parse(t)); } catch { /* trailing/partial line */ }
+  }
+  return piEventsToExport(sessionId, events);
+}
 
-  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${escapeHtml(title)}</title>
-<style>${THEME_CSS}
-.meta-bar{max-width:900px;margin:0 auto;padding:.8rem 1rem .2rem}
-.meta-bar h1{font-size:17px;margin:0 0 .35rem;overflow-wrap:anywhere}
-.meta-status{display:flex;gap:.6rem;flex-wrap:wrap;font-size:12px;color:var(--text-muted)}
-.meta-status .sid{font-family:ui-monospace,monospace}
-.mbar{max-width:900px;margin:.6rem auto;padding:0 1rem;display:flex;gap:.6rem;align-items:center;flex-wrap:wrap}
-.mbar .note{font-size:12px;color:var(--text-muted)}
-.ord{margin-left:auto;display:flex;gap:.3rem}
-.ord-btn{padding:.25rem .7rem;border-radius:6px;border:1px solid var(--border);font-size:12px;color:var(--text-muted);text-decoration:none}
-.ord-btn.active{background:var(--bg-muted);color:var(--text);font-weight:600}
-#mlist{max-width:900px;margin:0 auto;padding:.5rem 1rem 3rem}
-.msg{position:relative;background:var(--bg-elev);border:1px solid var(--border);border-left:3px solid var(--border);border-radius:8px;padding:.6rem .9rem;margin-bottom:1rem;overflow:hidden}
-.msg.msg-u{border-left-color:var(--human);background:color-mix(in srgb,var(--human) 4%,var(--bg-elev))}
-.msg.msg-a{border-left-color:var(--bot);background:color-mix(in srgb,var(--bot) 4%,var(--bg-elev))}
-.mh{display:flex;align-items:center;gap:.5rem;font-size:13px;flex-wrap:wrap;margin-bottom:.35rem}
-.mh .role{font-weight:600;font-size:11px;padding:.05rem .45rem;border-radius:4px;line-height:1.7}
-.mh .role-u{background:color-mix(in srgb,var(--human) 18%,transparent);color:var(--human)}
-.mh .role-a{background:color-mix(in srgb,var(--bot) 18%,transparent);color:var(--bot)}
-.mh .model{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:var(--text-muted)}
-.mh .when{color:var(--text-muted);font-size:12px;margin-left:auto}
-.mh .tok{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;color:var(--text-muted)}
-.mb{overflow-wrap:anywhere;word-break:break-word;line-height:1.55}
-.mb p{margin:.4rem 0}
-.mb pre{background:var(--code-bg);padding:.6rem;border-radius:6px;overflow:auto;font-size:12.5px}
-.mb code{background:var(--code-bg);padding:.1em .35em;border-radius:4px;font-size:12.5px}
-.mb details{margin:.3rem 0;border:1px solid var(--border);border-radius:6px;overflow:hidden}
-.mb summary{cursor:pointer;padding:.4rem .6rem;background:var(--bg-muted);font-size:13px;display:flex;align-items:center;gap:.4rem;flex-wrap:wrap}
-.mb details.reasoning{border-left:3px solid color-mix(in srgb,var(--system) 45%,transparent)}
-.mb details.reasoning>.tool-io{background:color-mix(in srgb,var(--system) 7%,var(--bg-elev))}
-.mb .tool-io{position:relative;padding:.5rem .6rem}
-.mb .tool-io pre{margin:.2rem 0}
-.pi-tool summary .pi-tool-args{font-family:ui-monospace,monospace;font-size:11px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:60%}
-.pi-io-label{font-size:11px;color:var(--text-muted);margin:6px 0 2px;font-weight:600}
-.more-bar{max-width:900px;margin:1rem auto 0;padding:.8rem 1rem;text-align:center;border:1px dashed var(--border);border-radius:8px;color:var(--text-muted);font-size:13px}
-.more-bar a{font-weight:600}
-</style></head><body>
-<header class="nav" style="display:flex;align-items:center;gap:.5rem;padding:.55rem 1rem;background:var(--header-bg);color:var(--header-text);font-size:13px;flex-wrap:wrap">
-  <a href="/" style="color:var(--header-text)">🏠</a><span style="opacity:.5">/</span>
-  <a href="/sessions" style="color:var(--header-text)">会话</a><span style="opacity:.5">/</span>
-  <span style="opacity:.85">${escapeHtml(title)}</span>
-</header>
-<div class="meta-bar">
-  <h1>${escapeHtml(title)}</h1>
-  <div class="meta-status">
-    <span class="sid">${escapeHtml(sessionId)}</span>
-    ${cwd ? `<span>📁 ${escapeHtml(dirname(cwd))}</span>` : ""}
-    ${first ? `<span>创建 ${escapeHtml(fmtTs(first))}</span>` : ""}
-    ${last ? `<span>更新 ${escapeHtml(fmtTs(last))}</span>` : ""}
-    <span>${total} 条消息</span>
-    <span>🧮 峰值 ${fmtNum(peakTok)} · 累计 ↗ ${fmtNum(outputTok)} · cache ${fmtNum(cacheTok)}</span>
-  </div>
-</div>
-<div class="mbar">
-  <span class="note">📖 只读 · pi 运行时会话</span>
-  <span class="ord">${ordBtn("asc")}${ordBtn("desc")}</span>
-</div>
-<main id="mlist">${body || `<div style="padding:2rem;text-align:center;color:var(--text-muted)">此会话没有消息</div>`}${moreBar}</main>
-</body></html>`;
+export function buildPiSessionPage(sessionId: string, limit: number, asc: boolean, collapseLines = 12): string | null {
+  const data = loadPiSessionExport(sessionId);
+  if (!data) return null;
+  return buildSessionViewFromData(data, { desc: !asc, collapseLines, limit, all: false }).html;
 }

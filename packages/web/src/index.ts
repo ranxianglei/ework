@@ -1,5 +1,5 @@
 import { createRequire } from "module";
-import { buildPiSessionPage } from "./pi-sessions";
+import { buildPiSessionPage, loadPiSessionExport } from "./pi-sessions";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { readFileSync, appendFileSync, existsSync } from "fs";
@@ -733,13 +733,13 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
       }
       const piLimit = Math.min(5000, Math.max(10, Number(url.searchParams.get("limit")) || 200));
       const piAsc = url.searchParams.get("asc") === "1";
-      const piPage = buildPiSessionPage(rawSid, piLimit, piAsc);
+      const piPage = buildPiSessionPage(rawSid, piLimit, piAsc, cfg.collapseLines);
       if (piPage) return html(piPage, 200);
     } else {
       // non-ses_ id that resolved to nothing: try the pi session file before 404
       const piLimit = Math.min(5000, Math.max(10, Number(url.searchParams.get("limit")) || 200));
       const piAsc = url.searchParams.get("asc") === "1";
-      const piPage = buildPiSessionPage(rawSid, piLimit, piAsc);
+      const piPage = buildPiSessionPage(rawSid, piLimit, piAsc, cfg.collapseLines);
       if (piPage) return html(piPage, 200);
     }
     const desc = url.searchParams.get("asc") !== "1";
@@ -1703,6 +1703,11 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     if (!sid) return json({ error: "bad session path" }, 400);
     const sinceNum = Number(url.searchParams.get("since") ?? "0");
     const since = Number.isFinite(sinceNum) ? sinceNum : 0;
+    const piData = sid.startsWith("ses_") ? null : loadPiSessionExport(sid);
+    if (piData) {
+      const { items, lastCreated } = renderNewMessages(piData, since, cfg.collapseLines);
+      return json({ items, lastCreated });
+    }
     try {
       const data = await opencode.exportSession(sid);
       const { items, lastCreated } = renderNewMessages(data, since, cfg.collapseLines);
@@ -1719,6 +1724,10 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     const offset = Math.max(0, Number(url.searchParams.get("offset")) || 0);
     const limit = Math.min(500, Math.max(1, Number(url.searchParams.get("limit")) || 30));
     const desc = url.searchParams.get("asc") !== "1";
+    const piData = sid.startsWith("ses_") ? null : loadPiSessionExport(sid);
+    if (piData) {
+      return json(renderBatchHTML(piData, offset, limit, desc, cfg.collapseLines));
+    }
     try {
       const data = await opencode.exportSession(sid);
       const batch = renderBatchHTML(data, offset, limit, desc, cfg.collapseLines);
