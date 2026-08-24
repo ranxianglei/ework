@@ -17,6 +17,7 @@ import {
   listCachedModels,
   type CommentRow,
   type IssueWithMeta,
+  type ProjectRow,
 } from "../store";
 import { webUrlFromClone } from "./projectUpstreams";
 
@@ -35,6 +36,22 @@ export interface IssueThreadPayload {
   sinceISO: string;
   commentSort: "desc" | "asc";
   comments: CommentView[];
+}
+
+// Issues in a project cloned from an upstream are that upstream's issues:
+// #204 in a github-mirrored repo means github.com/o/r/issues/204. Normalize
+// the configured remote (https/git@/ssh/git forms) to its web base; projects
+// without an upstream keep resolving refs against this ework install.
+export function upstreamRefBase(project: Pick<ProjectRow, "upstream_urls">): string | null {
+  const url = getDefaultUpstreamUrl(project);
+  if (!url) return null;
+  let m = url.match(/^git@([^:]+):(.+)$/);
+  if (m?.[1] && m[2]) return `https://${m[1]}/${m[2].replace(/\.git$/, "")}`;
+  m = url.match(/^(?:ssh|git):\/\/(?:git@)?([^\/]+)\/(.+)$/);
+  if (m?.[1] && m[2]) return `https://${m[1]}/${m[2].replace(/\.git$/, "")}`;
+  m = url.match(/^https?:\/\/([^\/]+)\/(.+)$/);
+  if (m?.[1] && m[2]) return `https://${m[1]}/${m[2].replace(/\.git$/, "")}`;
+  return null;
 }
 
 function toView(c: CommentRow, issuePath = ""): CommentView {
@@ -105,7 +122,7 @@ export async function buildIssueThread(
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const currentPage = totalPages;
   const { rows } = await listCommentsPage(issue.id, currentPage, PAGE_SIZE);
-  const issuePath = `/${owner}/${repo}/issues/${issue.number}`;
+  const issuePath = `${upstreamRefBase(project) ?? `/${owner}/${repo}`}/issues/${issue.number}`;
   const views = await viewsFromComments(rows, issuePath);
   const hasOlder = currentPage > 1;
   const displayViews = orderForDisplay(views, cfg.commentSort);
@@ -188,7 +205,7 @@ export async function fetchIssuePage(
   const issue = await getIssueWithMeta(project.id, number);
   if (!issue) throw new StoreError(404, `#${number} 不存在`);
   const { rows, page: clamped } = await listCommentsPage(issue.id, page, PAGE_SIZE);
-  const views = await viewsFromComments(rows, `/${owner}/${repo}/issues/${issue.number}`);
+  const views = await viewsFromComments(rows, `${upstreamRefBase(project) ?? `/${owner}/${repo}`}/issues/${issue.number}`);
   return { issue, views, currentPage: clamped, hasOlder: clamped > 1 };
 }
 
@@ -203,7 +220,7 @@ export async function fetchIssueSince(
   const issue = await getIssueWithMeta(project.id, number);
   if (!issue) throw new StoreError(404, `#${number} 不存在`);
   const rows = await listCommentsSince(issue.id, sinceISO);
-  return await viewsFromComments(rows, `/${owner}/${repo}/issues/${issue.number}`);
+  return await viewsFromComments(rows, `${upstreamRefBase(project) ?? `/${owner}/${repo}`}/issues/${issue.number}`);
 }
 
 export function safeJsonEmbed(v: unknown): string {
