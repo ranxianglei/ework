@@ -33,11 +33,40 @@ const PURIFY_OPTS = {
   ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto):|\/|\.\/|\.\.\/|#)/i,
 };
 
-export function renderMarkdown(body: string, baseDir = ""): string {
+export function renderMarkdown(body: string, baseDir = "", baseIssuePath = ""): string {
   const dirty = marked.parse(body ?? "");
   const html = typeof dirty === "string" ? dirty : "";
   const clean = purify.sanitize(html, PURIFY_OPTS) as unknown as string;
-  return linkifyAbsPaths(linkifySessionIDs(clean), baseDir);
+  return linkifyIssueRefs(linkifyAbsPaths(linkifySessionIDs(clean), baseDir), baseIssuePath);
+}
+
+// Linkify #N issue references inside rendered issue content. Only applied
+// when the caller supplies the current issue's path — same-repo shorthand
+// (#204) resolves against it. Skips tag interiors and existing anchors,
+// same token-scanning approach as linkifySessionIDs.
+export function linkifyIssueRefs(html: string, baseIssuePath = ""): string {
+  if (!baseIssuePath) return html;
+  const issuePath = baseIssuePath.replace(/\/+$/, "");
+  let out = "";
+  let inA = false;
+  let inCode = false;
+  const re = /(<[^>]*>)|([^<]+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html)) !== null) {
+    if (m[1] !== undefined) {
+      const tag = m[1];
+      if (/^<a[\s>]/i.test(tag)) inA = true;
+      else if (/^<\/a[\s>]/i.test(tag)) inA = false;
+      else if (/^<pre[\s>]/i.test(tag) || /^<code[\s>]/i.test(tag)) inCode = true;
+      else if (/^<\/pre[\s>]/i.test(tag) || /^<\/code[\s>]/i.test(tag)) inCode = false;
+      out += tag;
+    } else if (m[2] !== undefined) {
+      out += inA || inCode
+        ? m[2]
+        : m[2].replace(/(^|[^\w#])#([1-9][0-9]{0,4})(?![0-9\w])/g, (_all, pre: string, num: string) => `${pre}<a href="${issuePath.replace(/\/issues\/\d+$/, "")}/issues/${num}">#${num}</a>`);
+    }
+  }
+  return out;
 }
 
 // Linkify ses_ IDs in text nodes only — skips tag interiors (don't corrupt

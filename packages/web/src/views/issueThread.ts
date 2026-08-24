@@ -37,7 +37,7 @@ export interface IssueThreadPayload {
   comments: CommentView[];
 }
 
-function toView(c: CommentRow): CommentView {
+function toView(c: CommentRow, issuePath = ""): CommentView {
   return {
     id: c.id,
     tag: classifyActor(c.body, c.author_kind),
@@ -45,13 +45,13 @@ function toView(c: CommentRow): CommentView {
     login: c.author,
     avatar: "",
     created_at: c.created_at,
-    body_html: renderMarkdown(c.body),
+    body_html: renderMarkdown(c.body, "", issuePath),
     display_name: c.author_display_name ?? null,
   };
 }
 
-export async function viewsFromComments(rows: CommentRow[]): Promise<CommentView[]> {
-  const views = rows.map((r) => toView(r));
+export async function viewsFromComments(rows: CommentRow[], issuePath = ""): Promise<CommentView[]> {
+  const views = rows.map((r) => toView(r, issuePath));
   await hydrateReactions(views);
   return views;
 }
@@ -105,12 +105,13 @@ export async function buildIssueThread(
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const currentPage = totalPages;
   const { rows } = await listCommentsPage(issue.id, currentPage, PAGE_SIZE);
-  const views = await viewsFromComments(rows);
+  const issuePath = `/${owner}/${repo}/issues/${issue.number}`;
+  const views = await viewsFromComments(rows, issuePath);
   const hasOlder = currentPage > 1;
   const displayViews = orderForDisplay(views, cfg.commentSort);
   const payload = payloadFromComments(issue, displayViews, currentPage, hasOlder, cfg.commentSort);
 
-  const descriptionHtml = renderMarkdown(issue.body);
+  const descriptionHtml = renderMarkdown(issue.body, "", issuePath);
   const descriptionCollapsed = issue.body.length > 1200;
   const upstreamWebUrl = (() => {
     const clone = getDefaultUpstreamUrl(project);
@@ -187,7 +188,7 @@ export async function fetchIssuePage(
   const issue = await getIssueWithMeta(project.id, number);
   if (!issue) throw new StoreError(404, `#${number} 不存在`);
   const { rows, page: clamped } = await listCommentsPage(issue.id, page, PAGE_SIZE);
-  const views = await viewsFromComments(rows);
+  const views = await viewsFromComments(rows, `/${owner}/${repo}/issues/${issue.number}`);
   return { issue, views, currentPage: clamped, hasOlder: clamped > 1 };
 }
 
@@ -202,7 +203,7 @@ export async function fetchIssueSince(
   const issue = await getIssueWithMeta(project.id, number);
   if (!issue) throw new StoreError(404, `#${number} 不存在`);
   const rows = await listCommentsSince(issue.id, sinceISO);
-  return await viewsFromComments(rows);
+  return await viewsFromComments(rows, `/${owner}/${repo}/issues/${issue.number}`);
 }
 
 export function safeJsonEmbed(v: unknown): string {

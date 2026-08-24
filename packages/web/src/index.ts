@@ -1850,7 +1850,7 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
             login: c.author,
             avatar: "",
             created_at: c.created_at,
-            body_html: renderMarkdown(c.body),
+            body_html: renderMarkdown(c.body, "", `/${owner}/${repo}/issues/${issue.number}`),
           };
         }
         let closed = false;
