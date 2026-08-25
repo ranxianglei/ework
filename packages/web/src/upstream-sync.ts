@@ -6,6 +6,7 @@ import {
   getIssueByUpstreamNumber,
   getCommentByUpstreamId,
   createIssue,
+  ensureUser,
   postComment,
   editIssue,
   updateUpstreamSyncState,
@@ -42,6 +43,12 @@ export interface UpstreamSyncPollResult {
 }
 
 const GITEA_COMMENT_ISSUE_RE = /\/issues\/(\d+)$/;
+
+// GitHub CI/actions identities end in [bot]; their comments must not wake
+// the engine, so they are imported as bot-kind users.
+function fromGithubBot(login: string | undefined): boolean {
+  return typeof login === "string" && /\[bot\]$/i.test(login.trim());
+}
 
 function upstreamIssueNumberFromComment(gc: GiteaComment): number | null {
   const m = (gc.issue_url ?? "").match(GITEA_COMMENT_ISSUE_RE);
@@ -103,6 +110,7 @@ export class UpstreamSync {
   }
 
   private async importIssue(gi: GiteaIssue, emit: boolean): Promise<void> {
+    await ensureUser(gi.user?.login ?? "upstream", fromGithubBot(gi.user?.login) ? "bot" : "human");
     await createIssue(
       this.project.id,
       (gi.pull_request ? "[PR] " : "") + (gi.title || `#${gi.number}`),
@@ -143,7 +151,10 @@ export class UpstreamSync {
       if (await getCommentByUpstreamId(gc.id)) continue;
       // write-back comments carry this marker; importing them would duplicate locally
       if ((gc.body ?? "").includes("<!-- ework-mirror -->")) continue;
-      const row = await postComment(local.id, gc.body ?? "", gc.user?.login ?? "upstream", {
+      const gcAuthor = gc.user?.login ?? "upstream";
+      // ensure the kind before postComment's internal user creation runs
+      await ensureUser(gcAuthor, fromGithubBot(gcAuthor) ? "bot" : "human");
+      const row = await postComment(local.id, gc.body ?? "", gcAuthor, {
         createdAt: gc.created_at,
         updatedAt: gc.updated_at,
         upstreamCommentId: gc.id,
@@ -221,7 +232,9 @@ export class UpstreamSync {
         if (!upstreamNumber) continue;
         const local = await getIssueByUpstreamNumber(this.project.id, upstreamNumber);
         if (!local) continue;
-        const row = await postComment(local.id, gc.body ?? "", gc.user?.login ?? "upstream", {
+        const gcAuthor = gc.user?.login ?? "upstream";
+        await ensureUser(gcAuthor, fromGithubBot(gcAuthor) ? "bot" : "human");
+        const row = await postComment(local.id, gc.body ?? "", gcAuthor, {
           createdAt: gc.created_at,
           updatedAt: gc.updated_at,
           upstreamCommentId: gc.id,

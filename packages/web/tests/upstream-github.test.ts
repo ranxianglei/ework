@@ -183,3 +183,16 @@ describe("upstream-sync github adapter", () => {
     expect(await getIssueByUpstreamNumber(project.id, 1)).toBeNull();
   });
 });
+
+describe('upstream-sync github bot-kind mapping', () => {
+  test('imports [bot]-authored comments as bot users', async () => {
+    const { sync, project } = await setup();
+    issuePages = [[ghIssue(1)]];
+    issueComments[1] = [ghComment(31, 1, { user: { login: 'github-actions[bot]' } })];
+    mockFetch();
+    await engine(sync, project).pollOnce();
+    const db = getDB();
+    const u = await db.get('SELECT login, kind FROM {{users}} WHERE login = ?', ['github-actions[bot]']);
+    expect((u as any)?.kind).toBe('bot');
+  });
+});
