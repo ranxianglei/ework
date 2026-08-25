@@ -228,6 +228,22 @@ export async function handleCommentEvent(
     return;
   }
 
+  // [system] plumbing (forward notices, acks) points at local-only session
+  // links and carries no value for upstream readers — never mirror these.
+  if (ev.comment.body.startsWith("[system]") || ev.comment.body.startsWith("[SYSTEM ")) {
+    logEvent({
+      event: "issue_comment",
+      action: "created",
+      ework_project: projectKey,
+      ework_issue: ev.issue.number,
+      ework_comment: ev.comment.id,
+      gitea_target: giteaTarget,
+      outcome: OUTCOME_SKIPPED_NO_REPO,
+      detail: "system comment",
+    });
+    return;
+  }
+
   if (getCommentMap(ev.comment.id)) {
     logEvent({
       event: "issue_comment",
