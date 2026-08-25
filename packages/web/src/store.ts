@@ -76,6 +76,7 @@ export interface IssueRow {
   ai_status: string;
   model: string;
   runtime: string;
+  upstream_issue_number: number | null;
 }
 
 export interface IssueWithMeta extends IssueRow {

@@ -23,6 +23,7 @@ interface GiteaIssue {
   user: { login: string } | null;
   created_at: string;
   updated_at: string;
+  pull_request?: unknown;
 }
 
 interface GiteaComment {
@@ -71,7 +72,11 @@ export class UpstreamSync {
   }
 
   private api(path: string): string {
-    return `${this.sync.base_url}/api/v1/repos/${this.sync.upstream_owner}/${this.sync.upstream_repo}${path}`;
+    const base = /github\.com$/i.test(new URL(this.sync.base_url).host)
+        ? "https://api.github.com"
+        : this.sync.base_url;
+      const prefix = base === "https://api.github.com" ? "" : "/api/v1";
+      return `${base}${prefix}/repos/${this.sync.upstream_owner}/${this.sync.upstream_repo}${path}`;
   }
 
   private async fetchJson<T>(path: string): Promise<T | null> {
@@ -85,6 +90,14 @@ export class UpstreamSync {
   // comments silently so the AI isn't woken by a flood of historical entries.
   // Live polls (cursor set) emit webhooks so new upstream activity reaches
   // the daemon exactly like locally-created content.
+  private get isGithub(): boolean {
+    try {
+      return /github\.com$/i.test(new URL(this.sync.base_url).host);
+    } catch {
+      return false;
+    }
+  }
+
   private get isBackfill(): boolean {
     return this.sync.issue_cursor === null;
   }
@@ -92,7 +105,7 @@ export class UpstreamSync {
   private async importIssue(gi: GiteaIssue, emit: boolean): Promise<void> {
     await createIssue(
       this.project.id,
-      gi.title || `#${gi.number}`,
+      (gi.pull_request ? "[PR] " : "") + (gi.title || `#${gi.number}`),
       gi.body ?? "",
       gi.user?.login ?? "upstream",
       {
@@ -119,13 +132,17 @@ export class UpstreamSync {
   }
 
   private async importIssueComments(gi: GiteaIssue, emit: boolean): Promise<number> {
-    const comments = await this.fetchJson<GiteaComment[]>(`/issues/${gi.number}/comments?limit=50&order=asc`);
+    const comments = await this.fetchJson<GiteaComment[]>(this.isGithub
+      ? `/issues/${gi.number}/comments?per_page=50`
+      : `/issues/${gi.number}/comments?limit=50&order=asc`);
     if (!comments) return 0;
     const local = await getIssueByUpstreamNumber(this.project.id, gi.number);
     if (!local) return 0;
     let n = 0;
     for (const gc of comments) {
       if (await getCommentByUpstreamId(gc.id)) continue;
+      // write-back comments carry this marker; importing them would duplicate locally
+      if ((gc.body ?? "").includes("<!-- ework-mirror -->")) continue;
       const row = await postComment(local.id, gc.body ?? "", gc.user?.login ?? "upstream", {
         createdAt: gc.created_at,
         updatedAt: gc.updated_at,
@@ -142,7 +159,9 @@ export class UpstreamSync {
     let cursor: string | null = null;
     for (let page = 1; page <= 20; page++) {
       const issues = await this.fetchJson<GiteaIssue[]>(
-        `/issues?state=open&type=issues&limit=50&page=${page}&sort=created&order=asc`
+        this.isGithub
+          ? `/issues?state=open&per_page=50&page=${page}&sort=created&direction=asc`
+          : `/issues?state=open&type=issues&limit=50&page=${page}&sort=created&order=asc`
       );
       if (!issues || issues.length === 0) break;
       for (const gi of issues) {
@@ -166,7 +185,9 @@ export class UpstreamSync {
   private async liveOnce(): Promise<UpstreamSyncPollResult> {
     const result: UpstreamSyncPollResult = { issuesImported: 0, issuesUpdated: 0, commentsImported: 0 };
     const issues = await this.fetchJson<GiteaIssue[]>(
-      `/issues?state=all&type=issues&limit=30&sort=updated&order=desc`
+      this.isGithub
+      ? `/issues?state=all&per_page=30&sort=updated&direction=desc`
+      : `/issues?state=all&type=issues&limit=30&sort=updated&order=desc`
     );
     let issueCursor = this.sync.issue_cursor;
     if (issues) {
@@ -186,13 +207,16 @@ export class UpstreamSync {
 
     let commentCursor = this.sync.comment_cursor;
     const comments = await this.fetchJson<GiteaComment[]>(
-      `/issues/comments?limit=50&sort=updated&order=asc${
-        this.sync.comment_cursor ? `&since=${encodeURIComponent(this.sync.comment_cursor)}` : ""
-      }`
+      this.isGithub
+      ? `/issues/comments?per_page=100${this.sync.comment_cursor ? `&since=${encodeURIComponent(this.sync.comment_cursor)}` : ""}`
+      : `/issues/comments?limit=50&sort=updated&order=asc${
+          this.sync.comment_cursor ? `&since=${encodeURIComponent(this.sync.comment_cursor)}` : ""
+        }`
     );
     if (comments) {
       for (const gc of comments) {
         if (await getCommentByUpstreamId(gc.id)) continue;
+        if ((gc.body ?? "").includes("<!-- ework-mirror -->")) continue;
         const upstreamNumber = upstreamIssueNumberFromComment(gc);
         if (!upstreamNumber) continue;
         const local = await getIssueByUpstreamNumber(this.project.id, upstreamNumber);

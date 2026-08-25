@@ -277,6 +277,7 @@ interface PayloadIssue {
   url: string;
   html_url: string;
   number: number;
+  upstream_issue_number?: number | null;
   title: string;
   body: string;
   labels: PayloadLabel[];
@@ -429,6 +430,7 @@ function buildIssue(
     url: `${origin}/api/v1/repos/${encodeURIComponent(project.owner)}/${encodeURIComponent(project.name)}/issues/${issue.number}`,
     html_url: issueUrl,
     number: issue.number,
+    upstream_issue_number: issue.upstream_issue_number ?? null,
     title: issue.title,
     body: issue.body ?? "",
     labels,
