@@ -1,3 +1,3 @@
 #!/usr/bin/env node
-process.chdir(__dirname + "/..");
+process.chdir(import.meta.dirname + "/..");
 import("../src/index.ts");
