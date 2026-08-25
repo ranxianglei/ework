@@ -316,6 +316,20 @@ function createBackendFor(cfg: Config, runtime: string): RuntimeBackend {
   return new OpencodeBackend(cfg.opencode.binary, cfg.opencode.dbPath, cfg.childEnvDeny);
 }
 
+// Wake policy shared by issue_opened and comment_created: blacklist wins,
+// then an explicit login whitelist (which replaces the kind check), then
+// author kind. Issue openers carry no kind and default to human.
+export function wakePolicySkips(
+  d: { nonWakingAuthors: string[]; noWakeLogins: string[]; wakeLogins: string[]; wakeKinds: string[] },
+  author: string,
+  authorKind: string,
+): string | null {
+  if ([...d.nonWakingAuthors, ...d.noWakeLogins].includes(author)) return `non-waking author ${author}`;
+  if (d.wakeLogins.length > 0 && !d.wakeLogins.includes(author)) return `author ${author} not in wakeLogins`;
+  if (!d.wakeKinds.includes(authorKind)) return `author kind ${authorKind} not in wakeKinds [${d.wakeKinds.join(",")}]`;
+  return null;
+}
+
 export class Engine {
   private cfg: Config;
   private store: Store;
@@ -751,21 +765,12 @@ export class Engine {
       return;
     }
 
-    if (event.type === "comment_created" && event.comment?.author) {
-      const author = event.comment.author;
-      const authorKind = event.comment.authorKind ?? "human";
-      const d = this.cfg.daemon;
-      const noWake = [...d.nonWakingAuthors, ...d.noWakeLogins];
-      if (noWake.includes(author)) {
-        log.info(`engine: non-waking author ${author} — skipping comment_created for ${ref.trackerType}:${scopeKey}#${ref.issueId}`);
-        return;
-      }
-      if (d.wakeLogins.length > 0 && !d.wakeLogins.includes(author)) {
-        log.info(`engine: author ${author} not in wakeLogins — skipping comment_created for ${ref.trackerType}:${scopeKey}#${ref.issueId}`);
-        return;
-      }
-      if (!d.wakeKinds.includes(authorKind)) {
-        log.info(`engine: author kind ${authorKind} not in wakeKinds [${d.wakeKinds.join(",")}] — skipping comment_created for ${ref.trackerType}:${scopeKey}#${ref.issueId}`);
+    const wakeAuthor = event.type === "comment_created" ? event.comment?.author : event.type === "issue_opened" ? event.issue?.author : undefined;
+    const wakeKind = event.type === "comment_created" ? event.comment?.authorKind ?? "human" : "human";
+    if (wakeAuthor) {
+      const skip = wakePolicySkips(this.cfg.daemon, wakeAuthor, wakeKind);
+      if (skip) {
+        log.info(`engine: ${skip} — skipping ${event.type} for ${ref.trackerType}:${scopeKey}#${ref.issueId}`);
         return;
       }
     }
