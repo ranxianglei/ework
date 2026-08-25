@@ -19,6 +19,10 @@ const Schema = z.object({
   DB_PATH: z.string().default(""),
 
   VERBOSE: z.coerce.boolean().default(false),
+
+  // GitHub targets: comments authored by these logins are echoes imported
+  // from GitHub by upstream-sync; mirroring them back would duplicate.
+  SKIP_AUTHOR_LOGINS: z.string().default(""),
 });
 
 export type Config = z.infer<typeof Schema>;
@@ -38,4 +42,16 @@ export function loadConfig(): Config {
     cfg.DB_PATH = `${XDG}/ework-mirror/mirror.db`;
   }
   return cfg;
+}
+
+export function isGithubTarget(cfg: Config): boolean {
+  try {
+    return /github\.com$/i.test(new URL(cfg.GITEA_URL).host);
+  } catch {
+    return false;
+  }
+}
+
+export function apiPrefix(cfg: Config): string {
+  return isGithubTarget(cfg) ? "" : "/api/v1";
 }

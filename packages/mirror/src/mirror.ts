@@ -27,7 +27,31 @@ export const OUTCOME_MIRRORED = "mirrored";
 export const OUTCOME_ERROR = "error";
 
 function isSelfEmitter(senderLogin: string, cfg: Config): boolean {
-  return senderLogin === cfg.GITEA_ACT_AS;
+  if (senderLogin === cfg.GITEA_ACT_AS) return true;
+  const skip = cfg.SKIP_AUTHOR_LOGINS.split(",").map((x) => x.trim()).filter(Boolean);
+  return skip.includes(senderLogin);
+}
+
+const MIRROR_MARKER = "\n\n<!-- ework-mirror -->";
+
+// Issues imported from the upstream keep its numbering; mirror in place
+// instead of creating a retroactive twin on the target.
+function upstreamMap(ev: { projectOwner: string; projectName: string; issue: { number: number; upstream_issue_number?: number | null; title?: string | null } }, repo: { owner: string; repo: string }): IssueMapRow | null {
+  const up = (ev.issue as any).upstream_issue_number;
+  if (typeof up !== "number" || !Number.isFinite(up)) return null;
+  const existing = getIssueMap(ev.projectOwner, ev.projectName, ev.issue.number);
+  if (existing) return existing;
+  const row: IssueMapRow = {
+    ework_project_owner: ev.projectOwner,
+    ework_project_name: ev.projectName,
+    ework_issue_num: ev.issue.number,
+    gitea_owner: repo.owner,
+    gitea_repo: repo.repo,
+    gitea_issue_num: up,
+    ework_issue_title: ev.issue.title ?? "",
+  };
+  recordIssueMap({ ...row, created_at: new Date().toISOString() });
+  return row;
 }
 
 async function ensureGiteaRepo(
@@ -85,7 +109,7 @@ export async function handleIssueEvent(
 
   try {
     if (ev.action === "opened") {
-      const existing = getIssueMap(ev.projectOwner, ev.projectName, ev.issue.number);
+      const existing = upstreamMap(ev, repo) ?? getIssueMap(ev.projectOwner, ev.projectName, ev.issue.number);
       if (existing) {
         logEvent({
           event: "issues",
@@ -231,11 +255,9 @@ export async function handleCommentEvent(
     return;
   }
 
-  let map: IssueMapRow | null = getIssueMap(
-    ev.projectOwner,
-    ev.projectName,
-    ev.issue.number
-  );
+  let map: IssueMapRow | null =
+    upstreamMap(ev, repo) ??
+    getIssueMap(ev.projectOwner, ev.projectName, ev.issue.number);
   if (!map) {
     const created = await createIssue(
       cfg,
@@ -271,7 +293,7 @@ export async function handleCommentEvent(
       cfg,
       repo,
       map.gitea_issue_num,
-      ev.comment.body
+      ev.comment.body + MIRROR_MARKER
     );
     recordCommentMap({
       eworkCommentId: ev.comment.id,

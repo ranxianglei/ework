@@ -1,4 +1,4 @@
-import type { Config } from "./config";
+import { apiPrefix, isGithubTarget, type Config } from "./config";
 
 export class GiteaApiError extends Error {
   status: number;
@@ -40,7 +40,8 @@ async function giteaFetch<T>(
   path: string,
   init: RequestInit = {}
 ): Promise<T> {
-  const url = joinUrl(cfg.GITEA_URL, path);
+  const base = isGithubTarget(cfg) ? "https://api.github.com" : cfg.GITEA_URL;
+  const url = joinUrl(base, path);
   const headers: Record<string, string> = {
     Authorization: `token ${cfg.GITEA_TOKEN}`,
     Accept: "application/json",
@@ -82,7 +83,7 @@ export async function getRepo(
   try {
     return await giteaFetch<{ id: number; name: string }>(
       cfg,
-      `/api/v1/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`
+      `${apiPrefix(cfg)}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`
     );
   } catch (e) {
     if (e instanceof GiteaApiError && e.status === 404) return null;
@@ -98,7 +99,7 @@ export async function createIssue(
 ): Promise<GiteaIssueCreateResponse> {
   return giteaFetch<GiteaIssueCreateResponse>(
     cfg,
-    `/api/v1/repos/${encodeURIComponent(target.owner)}/${encodeURIComponent(target.repo)}/issues`,
+    `${apiPrefix(cfg)}/repos/${encodeURIComponent(target.owner)}/${encodeURIComponent(target.repo)}/issues`,
     {
       method: "POST",
       body: JSON.stringify({ title, body }),
@@ -114,7 +115,7 @@ export async function addComment(
 ): Promise<GiteaCommentCreateResponse> {
   return giteaFetch<GiteaCommentCreateResponse>(
     cfg,
-    `/api/v1/repos/${encodeURIComponent(target.owner)}/${encodeURIComponent(target.repo)}/issues/${issueNumber}/comments`,
+    `${apiPrefix(cfg)}/repos/${encodeURIComponent(target.owner)}/${encodeURIComponent(target.repo)}/issues/${issueNumber}/comments`,
     {
       method: "POST",
       body: JSON.stringify({ body }),
@@ -130,7 +131,7 @@ export async function patchIssueState(
 ): Promise<GiteaIssueCreateResponse> {
   return giteaFetch<GiteaIssueCreateResponse>(
     cfg,
-    `/api/v1/repos/${encodeURIComponent(target.owner)}/${encodeURIComponent(target.repo)}/issues/${issueNumber}`,
+    `${apiPrefix(cfg)}/repos/${encodeURIComponent(target.owner)}/${encodeURIComponent(target.repo)}/issues/${issueNumber}`,
     {
       method: "PATCH",
       body: JSON.stringify({ state }),
