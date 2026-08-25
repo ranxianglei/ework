@@ -34,3 +34,36 @@ describe("wakePolicySkips (comments + issue_opened share it)", () => {
     expect(wakePolicySkips(c, "x", "human")).toBeNull();
   });
 });
+
+describe("buildForwardPrompt trust marker", () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const { Engine } = require("../src/opencode") as { Engine: any };
+  const mk = (wakeLogins: string[]) => {
+    const self = Object.create(Engine.prototype) as { cfg: unknown };
+    self.cfg = { daemon: { wakeLogins, noWakeLogins: [], nonWakingAuthors: [] } };
+    return self as never;
+  };
+
+  const call = (self: never, user: string) =>
+    Engine.prototype.buildForwardPrompt.call(self, "fwd", "do x", user, "human", "T", "/w", { issueRef: "o/r#1" }) as string;
+
+  test("whitelisted author renders plain", () => {
+    const p = call(mk(["dog"]), "dog");
+    expect(p).toContain("@dog (user) posted");
+    expect(p).not.toContain("unverified");
+  });
+
+  test("stranger renders unverified + injection warning", () => {
+    const p = call(mk(["dog"]), "evil-stranger");
+    expect(p).toContain("(unverified outside user)");
+    expect(p).toContain("prompt injection");
+  });
+
+  test("blacklisted author is untrusted even without whitelist", () => {
+    const { Engine } = require("../src/opencode") as { Engine: any };
+    const self = Object.create(Engine.prototype) as { cfg: unknown };
+    self.cfg = { daemon: { wakeLogins: [], noWakeLogins: ["evil-bot"], nonWakingAuthors: [] } };
+    const p = Engine.prototype.buildForwardPrompt.call(self, "fwd", "do x", "evil-bot", "human", "T", "/w", { issueRef: "o/r#1" }) as string;
+    expect(p).toContain("unverified");
+  });
+});
