@@ -75,3 +75,72 @@ describe("verifySignature", () => {
 test("helps when @bot without verb", () => {
   expect(parseCommand("[CQ:at,qq=2661222094] 测试2")).toBeNull();
 });
+
+describe("chat mode", () => {
+  const { buildChatMessages, splitForQQ, CHAT_SYSTEM_PROMPT } = require("../src/chat");
+
+  test("buildChatMessages: system + capped history + new turn", () => {
+    const hist = Array.from({ length: 30 }, (_, i) => ({ role: "user" as const, name: `u${i}`, content: `m${i}` }));
+    const msgs = buildChatMessages(hist, { role: "user", name: "dog", content: "q" }, 20);
+    expect(msgs[0].role).toBe("system");
+    expect(msgs[0].content).toBe(CHAT_SYSTEM_PROMPT);
+    expect(msgs).toHaveLength(22);
+    expect(msgs[1].name).toBe("u10");
+    expect(msgs[msgs.length - 1]).toEqual({ role: "user", name: "dog", content: "q" });
+  });
+
+  test("splitForQQ keeps <=1500 chunks and prefers newline cuts", () => {
+    const short = splitForQQ("hello");
+    expect(short).toEqual(["hello"]);
+    const long = "line\n".repeat(600);
+    const parts = splitForQQ(long);
+    expect(parts.length).toBeGreaterThan(1);
+    for (const p of parts) expect(p.length).toBeLessThanOrEqual(1500);
+    expect(parts.join("\n")).toBe(long.replace(/\n$/, ""));
+  });
+
+  test("router: @bot + question hits chat when configured, help when not", async () => {
+    const { createRouter } = require("../src/router");
+    const replies: string[] = [];
+    const chatCalls: string[] = [];
+    const baseDeps = (chatApi: string) => ({
+      cfg: {
+        VERBOSE: false,
+        WORK_CHAT_API: chatApi,
+        WORK_CHAT_API_KEY: "k",
+        WORK_CHAT_MODEL: "m",
+        WORK_CHAT_TIMEOUT_MS: 1000,
+        WORK_CHAT_MAX_HISTORY: 20,
+      },
+      bindings: [{ groupId: 1, owner: "o", repo: "r" }],
+      wakeList: new Set(["1403558951"]),
+      ework: { createIssue: async () => 1, addComment: async () => {} },
+      store: { seenPost: () => false },
+      reply: async (_g: number, text: string) => { replies.push(text); },
+    });
+    // chat disabled → usage help
+    let router = createRouter(baseDeps(""));
+    await router.handleGroupMessage({ groupId: 1, userId: 1403558951, nickname: "dog", postId: "p1", rawMessage: "[CQ:at,qq=2661222094] 你好呀" });
+    expect(replies[0]).toContain("没看懂指令");
+    // chat enabled → mocked LLM answer (patch chatComplete via env endpoint failure is overkill; test buildChatMessages path instead)
+    replies.length = 0;
+    router = createRouter(baseDeps("http://invalid.test/v1"));
+    await router.handleGroupMessage({ groupId: 1, userId: 1403558951, nickname: "dog", postId: "p2", rawMessage: "[CQ:at,qq=2661222094] 你好呀" });
+    expect(replies[0]).toContain("回答失败");
+  });
+
+  test("router: @bot with CQ-only payload (no text) still gets help", async () => {
+    const { createRouter } = require("../src/router");
+    const replies: string[] = [];
+    const router = createRouter({
+      cfg: { VERBOSE: false, WORK_CHAT_API: "http://x/v1", WORK_CHAT_API_KEY: "k", WORK_CHAT_MODEL: "m", WORK_CHAT_TIMEOUT_MS: 1000, WORK_CHAT_MAX_HISTORY: 20 },
+      bindings: [{ groupId: 1, owner: "o", repo: "r" }],
+      wakeList: new Set(["1"]),
+      ework: { createIssue: async () => 1, addComment: async () => {} },
+      store: { seenPost: () => false },
+      reply: async (_g: number, text: string) => { replies.push(text); },
+    });
+    await router.handleGroupMessage({ groupId: 1, userId: 1, nickname: "u", postId: "p3", rawMessage: "[CQ:at,qq=2661222094]" });
+    expect(replies[0]).toContain("没看懂指令");
+  });
+});

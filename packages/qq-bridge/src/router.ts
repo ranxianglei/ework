@@ -2,12 +2,14 @@ import type { GroupBinding, Config } from "./config";
 import type { EworkClient } from "./ework";
 import type { GroupMessageEvent } from "./onebot";
 import type { BridgeStore } from "./db";
+import { buildChatMessages, chatComplete, splitForQQ, type ChatTurn } from "./chat";
 
 const HELP_TEXT = [
   "用法：",
   "  任务 <标题> —— 新建 issue，AI 自动接单",
   "  #<编号> <内容> —— 给指定 issue 追加内容",
   "  查询 —— 列出最近 issue",
+  "  @我 + 任意问题 —— 即时问答（不建 issue）",
 ].join("\n");
 
 export interface RouterDeps {
@@ -39,6 +41,23 @@ export function parseCommand(raw: string): ParsedCommand | null {
 
 export function createRouter(deps: RouterDeps) {
   const { cfg, bindings, wakeList, ework, store } = deps;
+  const chatHistory = new Map<number, ChatTurn[]>();
+
+  async function answerChat(ev: GroupMessageEvent, question: string): Promise<void> {
+    const turn: ChatTurn = { role: "user", name: ev.nickname, content: question };
+    const history = chatHistory.get(ev.groupId) ?? [];
+    const messages = buildChatMessages(history, turn, cfg.WORK_CHAT_MAX_HISTORY);
+    const answer = await chatComplete(cfg.WORK_CHAT_API, cfg.WORK_CHAT_API_KEY, cfg.WORK_CHAT_MODEL, messages, cfg.WORK_CHAT_TIMEOUT_MS);
+    history.push(turn, { role: "assistant", name: "bot", content: answer });
+    if (history.length > cfg.WORK_CHAT_MAX_HISTORY * 2) {
+      chatHistory.set(ev.groupId, history.slice(-cfg.WORK_CHAT_MAX_HISTORY * 2));
+    } else {
+      chatHistory.set(ev.groupId, history);
+    }
+    for (const part of splitForQQ(answer)) {
+      await deps.reply(ev.groupId, part);
+    }
+  }
 
   async function handleGroupMessage(ev: GroupMessageEvent): Promise<void> {
     if (store.seenPost(ev.postId)) return;
@@ -57,7 +76,16 @@ export function createRouter(deps: RouterDeps) {
       return;
     }
     if (!cmd) {
-      // Wake-word without a verb: silent-ignore hides the syntax from users.
+      const question = ev.rawMessage.replace(/\[CQ:[^\]]*\]/g, "").trim();
+      if (cfg.WORK_CHAT_API && question) {
+        try {
+          await answerChat(ev, question);
+        } catch (err) {
+          console.error(`[qq-bridge] chat failed: ${err instanceof Error ? err.message : err}`);
+          await deps.reply(ev.groupId, "🤖 回答失败了，稍后再试一次。");
+        }
+        return;
+      }
       await deps.reply(ev.groupId, "没看懂指令。\n" + HELP_TEXT);
       return;
     }
