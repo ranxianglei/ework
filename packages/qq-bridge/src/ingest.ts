@@ -22,11 +22,14 @@ interface IngestDeps {
 export function verifySignature(secret: string, body: string, header: string | null): boolean {
   if (!secret) return true;
   if (!header) return false;
-  const expected = `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
-  const a = Buffer.from(expected);
-  const b = Buffer.from(header);
-  if (a.length !== b.length) return false;
-  return timingSafeEqual(a, b);
+  const hex = createHmac("sha256", secret).update(body).digest("hex");
+  // Gitea sends bare hex in X-Gitea-Signature; GitHub-style sends "sha256=<hex>".
+  const candidates = [hex, `sha256=${hex}`];
+  return candidates.some((expected) => {
+    const a = Buffer.from(expected);
+    const b = Buffer.from(header);
+    return a.length === b.length && timingSafeEqual(a, b);
+  });
 }
 
 export function createIngest(deps: IngestDeps) {
