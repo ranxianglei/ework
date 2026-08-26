@@ -86,8 +86,8 @@ async function ensureGiteaRepo(
   }
 }
 
-function mirrorFooter(origin: string, issueNum: number): string {
-  return `\n\n---\n_Mirrored from ework [${origin}/issues/${issueNum}](${origin}/issues/${issueNum})_`;
+export function mirrorFooter(issueNum: number): string {
+  return `\n\n---\n_Mirrored from ework issue #${issueNum}_${MIRROR_MARKER}`;
 }
 
 // Outbound hygiene: nothing that identifies this deployment's network may
@@ -172,7 +172,7 @@ export async function handleIssueEvent(
         cfg,
         repo,
         ev.issue.title,
-        scrubInternalRefs(ev.issue.body ?? "", cfg) + mirrorFooter(eworkOrigin, ev.issue.number)
+        scrubInternalRefs(ev.issue.body ?? "", cfg) + mirrorFooter(ev.issue.number)
       );
       recordIssueMap({
         ework_project_owner: ev.projectOwner,
@@ -202,7 +202,7 @@ export async function handleIssueEvent(
         ev.issue.title,
         `(retroactive mirror for state=${ev.action})\n\n` +
           scrubInternalRefs(ev.issue.body ?? "", cfg) +
-          mirrorFooter(eworkOrigin, ev.issue.number)
+          mirrorFooter(ev.issue.number)
       );
       recordIssueMap({
         ework_project_owner: ev.projectOwner,
@@ -341,7 +341,7 @@ export async function handleCommentEvent(
       ev.issue.title || `(untitled ework issue #${ev.issue.number})`,
       `(retroactive mirror for comment)\n\n` +
         scrubInternalRefs(ev.issue.body ?? "", cfg) +
-        mirrorFooter(eworkOrigin, ev.issue.number)
+        mirrorFooter(ev.issue.number)
     );
     map = {
       ework_project_owner: ev.projectOwner,

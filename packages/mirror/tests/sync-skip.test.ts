@@ -42,3 +42,11 @@ describe("scrubInternalRefs", () => {
     expect(scrubInternalRefs(src, cfg)).toBe(src);
   });
 });
+
+test("mirrored issue footer carries provenance marker and no origin URL", async () => {
+  const { mirrorFooter } = await import("../src/mirror");
+  const footer = mirrorFooter(238);
+  expect(footer).toContain("<!-- ework-mirror -->");
+  expect(footer).toContain("Mirrored from ework issue #238");
+  expect(footer).not.toContain("http");
+});
