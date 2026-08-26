@@ -1,19 +1,22 @@
 import { describe, expect, test } from "bun:test";
-import { isSyncedFromUpstream } from "../src/mirror";
+import { isImportedComment, isImportedIssue } from "../src/mirror";
 
-const base = { issue: { number: 1, upstream_issue_number: null as number | null } };
+const base = { issue: { number: 5, upstream_issue_number: null as number | null }, comment: undefined as { body?: string } | undefined };
 
-describe("synced-from-upstream detection", () => {
-  test("issue with upstream number is skipped", () => {
-    expect(isSyncedFromUpstream({ ...base, issue: { number: 5, upstream_issue_number: 329 } })).toBe(true);
+describe("echo guards", () => {
+  test("comment with upstream-sync marker is imported", () => {
+    expect(isImportedComment({ comment: { body: "hello\n<!-- upstream-sync -->" } })).toBe(true);
   });
 
-  test("comment body carrying the sync marker is skipped", () => {
-    expect(isSyncedFromUpstream({ ...base, comment: { body: "hello\n<!-- upstream-sync -->" } })).toBe(true);
+  test("AI reply on an imported issue is NOT skipped as a comment", () => {
+    expect(isImportedComment({ comment: { body: "[bot] done" } })).toBe(false);
   });
 
-  test("locally-born issue and plain comment pass through", () => {
-    expect(isSyncedFromUpstream({ ...base })).toBe(false);
-    expect(isSyncedFromUpstream({ ...base, comment: { body: "plain human text" } })).toBe(false);
+  test("issue with upstream number is imported (opened never twins)", () => {
+    expect(isImportedIssue({ issue: { number: 5, upstream_issue_number: 329 } })).toBe(true);
+  });
+
+  test("locally born issue is not imported", () => {
+    expect(isImportedIssue({ issue: { number: 5, upstream_issue_number: null } })).toBe(false);
   });
 });

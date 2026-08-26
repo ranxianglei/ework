@@ -41,9 +41,16 @@ const MIRROR_MARKER = "\n\n<!-- ework-mirror -->";
 // on the upstream thread.
 const UPSTREAM_SYNC_MARKER = "<!-- upstream-sync -->";
 
-export function isSyncedFromUpstream<T extends { issue: { upstream_issue_number?: number | null }; comment?: { body?: string } }>(ev: T): boolean {
-  if (ev.issue.upstream_issue_number != null) return true;
-  return ev.comment != null && (ev.comment.body ?? "").includes(UPSTREAM_SYNC_MARKER);
+// Echo guard. Comments are mirrored only when NOT imported: imports carry the
+// upstream-sync marker. The issue-level upstream number must NOT suppress
+// comments — AI replies and local discussion on imported issues must mirror.
+// It only stops mirroring an imported issue's "opened" (no twin creation).
+export function isImportedComment(ev: { comment?: { body?: string } }): boolean {
+  return (ev.comment?.body ?? "").includes(UPSTREAM_SYNC_MARKER);
+}
+
+export function isImportedIssue<T extends { issue: { upstream_issue_number?: number | null } }>(ev: T): boolean {
+  return ev.issue.upstream_issue_number != null;
 }
 
 function upstreamMap(ev: { projectOwner: string; projectName: string; issue: { number: number; upstream_issue_number?: number | null; title?: string | null } }, repo: { owner: string; repo: string }): IssueMapRow | null {
@@ -104,7 +111,7 @@ export async function handleIssueEvent(
     return;
   }
 
-  if (isSyncedFromUpstream(ev)) {
+  if (ev.action === "opened" && isImportedIssue(ev)) {
     logEvent({
       event: "issues",
       action: ev.action,
@@ -266,7 +273,7 @@ export async function handleCommentEvent(
     });
     return;
   }
-  if (isSyncedFromUpstream(ev)) {
+  if (isImportedComment(ev)) {
     logEvent({
       event: "issue_comment",
       action: "created",
