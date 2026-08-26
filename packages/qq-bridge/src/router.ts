@@ -28,10 +28,11 @@ interface ParsedCommand {
 
 export function parseCommand(raw: string): ParsedCommand | null {
   const text = raw.trim();
-  if (text === "帮助" || text === "help" || text === "查询") return { kind: "help" };
-  const create = /^(?:任务|task|新任务)\s+(.+)$/i.exec(text);
+  const stripped = text.replace(/^\[CQ:at,qq=\d+\]\s*/, "").trim();
+  if (stripped === "帮助" || stripped === "help" || stripped === "查询") return { kind: "help" };
+  const create = /^(?:任务|task|新任务)\s+(.+)$/i.exec(stripped) ?? /^(?:任务|task|新任务)\s+(.+)$/i.exec(text);
   if (create?.[1]) return { kind: "create", title: create[1].trim() };
-  const comment = /^#(\d{1,6})\s+([\s\S]+)$/.exec(text);
+  const comment = /^#(\d{1,6})\s+([\s\S]+)$/.exec(stripped) ?? /^#(\d{1,6})\s+([\s\S]+)$/.exec(text);
   if (comment?.[1] && comment[2]) return { kind: "comment", number: Number(comment[1]), body: comment[2].trim() };
   return null;
 }
