@@ -50,3 +50,42 @@ test("mirrored issue footer carries provenance marker and no origin URL", async 
   expect(footer).toContain("Mirrored from ework issue #238");
   expect(footer).not.toContain("http");
 });
+
+describe("agent provenance badge", () => {
+  test("footer includes model when provided", async () => {
+    const { agentFooter } = await import("../src/mirror");
+    const f = agentFooter("vllm-qwen/qwen3.8-27b");
+    expect(f).toContain("🤖 ework agent");
+    expect(f).toContain("vllm-qwen/qwen3.8-27b");
+    expect(f).toContain("<sub>");
+  });
+
+  test("footer degrades gracefully without model", async () => {
+    const { agentFooter } = await import("../src/mirror");
+    expect(agentFooter(undefined)).toBe("\n\n<sub>🤖 ework agent</sub>");
+    expect(agentFooter("")).toBe("\n\n<sub>🤖 ework agent</sub>");
+  });
+
+  test("parseEvent surfaces payload model and comment author", async () => {
+    const { parseEvent } = await import("../src/ework");
+    const payload = JSON.stringify({
+      action: "created",
+      repository: { name: "billion-context", owner: { login: "ranxianglei" }, ework_model: "vllm-qwen/qwen3.8-27b" },
+      issue: { number: 5, title: "t" },
+      comment: { id: 9, body: "[bot] done", user: { login: "ework-daemon" } },
+      sender: { login: "ework-daemon" },
+    });
+    const ev = parseEvent(payload, "issue_comment");
+    if (ev.kind !== "issue_comment") throw new Error("wrong kind");
+    expect(ev.model).toBe("vllm-qwen/qwen3.8-27b");
+    expect(ev.senderLogin).toBe("ework-daemon");
+  });
+
+  test("agentLogins parses env list with default", async () => {
+    const { agentLogins } = await import("../src/mirror");
+    expect(agentLogins({ WORK_AGENT_LOGINS: "ework-daemon, second-bot " } as never)).toEqual([
+      "ework-daemon",
+      "second-bot",
+    ]);
+  });
+});

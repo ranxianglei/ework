@@ -10,6 +10,9 @@ interface PayloadRepo {
   name: string;
   owner?: PayloadUser;
   full_name?: string;
+  // Resolved model (issue > project > global) the daemon spawned with;
+  // absent when no override is configured anywhere.
+  ework_model?: string;
 }
 
 interface PayloadIssue {
@@ -38,6 +41,7 @@ export interface ParsedIssueEvent {
   projectName: string;
   issue: PayloadIssue;
   senderLogin: string;
+  model?: string | undefined;
 }
 
 export interface ParsedCommentEvent {
@@ -48,6 +52,7 @@ export interface ParsedCommentEvent {
   issue: PayloadIssue;
   comment: PayloadComment;
   senderLogin: string;
+  model?: string | undefined;
 }
 
 export type ParsedEvent = ParsedIssueEvent | ParsedCommentEvent;
@@ -98,6 +103,7 @@ export function parseEvent(
       projectName: repo.name,
       issue,
       senderLogin,
+      model: repo.ework_model,
     };
   }
 
@@ -116,5 +122,6 @@ export function parseEvent(
     issue,
     comment,
     senderLogin: comment.user?.login ?? senderLogin,
+    model: repo.ework_model,
   };
 }

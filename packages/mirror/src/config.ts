@@ -28,6 +28,11 @@ const Schema = z.object({
   // Deliberately env-driven (no defaults naming real hosts) so the
   // published package never reveals which infrastructure runs it.
   WORK_SCRUB_HOSTS: z.string().default(""),
+
+  // Logins whose content is agent-generated. Mirrored items authored by
+  // these get a visible "🤖 agent · <model>" footer so upstream readers
+  // can tell AI output apart from the relaying human account.
+  WORK_AGENT_LOGINS: z.string().default("ework-daemon"),
 });
 
 export type Config = z.infer<typeof Schema>;
