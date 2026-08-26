@@ -90,6 +90,20 @@ function mirrorFooter(origin: string, issueNum: number): string {
   return `\n\n---\n_Mirrored from ework [${origin}/issues/${issueNum}](${origin}/issues/${issueNum})_`;
 }
 
+// Outbound hygiene: nothing that identifies this deployment's network may
+// reach the public upstream — internal hostnames and RFC1918 addresses are
+// redacted from every mirrored body before it leaves the box.
+const INTERNAL_PATTERNS: Array<[RegExp, string]> = [
+  [/m1\.redoxos\.org/g, "[internal-host]"],
+  [/\b(?:192\.168|10)\.\d{1,3}\.\d{1,3}\b/g, "[internal-ip]"],
+  [/\b172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}\b/g, "[internal-ip]"],
+  [/\bework-sandbox\b/g, "[internal-host]"],
+];
+
+export function scrubInternalRefs(text: string): string {
+  return INTERNAL_PATTERNS.reduce((acc, [re, sub]) => acc.replace(re, sub), text);
+}
+
 export async function handleIssueEvent(
   cfg: Config,
   eworkOrigin: string,
@@ -155,7 +169,7 @@ export async function handleIssueEvent(
         cfg,
         repo,
         ev.issue.title,
-        (ev.issue.body ?? "") + mirrorFooter(eworkOrigin, ev.issue.number)
+        scrubInternalRefs(ev.issue.body ?? "") + mirrorFooter(eworkOrigin, ev.issue.number)
       );
       recordIssueMap({
         ework_project_owner: ev.projectOwner,
@@ -184,7 +198,7 @@ export async function handleIssueEvent(
         repo,
         ev.issue.title,
         `(retroactive mirror for state=${ev.action})\n\n` +
-          (ev.issue.body ?? "") +
+          scrubInternalRefs(ev.issue.body ?? "") +
           mirrorFooter(eworkOrigin, ev.issue.number)
       );
       recordIssueMap({
@@ -323,7 +337,7 @@ export async function handleCommentEvent(
       repo,
       ev.issue.title || `(untitled ework issue #${ev.issue.number})`,
       `(retroactive mirror for comment)\n\n` +
-        (ev.issue.body ?? "") +
+        scrubInternalRefs(ev.issue.body ?? "") +
         mirrorFooter(eworkOrigin, ev.issue.number)
     );
     map = {
@@ -352,7 +366,7 @@ export async function handleCommentEvent(
       cfg,
       repo,
       map.gitea_issue_num,
-      ev.comment.body + MIRROR_MARKER
+      scrubInternalRefs(ev.comment.body) + MIRROR_MARKER
     );
     recordCommentMap({
       eworkCommentId: ev.comment.id,
