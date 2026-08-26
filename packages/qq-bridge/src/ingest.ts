@@ -19,6 +19,23 @@ interface IngestDeps {
   send(groupId: number, text: string): Promise<void>;
 }
 
+// Looping agent sessions can emit a reply every few seconds; cap forwards
+// per issue so a runaway session cannot flood the group.
+const FORWARD_WINDOW_MS = 60_000;
+const FORWARD_MAX_PER_WINDOW = 5;
+const forwardTimestamps = new Map<string, number[]>();
+
+function forwardAllowed(key: string, now = Date.now()): boolean {
+  const list = (forwardTimestamps.get(key) ?? []).filter((t) => now - t < FORWARD_WINDOW_MS);
+  if (list.length >= FORWARD_MAX_PER_WINDOW) {
+    forwardTimestamps.set(key, list);
+    return false;
+  }
+  list.push(now);
+  forwardTimestamps.set(key, list);
+  return true;
+}
+
 export function verifySignature(secret: string, body: string, header: string | null): boolean {
   if (!secret) return true;
   if (!header) return false;
@@ -74,6 +91,10 @@ export function createIngest(deps: IngestDeps) {
       return new Response("skipped:dup", { status: 200 });
     }
 
+    if (!forwardAllowed(`${owner}/${String(repo.name)}#${number}`)) {
+      console.warn(`[qq-bridge] forward rate-limited for ${owner}/${String(repo.name)}#${number}`);
+      return new Response("rate-limited", { status: 200 });
+    }
     const text = deps.scrub(`[#${number}] ${body}`);
     try {
       await deps.send(groupId, text);
