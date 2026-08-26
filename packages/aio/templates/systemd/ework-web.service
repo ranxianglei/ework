@@ -1,0 +1,14 @@
+[Unit]
+Description=ework web
+After=network.target
+[Service]
+User=ework-web
+Group=ework-web
+Environment=HOME=/var/lib/ework-web
+WorkingDirectory=/var/lib/ework-web/share/ework-web
+EnvironmentFile=/var/lib/ework-web/share/ework-web/.env
+ExecStart=/usr/bin/bun /usr/lib/node_modules/ework-aio/node_modules/ework-web/bin/ework-web.js
+Restart=on-failure
+RestartSec=3
+[Install]
+WantedBy=multi-user.target

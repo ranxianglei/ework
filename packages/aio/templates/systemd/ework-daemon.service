@@ -1,0 +1,14 @@
+[Unit]
+Description=ework daemon
+After=network.target ework-web.service
+[Service]
+User=ework-daemon
+Group=ework-daemon
+Environment=HOME=/var/lib/ework-daemon
+WorkingDirectory=/var/lib/ework-daemon/share/ework-daemon
+EnvironmentFile=/var/lib/ework-daemon/share/ework-daemon/.env
+ExecStart=/usr/bin/bun /usr/lib/node_modules/ework-aio/node_modules/ework-daemon/bin/ework-daemon-server.js
+Restart=on-failure
+RestartSec=3
+[Install]
+WantedBy=multi-user.target

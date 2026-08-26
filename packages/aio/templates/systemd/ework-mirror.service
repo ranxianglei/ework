@@ -1,0 +1,15 @@
+[Unit]
+Description=ework-mirror (GitHub write-back)
+After=network.target
+
+[Service]
+User=ework-mirror
+Group=ework-mirror
+EnvironmentFile=/etc/ework/mirror.env
+WorkingDirectory=/usr/lib/node_modules/ework-mirror
+ExecStart=/usr/bin/bun /usr/lib/node_modules/ework-mirror/src/index.ts
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

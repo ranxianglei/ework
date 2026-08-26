@@ -1,0 +1,11 @@
+#!/bin/bash
+# git credential helper: serves the ework sandbox GitHub PAT via a single
+# NOPASSWD sudoers grant; the token never enters env or disk for callers
+TOK=$(sudo -n /bin/cat /root/ework-gh-pat 2>/dev/null) || exit 1
+[ -n "$TOK" ] || exit 1
+while IFS= read -r line; do
+  case "$line" in
+    protocol=https) echo "username=x-access-token" ;;
+    host=github.com) printf 'password=%s\n' "$TOK" ;;
+  esac
+done
