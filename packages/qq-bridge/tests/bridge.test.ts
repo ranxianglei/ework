@@ -71,3 +71,7 @@ describe("verifySignature", () => {
     expect(verifySignature("", "x", null)).toBe(true);
   });
 });
+
+test("helps when @bot without verb", () => {
+  expect(parseCommand("[CQ:at,qq=2661222094] 测试2")).toBeNull();
+});

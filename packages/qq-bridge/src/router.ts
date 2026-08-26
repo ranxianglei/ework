@@ -50,9 +50,15 @@ export function createRouter(deps: RouterDeps) {
       return;
     }
 
+    const atBot = ev.rawMessage.includes("[CQ:at,qq=") || /^\s*(任务|task|新任务|#|帮助|help|查询)/.test(ev.rawMessage);
     const cmd = parseCommand(ev.rawMessage);
-    if (!cmd) {
+    if (!cmd && !atBot) {
       if (cfg.VERBOSE) console.log(`[qq-bridge] unrecognized message from ${ev.userId}: ${ev.rawMessage.slice(0, 80)}`);
+      return;
+    }
+    if (!cmd) {
+      // Wake-word without a verb: silent-ignore hides the syntax from users.
+      await deps.reply(ev.groupId, "没看懂指令。\n" + HELP_TEXT);
       return;
     }
     if (cmd.kind === "help") {
