@@ -25,6 +25,17 @@ const Schema = z.object({
   // Runtime pin overrides written by the 绑定/解绑 commands (JSON, group -> issue).
   WORK_BINDINGS_FILE: z.string().default(""),
 
+  // Pure-API chat (@bot Q&A): OpenAI-compatible endpoint, no tools/session.
+  // Empty WORK_CHAT_API disables chat and falls back to usage guidance.
+  WORK_CHAT_API: z.string().default(""),
+  WORK_CHAT_API_KEY: z.string().default(""),
+  WORK_CHAT_MODEL: z.string().default(""),
+  WORK_CHAT_TIMEOUT_MS: z.coerce.number().int().default(90000),
+  WORK_CHAT_MAX_HISTORY: z.coerce.number().int().default(20),
+  // Token budget (heuristic estimate) for one chat request; when history
+  // exceeds it the oldest turns are dropped ("满了就清理").
+  WORK_CHAT_MAX_CONTEXT: z.coerce.number().int().default(50000),
+
   // QQ user_ids allowed to dispatch AI work (comma-separated). Messages from
   // other members are logged and ignored — same trust model as the GitHub
   // side (WORK_WAKE_LOGINS): strangers never wake the AI.

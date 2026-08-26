@@ -97,7 +97,7 @@ describe("@bot unified routing", () => {
   };
   const ev = (postId: string, raw: string) => ({ groupId: 1, userId: 1, nickname: "u", postId, rawMessage: raw });
 
-  test("pinned: @bot question goes to bound issue like plain messages", async () => {
+  test("pinned: @bot falls to bound issue when chat API unset", async () => {
     const { router, replies, comments } = mk(new BindingStore([{ groupId: 1, owner: "o", repo: "r", issue: 7 }], pinFile()));
     await router.handleGroupMessage(ev("p1", "[CQ:at,qq=2661222094] 这个报错啥意思"));
     expect(comments.length).toBe(1);
@@ -227,5 +227,93 @@ describe("issue pinning", () => {
     expect(replies[0]).toContain("#12");
     expect(replies[0]).toContain("#3");
     expect(bs.resolve(1)?.issue).toBe(12);
+  });
+});
+
+describe("pure-API chat", () => {
+  const { estimateTokens, trimToContext, buildChatMessages, CHAT_SYSTEM_PROMPT, CHAT_MSG_CHAR_CAP } = require("../src/chat");
+  const turn = (content: string, role: "user" | "assistant" = "user") => ({ role, name: "u", content });
+
+  test("estimateTokens grows with length", () => {
+    expect(estimateTokens("ab")).toBeGreaterThan(0);
+    expect(estimateTokens("abcd".repeat(100))).toBeGreaterThan(estimateTokens("abcd"));
+  });
+
+  test("trimToContext drops oldest first when over budget", () => {
+    const hist = [turn("a".repeat(1000)), turn("b".repeat(1000)), turn("c".repeat(1000)), turn("d".repeat(1000))];
+    const budget = estimateTokens("c".repeat(1000)) + estimateTokens("d".repeat(1000));
+    const kept = trimToContext(hist, budget, 0);
+    expect(kept.map((t: { content: string }) => t.content[0])).toEqual(["c", "d"]);
+  });
+
+  test("trimToContext keeps everything under budget", () => {
+    const hist = [turn("hi"), turn("yo")];
+    expect(trimToContext(hist, 100000, 0).length).toBe(2);
+  });
+
+  test("buildChatMessages truncates oversized single message", () => {
+    const msgs = buildChatMessages([], turn("x".repeat(CHAT_MSG_CHAR_CAP + 500)), 20, 50000);
+    expect(msgs[msgs.length - 1].content.length).toBeLessThanOrEqual(CHAT_MSG_CHAR_CAP + 10);
+    expect(msgs[msgs.length - 1].content).toContain("已截断");
+  });
+
+  test("buildChatMessages keeps system prompt first and reserves question budget", () => {
+    const hist = [turn("a".repeat(40000)), turn("b")];
+    const msgs = buildChatMessages(hist, turn("q"), 20, 50000);
+    expect(msgs[0].role).toBe("system");
+    expect(msgs[0].content).toBe(CHAT_SYSTEM_PROMPT);
+    const total = msgs.reduce((n: number, m: { content: string }) => n + estimateTokens(m.content), 0);
+    expect(total).toBeLessThanOrEqual(50000 + estimateTokens("q") + estimateTokens(CHAT_SYSTEM_PROMPT));
+  });
+
+  test("router: @bot routes to chat when WORK_CHAT_API set", async () => {
+    const origFetch = globalThis.fetch;
+    const bodies: unknown[] = [];
+    globalThis.fetch = (async (_url: unknown, init?: { body?: string }) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response(JSON.stringify({ choices: [{ message: { content: "秒回的答案" } }] }), { status: 200 });
+    }) as typeof fetch;
+    try {
+      const { createRouter } = require("../src/router");
+      const replies: string[] = [];
+      const comments: unknown[] = [];
+      const router = createRouter({
+        cfg: { VERBOSE: false, WORK_CHAT_API: "http://x/v1", WORK_CHAT_API_KEY: "k", WORK_CHAT_MODEL: "m", WORK_CHAT_TIMEOUT_MS: 1000, WORK_CHAT_MAX_HISTORY: 20, WORK_CHAT_MAX_CONTEXT: 50000 },
+        bindings: new BindingStore([{ groupId: 1, owner: "o", repo: "r", issue: 7 }], pinFile()),
+        wakeList: new Set(["1"]),
+        ework: { createIssue: async () => 9, addComment: async (...a: unknown[]) => { comments.push(a); } },
+        store: { seenPost: () => false },
+        reply: async (_g: number, x: string) => { replies.push(x); },
+      });
+      await router.handleGroupMessage({ groupId: 1, userId: 1, nickname: "u", postId: "c1", rawMessage: "[CQ:at,qq=2661222094] 快问快答" });
+      expect(replies).toEqual(["秒回的答案"]);
+      expect(comments).toEqual([]);
+      expect((bodies[0] as { messages: { content: string }[] }).messages[0].role).toBe("system");
+      await router.handleGroupMessage({ groupId: 1, userId: 1, nickname: "u", postId: "c2", rawMessage: "[CQ:at,qq=2661222094] 追问一句" });
+      expect((bodies[1] as { messages: { content: string }[] }).messages.length).toBe(4);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  test("router: chat failure surfaces error reply", async () => {
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response("boom", { status: 500 })) as typeof fetch;
+    try {
+      const { createRouter } = require("../src/router");
+      const replies: string[] = [];
+      const router = createRouter({
+        cfg: { VERBOSE: false, WORK_CHAT_API: "http://x/v1", WORK_CHAT_API_KEY: "k", WORK_CHAT_MODEL: "m", WORK_CHAT_TIMEOUT_MS: 1000, WORK_CHAT_MAX_HISTORY: 20, WORK_CHAT_MAX_CONTEXT: 50000 },
+        bindings: new BindingStore([{ groupId: 1, owner: "o", repo: "r" }], pinFile()),
+        wakeList: new Set(["1"]),
+        ework: { createIssue: async () => 9, addComment: async () => {} },
+        store: { seenPost: () => false },
+        reply: async (_g: number, x: string) => { replies.push(x); },
+      });
+      await router.handleGroupMessage({ groupId: 1, userId: 1, nickname: "u", postId: "c3", rawMessage: "[CQ:at,qq=2661222094] 会失败吗" });
+      expect(replies[0]).toContain("问答失败");
+    } finally {
+      globalThis.fetch = origFetch;
+    }
   });
 });
