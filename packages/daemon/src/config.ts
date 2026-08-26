@@ -74,6 +74,10 @@ export const configSchema = z.object({
     maxNudges: z.coerce.number().int().nonnegative(),
     maxRuntimeMs: z.coerce.number().positive(),
   }).optional(),
+  replyBurst: z.object({
+    max: z.coerce.number().int().positive(),
+    windowMs: z.coerce.number().positive(),
+  }).optional(),
   file: z.object({
     roots: z.array(z.string()).default([]),
     maxLines: z.coerce.number().int().positive().default(2000),
@@ -176,6 +180,10 @@ export function loadConfig(): Config {
         maxNudges: Number(process.env.DAEMON_MAX_STUCK_NUDGES) || 1,
         maxRuntimeMs: Number(process.env.DAEMON_STUCK_MAX_RUNTIME_MS) || 3 * 60 * 60 * 1000,
       } : undefined,
+      replyBurst: process.env.WORK_REPLY_BURST_MAX || process.env.WORK_REPLY_BURST_WINDOW_MS ? {
+        max: Number(process.env.WORK_REPLY_BURST_MAX) || 8,
+        windowMs: Number(process.env.WORK_REPLY_BURST_WINDOW_MS) || 5 * 60 * 1000,
+      } : undefined,
       childEnvDeny: (process.env.WORK_CHILD_ENV_DENY ?? "").split(",").map((s) => s.trim()).filter(Boolean),
     });
   }
@@ -223,6 +231,10 @@ export function loadConfig(): Config {
       thresholdMs: Number(process.env.DAEMON_STUCK_THRESHOLD_MS) || 30 * 60 * 1000,
       maxNudges: Number(process.env.DAEMON_MAX_STUCK_NUDGES) || 1,
       maxRuntimeMs: Number(process.env.DAEMON_STUCK_MAX_RUNTIME_MS) || 3 * 60 * 60 * 1000,
+    } : undefined,
+    replyBurst: process.env.WORK_REPLY_BURST_MAX || process.env.WORK_REPLY_BURST_WINDOW_MS ? {
+      max: Number(process.env.WORK_REPLY_BURST_MAX) || 8,
+      windowMs: Number(process.env.WORK_REPLY_BURST_WINDOW_MS) || 5 * 60 * 1000,
     } : undefined,
     file: {
       roots: (process.env.WORK_FILE_ROOTS ?? "").split(":").filter(Boolean).length > 0

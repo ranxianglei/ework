@@ -301,6 +301,7 @@ export interface EngineOptions {
   takeover?: TakeoverStrategy;
   backend?: RuntimeBackend;
   gateChecker?: (issue: Issue) => Promise<{ allowed: boolean; reason: string }>;
+  replyBurst?: { max: number; windowMs: number };
 }
 
 function createDefaultBackend(cfg: Config): RuntimeBackend {
@@ -329,6 +330,19 @@ export function wakePolicySkips(
   if (d.wakeLogins.length > 0 && !d.wakeLogins.includes(author)) return `author ${author} not in wakeLogins`;
   if (!d.wakeKinds.includes(authorKind)) return `author kind ${authorKind} not in wakeKinds [${d.wakeKinds.join(",")}]`;
   return null;
+}
+
+// Reply-burst circuit breaker state: prune timestamps to the sliding window,
+// trip when the retained count reaches max. Pure for testability.
+export function replyBurstState(
+  stamps: number[],
+  now: number,
+  max: number,
+  windowMs: number,
+): { tripped: boolean; kept: number[] } {
+  const kept = stamps.filter((t) => now - t < windowMs);
+  kept.push(now);
+  return { tripped: kept.length >= max, kept };
 }
 
 // Per-issue npm prefix: `npm install -g <pkg>` inside a session lands in the issue's
@@ -398,6 +412,8 @@ export class Engine {
   private altBackend?: RuntimeBackend;
   private senders = new Map<string, string>();
   private envInitialized = new Set<string>();
+  private replyBurstCfg?: { max: number; windowMs: number };
+  private replyStamps = new Map<string, number[]>();
 
   private static MAX_INLINE_SIZE = 4000;
   private static MAX_NUDGE_ROUNDS = 1;
@@ -406,6 +422,8 @@ export class Engine {
   private static MAX_RUNTIME_MS = 3 * 60 * 60 * 1000;
   private static OBSERVER_INTERVAL_MS = 5 * 60 * 1000;
   private static STUCK_THRESHOLD_MS = 30 * 60 * 1000;
+  private static MAX_REPLY_BURST = 8;
+  private static REPLY_BURST_WINDOW_MS = 5 * 60 * 1000;
   private static MAX_PROCESS_EXIT_NUDGE_ROUNDS = 1;
 
   constructor(cfg: Config, store: Store, trackers: TrackerRegistry, opts: EngineOptions) {
@@ -416,6 +434,7 @@ export class Engine {
     this.takeover = opts.takeover ?? new RecloneStrategy(cfg);
     this.backend = opts.backend ?? createDefaultBackend(cfg);
     this.gateChecker = opts.gateChecker ?? ((issue: Issue) => this.webGateAllows(issue));
+    this.replyBurstCfg = opts.replyBurst ?? cfg.replyBurst;
     this.maxConcurrent = cfg.work.maxConcurrent;
     this.maxConcurrentExplicit = cfg.work.maxConcurrentExplicit;
     this.startGlobalObserver();
@@ -783,6 +802,13 @@ export class Engine {
       return;
     }
 
+    // Self-authored comment (our own reply landing back): never wake on it,
+    // but feed the reply-burst circuit breaker first.
+    if (event.type === "comment_created" && event.comment?.author === this.cfg.bot.username) {
+      await this.trackSelfReply(ref, scopeKey, tracker);
+      return;
+    }
+
     const wakeAuthor = event.type === "comment_created" ? event.comment?.author : event.type === "issue_opened" ? event.issue?.author : undefined;
     const wakeKind = event.type === "comment_created" ? event.comment?.authorKind ?? "human" : "human";
     if (wakeAuthor) {
@@ -820,6 +846,33 @@ export class Engine {
         return;
       }
     }
+  }
+
+  // Reply-burst circuit breaker: a looping session can re-perceive a standing
+  // instruction every agent turn and invoke the reply tool indefinitely. Our
+  // own replies come back as comment_created events, so count them per issue
+  // and kill the running sessions when they exceed max within the window.
+  private async trackSelfReply(ref: TrackerRef, scopeKey: string, tracker: IssueTracker) {
+    const key = `${ref.trackerType}:${scopeKey}#${ref.issueId}`;
+    const max = this.replyBurstCfg?.max ?? Engine.MAX_REPLY_BURST;
+    const windowMs = this.replyBurstCfg?.windowMs ?? Engine.REPLY_BURST_WINDOW_MS;
+    const { tripped, kept } = replyBurstState(this.replyStamps.get(key) ?? [], Date.now(), max, windowMs);
+    this.replyStamps.set(key, kept);
+    if (!tripped) return;
+    this.replyStamps.delete(key);
+    const issue = await this.store.findIssue(ref.trackerType, scopeKey, ref.issueId);
+    if (!issue) return;
+    const sessions = await this.store.getSessionsForIssue(issue.id);
+    const killed: string[] = [];
+    for (const session of sessions) {
+      const k = this.sessionKey(session, issue);
+      if (!this.running.has(k)) continue;
+      const ok = await this.killSessionProcess(session, k);
+      if (ok) killed.push(session.name);
+    }
+    if (killed.length === 0) return; // burst authored elsewhere (another daemon) — nothing to kill here
+    log.warn(`engine: reply-burst breaker tripped for ${key} (${max} replies in ${Math.round(windowMs / 1000)}s) — killed ${killed.join(", ")}`);
+    await tracker.createComment(ref, `[system] ⚠️ Reply-burst circuit breaker: ${max} replies within ${Math.round(windowMs / 60000)} min — stopped ${killed.length > 1 ? `${killed.length} sessions` : `session **${killed[0]}**`}. Post a comment to wake it again.`).catch((err) => log.error(`engine: burst notice failed for ${key}:`, (err as Error).message));
   }
 
   private groupConfigFor(issue: Issue): GroupConfig | undefined {
@@ -1025,6 +1078,7 @@ export class Engine {
     scopeKey: string,
     tracker: IssueTracker
   ) {
+    this.replyStamps.delete(`${ref.trackerType}:${scopeKey}#${ref.issueId}`);
     const issue = await this.store.findIssue(ref.trackerType, scopeKey, ref.issueId);
     if (!issue) return;
     if (issue.state === "closed") return;
@@ -1074,6 +1128,7 @@ export class Engine {
     scopeKey: string,
     tracker: IssueTracker
   ) {
+    this.replyStamps.delete(`${ref.trackerType}:${scopeKey}#${ref.issueId}`);
     const issue = await this.store.findIssue(ref.trackerType, scopeKey, ref.issueId);
     if (!issue) return;
     this.stopObserver(issue.id);
