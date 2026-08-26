@@ -23,6 +23,11 @@ const Schema = z.object({
   // GitHub targets: comments authored by these logins are echoes imported
   // from GitHub by upstream-sync; mirroring them back would duplicate.
   SKIP_AUTHOR_LOGINS: z.string().default(""),
+
+  // Deployment-specific hostnames scrubbed from mirrored bodies.
+  // Deliberately env-driven (no defaults naming real hosts) so the
+  // published package never reveals which infrastructure runs it.
+  WORK_SCRUB_HOSTS: z.string().default(""),
 });
 
 export type Config = z.infer<typeof Schema>;

@@ -91,17 +91,20 @@ function mirrorFooter(origin: string, issueNum: number): string {
 }
 
 // Outbound hygiene: nothing that identifies this deployment's network may
-// reach the public upstream — internal hostnames and RFC1918 addresses are
-// redacted from every mirrored body before it leaves the box.
-const INTERNAL_PATTERNS: Array<[RegExp, string]> = [
-  [/m1\.redoxos\.org/g, "[internal-host]"],
+// reach the public upstream — RFC1918 addresses are always redacted, plus
+// any hostnames listed in WORK_SCRUB_HOSTS.
+const IP_PATTERNS: Array<[RegExp, string]> = [
   [/\b(?:192\.168|10)\.\d{1,3}\.\d{1,3}\b/g, "[internal-ip]"],
   [/\b172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}\b/g, "[internal-ip]"],
-  [/\bework-sandbox\b/g, "[internal-host]"],
 ];
 
-export function scrubInternalRefs(text: string): string {
-  return INTERNAL_PATTERNS.reduce((acc, [re, sub]) => acc.replace(re, sub), text);
+export function scrubInternalRefs(text: string, cfg: Config): string {
+  const hostPatterns: Array<[RegExp, string]> = (cfg.WORK_SCRUB_HOSTS || "")
+    .split(",")
+    .map((h) => h.trim())
+    .filter(Boolean)
+    .map((h) => [new RegExp(`\\b${h.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "g"), "[internal-host]"] as [RegExp, string]);
+  return [...IP_PATTERNS, ...hostPatterns].reduce((acc, [re, sub]) => acc.replace(re, sub), text);
 }
 
 export async function handleIssueEvent(
@@ -169,7 +172,7 @@ export async function handleIssueEvent(
         cfg,
         repo,
         ev.issue.title,
-        scrubInternalRefs(ev.issue.body ?? "") + mirrorFooter(eworkOrigin, ev.issue.number)
+        scrubInternalRefs(ev.issue.body ?? "", cfg) + mirrorFooter(eworkOrigin, ev.issue.number)
       );
       recordIssueMap({
         ework_project_owner: ev.projectOwner,
@@ -198,7 +201,7 @@ export async function handleIssueEvent(
         repo,
         ev.issue.title,
         `(retroactive mirror for state=${ev.action})\n\n` +
-          scrubInternalRefs(ev.issue.body ?? "") +
+          scrubInternalRefs(ev.issue.body ?? "", cfg) +
           mirrorFooter(eworkOrigin, ev.issue.number)
       );
       recordIssueMap({
@@ -337,7 +340,7 @@ export async function handleCommentEvent(
       repo,
       ev.issue.title || `(untitled ework issue #${ev.issue.number})`,
       `(retroactive mirror for comment)\n\n` +
-        scrubInternalRefs(ev.issue.body ?? "") +
+        scrubInternalRefs(ev.issue.body ?? "", cfg) +
         mirrorFooter(eworkOrigin, ev.issue.number)
     );
     map = {
@@ -366,7 +369,7 @@ export async function handleCommentEvent(
       cfg,
       repo,
       map.gitea_issue_num,
-      scrubInternalRefs(ev.comment.body) + MIRROR_MARKER
+      scrubInternalRefs(ev.comment.body, cfg) + MIRROR_MARKER
     );
     recordCommentMap({
       eworkCommentId: ev.comment.id,
