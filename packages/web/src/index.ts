@@ -208,7 +208,6 @@ const SEC_HEADERS: Record<string, string> = {
   "x-content-type-options": "nosniff",
   "x-frame-options": "DENY",
   "referrer-policy": "same-origin",
-  "permissions-policy": "()",
 };
 
 function buildCsp(cfg: Config): string {
@@ -1828,11 +1827,19 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
       const [, owner, repo, numStr] = cp;
       if (!(owner && repo && numStr)) return json({ error: "bad path" }, 400);
       const number = Number(numStr);
+      const isFormSubmit = (req.headers.get("content-type") || "").includes("application/x-www-form-urlencoded");
       try {
-        const payload = (await req.json().catch(() => ({}))) as { body?: unknown; close?: unknown; reopen?: unknown };
-        const body = typeof payload.body === "string" ? payload.body : "";
+        const payload = isFormSubmit
+          ? ((await req.formData().catch(() => new FormData())) as FormData)
+          : ((await req.json().catch(() => ({}))) as { body?: unknown; close?: unknown; reopen?: unknown });
+        const body = typeof (payload as FormData).get === "function"
+          ? String((payload as FormData).get("body") ?? "")
+          : typeof (payload as { body?: unknown }).body === "string"
+            ? ((payload as { body: string }).body)
+            : "";
         const hasBody = body.trim().length > 0;
-        const wantsStateChange = payload.close === true || payload.reopen === true;
+        const jsonPayload = isFormSubmit ? null : (payload as { close?: unknown; reopen?: unknown });
+        const wantsStateChange = (jsonPayload?.close ?? jsonPayload?.reopen) === true;
         if (!hasBody && !wantsStateChange) return json({ error: "body required" }, 400);
         if (body.length > 65536) return json({ error: "body too long" }, 413);
         const project = await getProject(owner, repo);
@@ -1855,11 +1862,11 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
         }
         let closed = false;
         let reopened = false;
-        if (payload.close === true) {
+        if (jsonPayload?.close === true) {
           await setIssueState(issue.id, "closed");
           closed = true;
           void emitIssueEvent(project.id, issue.id, "closed", url.origin);
-        } else if (payload.reopen === true) {
+        } else if (jsonPayload?.reopen === true) {
           await setIssueState(issue.id, "open");
           reopened = true;
           void emitIssueEvent(project.id, issue.id, "reopened", url.origin);
@@ -1867,8 +1874,17 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
         if (view) {
           void emitCommentEvent(project.id, issue.id, view.id, url.origin);
         }
+        if (isFormSubmit) {
+          return new Response(null, {
+            status: 303,
+            headers: { location: `/${owner}/${repo}/issues/${number}${view ? `#comment-${view.id}` : ""}` },
+          });
+        }
         return json({ comment: view, closed, reopened });
       } catch (e) {
+        if (isFormSubmit) {
+          return new Response(null, { status: 303, headers: { location: `/${owner}/${repo}/issues/${number}` } });
+        }
         return json({ error: errMsg(e) }, e instanceof StoreError ? e.status : 500);
       }
     }

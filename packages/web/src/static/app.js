@@ -6,6 +6,16 @@
   const initialEl = document.getElementById("initial-data");
   const P = initialEl ? JSON.parse(initialEl.textContent) : null;
   if (!P) return;
+  const earlyForm = document.getElementById("composer");
+  if (earlyForm) {
+    earlyForm.addEventListener(
+      "submit",
+      (e) => {
+        if (!e.defaultPrevented) e.preventDefault();
+      },
+      { capture: true }
+    );
+  }
   const MAX_DOM = 300;
   const POLL_MS = 5000;
   const NEW_FADE_MS = 4500;

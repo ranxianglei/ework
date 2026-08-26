@@ -263,8 +263,8 @@ ${props.descriptionHtml.trim() ? `<div class="desc-wrap">
   ${props.descriptionCollapsed ? `<button type="button" class="desc-toggle" id="descToggle">显示详情 ▾</button>` : ""}
 </div>` : ""}
 ${props.writesEnabled !== false
-  ? `<form id="composer" class="composer">
-  <textarea id="composerInput" rows="5" placeholder="写评论…（Ctrl/⌘+Enter 发送，以 ${escapeHtml(op)} 身份；可粘贴/选择图片或任意文件上传）"></textarea>
+  ? `<form id="composer" class="composer" method="post" action="/api/${encodeURIComponent(repoOwner ?? "")}/${encodeURIComponent(repoName ?? "")}/issues/${props.issueNumber}/comment">
+  <textarea id="composerInput" name="body" rows="5" placeholder="写评论…（Ctrl/⌘+Enter 发送，以 ${escapeHtml(op)} 身份；可粘贴/选择图片或任意文件上传）"></textarea>
   <div class="submit-col">
     <button type="button" id="composerClose" class="btn-close" data-action="${toggleAction}" title="${toggleTitle}">${toggleLabel}</button>
     <label class="upload-btn" title="上传图片/附件/文件">📎<input type="file" id="composerFile" multiple></label>
