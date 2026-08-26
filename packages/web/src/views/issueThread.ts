@@ -157,6 +157,9 @@ export async function buildIssueThread(
     {
       title: `${issue.title} · ${owner}/${repo}#${number}`,
       issueTitle: issue.title,
+      upstreamUrl: issue.upstream_issue_number && upstreamRefBase(project)
+        ? `${upstreamRefBase(project)}/issues/${issue.upstream_issue_number}`
+        : undefined,
       repoPath: `${owner}/${repo}`,
       issueNumber: number,
       state: issue.state,

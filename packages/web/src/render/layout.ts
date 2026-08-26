@@ -5,6 +5,7 @@ export interface LayoutProps {
   issueTitle: string;
   repoPath: string;
   issueNumber: number;
+  upstreamUrl?: string;
   state: string;
   totalComments: number;
   descriptionHtml: string;
@@ -236,6 +237,7 @@ export function renderLayout(props: LayoutProps, inner: string, initialItems: st
   <span style="opacity:.5">/</span>
   <a href="${escapeAttr(repoIssuesHref)}" style="color:var(--header-text)">${escapeHtml(props.repoPath)}</a>
   <span class="num">#${props.issueNumber}</span>
+  ${props.upstreamUrl ? `<a href="${escapeAttr(props.upstreamUrl)}" target="_blank" rel="noopener" title="upstream" style="color:var(--header-text);text-decoration:none;font-size:.85em">↗</a>` : ""}
 </header>
 <div class="meta-bar">
   <h1>${escapeHtml(props.issueTitle)}</h1>

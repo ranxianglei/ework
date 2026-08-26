@@ -123,7 +123,10 @@ export class UpstreamSync {
         upstreamIssueNumber: gi.number,
       }
     );
-    if (emit) {
+    // PRs the sandbox agent opens itself carry the ework-agent-pr marker;
+    // announcing them would wake the agent on its own artifact (feedback loop)
+    const agentAuthored = !!gi.pull_request && /<!--\s*ework-agent-pr\s*-->/.test(gi.body ?? "");
+    if (emit && !agentAuthored) {
       const created = await getIssueByUpstreamNumber(this.project.id, gi.number);
       if (created) void emitIssueEvent(this.project.id, created.id, "opened", this.origin);
     }

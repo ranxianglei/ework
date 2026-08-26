@@ -196,3 +196,28 @@ describe('upstream-sync github bot-kind mapping', () => {
     expect((u as any)?.kind).toBe('bot');
   });
 });
+
+describe('upstream-sync agent-PR feedback loop guard', () => {
+  test('PR carrying the agent marker imports silently (no opened event)', async () => {
+    const { sync, project } = await setup();
+    const { createWebhook } = await import('../src/webhooks');
+    await createWebhook({ project_id: project.id, url: 'http://hook.local/x', events: ['issues'] });
+    issuePages = [[ghIssue(9, { title: 'agent work', pull_request: { url: 'x' }, body: 'done\n<!-- ework-agent-pr -->' })]];
+    mockFetch();
+    await engine({ ...sync, issue_cursor: '2020-01-01T00:00:00Z' }, project).pollOnce();
+    await new Promise((r) => setTimeout(r, 150));
+    expect(await getIssueByUpstreamNumber(project.id, 9)).not.toBeNull();
+    expect(calledUrls.filter((u) => u.startsWith('http://hook.local')).length).toBe(0);
+  });
+
+  test('human PR without marker still emits opened', async () => {
+    const { sync, project } = await setup();
+    const { createWebhook } = await import('../src/webhooks');
+    await createWebhook({ project_id: project.id, url: 'http://hook.local/x', events: ['issues'] });
+    issuePages = [[ghIssue(8, { title: 'human PR', pull_request: { url: 'x' }, body: 'normal' })]];
+    mockFetch();
+    await engine({ ...sync, issue_cursor: '2020-01-01T00:00:00Z' }, project).pollOnce();
+    await new Promise((r) => setTimeout(r, 150));
+    expect(calledUrls.filter((u) => u.startsWith('http://hook.local')).length).toBe(1);
+  });
+});
