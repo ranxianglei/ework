@@ -59,11 +59,15 @@ export function createOneBotServer(opts: OneBotServerOptions) {
   const pending = new Map<string, PendingEntry>();
   let ws: ServerWebSocket<unknown> | null = null;
 
-  function rejectAll(reason: string) {
+  function drainPending(reason: string) {
     for (const [, entry] of pending) {
       entry.reject(new Error(reason));
     }
     pending.clear();
+  }
+
+  function rejectAll(reason: string) {
+    drainPending(reason);
     ws = null;
   }
 
@@ -75,11 +79,12 @@ export function createOneBotServer(opts: OneBotServerOptions) {
     // Bun handlers: wire these into Bun.serve({websocket:{...}})
     handlers: {
       open(client: ServerWebSocket<unknown>) {
-        if (ws) {
-          client.close(4000, "duplicate connection");
-          return;
-        }
+        // A fresh connect means the peer restarted: the old socket is dead or
+        // dying (TCP may not have noticed yet). Supersede it, never reject
+        // the newcomer, or reconnects stall behind zombie sockets.
+        if (ws) ws.close(4001, "superseded by new connection");
         ws = client;
+        drainPending("superseded by new connection");
         const api: OneBotApi = {
           call(action, params) {
             const echo = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;

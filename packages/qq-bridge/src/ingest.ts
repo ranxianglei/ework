@@ -14,7 +14,7 @@ interface IngestDeps {
   bridgeLogin: string;
   agentLogins: Set<string>;
   scrub: (text: string) => string;
-  projectOf(owner: string, repo: string): number | null;
+  groupsFor(owner: string, repo: string, number: number): number[];
   commentForwarded(commentId: number): boolean;
   send(groupId: number, text: string): Promise<void>;
 }
@@ -85,8 +85,8 @@ export function createIngest(deps: IngestDeps) {
     if (body.startsWith("[system]") || body.startsWith("[SYSTEM ")) return new Response("skipped:system", { status: 200 });
     if (!deps.agentLogins.has(author)) return new Response("skipped:non-agent", { status: 200 });
 
-    const groupId = deps.projectOf(owner, String(repo.name));
-    if (groupId === null) return new Response("skipped:unmapped", { status: 200 });
+    const groups = deps.groupsFor(owner, String(repo.name), number);
+    if (groups.length === 0) return new Response("skipped:unmapped", { status: 200 });
     if (!Number.isInteger(commentId) || deps.commentForwarded(commentId)) {
       return new Response("skipped:dup", { status: 200 });
     }
@@ -97,7 +97,7 @@ export function createIngest(deps: IngestDeps) {
     }
     const text = deps.scrub(`[#${number}] ${body}`);
     try {
-      await deps.send(groupId, text);
+      for (const groupId of groups) await deps.send(groupId, text);
     } catch (err) {
       console.error(`[qq-bridge] send_group_msg failed: ${err instanceof Error ? err.message : err}`);
       return new Response("send failed", { status: 502 });

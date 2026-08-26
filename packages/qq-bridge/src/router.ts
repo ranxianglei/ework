@@ -1,20 +1,23 @@
-import type { GroupBinding, Config } from "./config";
+import type { Config } from "./config";
 import type { EworkClient } from "./ework";
 import type { GroupMessageEvent } from "./onebot";
 import type { BridgeStore } from "./db";
+import type { BindingStore } from "./bindings";
 import { buildChatMessages, chatComplete, splitForQQ, type ChatTurn } from "./chat";
 
 const HELP_TEXT = [
   "用法：",
-  "  任务 <标题> —— 新建 issue，AI 自动接单",
+  "  任务 <标题> —— 新建 issue 并接单（本群已绑定时：新建并换绑到新 issue）",
   "  #<编号> <内容> —— 给指定 issue 追加内容",
+  "  绑定 #<编号> —— 把本群绑定到该 issue（长记忆模式：此后发言都进这个 issue）",
+  "  解绑 —— 恢复为项目模式（接收整个项目的回复）",
   "  查询 —— 列出最近 issue",
-  "  @我 + 任意问题 —— 即时问答（不建 issue）",
+  "  @我 + 任意问题 —— 即时问答（不建 issue、不留痕）",
 ].join("\n");
 
 export interface RouterDeps {
   cfg: Config;
-  bindings: GroupBinding[];
+  bindings: BindingStore;
   wakeList: Set<string>;
   ework: EworkClient;
   store: BridgeStore;
@@ -22,7 +25,7 @@ export interface RouterDeps {
 }
 
 interface ParsedCommand {
-  kind: "create" | "comment" | "help";
+  kind: "create" | "comment" | "bind" | "unbind" | "help";
   title?: string;
   number?: number;
   body?: string;
@@ -32,6 +35,9 @@ export function parseCommand(raw: string): ParsedCommand | null {
   const text = raw.trim();
   const stripped = text.replace(/^\[CQ:at,qq=\d+\]\s*/, "").trim();
   if (stripped === "帮助" || stripped === "help" || stripped === "查询") return { kind: "help" };
+  const bind = /^绑定\s*#(\d{1,6})$/.exec(stripped) ?? /^绑定\s*#(\d{1,6})$/.exec(text);
+  if (bind?.[1]) return { kind: "bind", number: Number(bind[1]) };
+  if (stripped === "解绑" || stripped === "unbind") return { kind: "unbind" };
   const create = /^(?:任务|task|新任务)\s+(.+)$/i.exec(stripped) ?? /^(?:任务|task|新任务)\s+(.+)$/i.exec(text);
   if (create?.[1]) return { kind: "create", title: create[1].trim() };
   const comment = /^#(\d{1,6})\s+([\s\S]+)$/.exec(stripped) ?? /^#(\d{1,6})\s+([\s\S]+)$/.exec(text);
@@ -61,7 +67,7 @@ export function createRouter(deps: RouterDeps) {
 
   async function handleGroupMessage(ev: GroupMessageEvent): Promise<void> {
     if (store.seenPost(ev.postId)) return;
-    const binding = bindings.find((b) => b.groupId === ev.groupId);
+    const binding = bindings.resolve(ev.groupId);
     if (!binding) return;
 
     if (!wakeList.has(String(ev.userId))) {
@@ -69,14 +75,18 @@ export function createRouter(deps: RouterDeps) {
       return;
     }
 
-    const atBot = ev.rawMessage.includes("[CQ:at,qq=") || /^\s*(任务|task|新任务|#|帮助|help|查询)/.test(ev.rawMessage);
+    const atBot = ev.rawMessage.includes("[CQ:at,qq=") || /^\s*(任务|task|新任务|#|绑定|解绑|帮助|help|查询)/.test(ev.rawMessage);
     const cmd = parseCommand(ev.rawMessage);
-    if (!cmd && !atBot) {
+    if (!cmd && !atBot && binding.issue === undefined) {
       if (cfg.VERBOSE) console.log(`[qq-bridge] unrecognized message from ${ev.userId}: ${ev.rawMessage.slice(0, 80)}`);
       return;
     }
     if (!cmd) {
       const question = ev.rawMessage.replace(/\[CQ:[^\]]*\]/g, "").trim();
+      if (binding.issue !== undefined && !atBot) {
+        await ework.addComment(binding.owner, binding.repo, binding.issue, `> 来自 QQ 群用户 **${ev.nickname}** (${ev.userId})\n\n${question}`);
+        return;
+      }
       if (cfg.WORK_CHAT_API && question) {
         try {
           await answerChat(ev, question);
@@ -97,9 +107,25 @@ export function createRouter(deps: RouterDeps) {
     const attribution = `> 来自 QQ 群用户 **${ev.nickname}** (${ev.userId})`;
 
     try {
+      if (cmd.kind === "bind" && cmd.number !== undefined) {
+        const pinned = bindings.pin(ev.groupId, cmd.number);
+        if (!pinned) {
+          await deps.reply(ev.groupId, "❌ 本群没有配置项目映射，无法绑定");
+          return;
+        }
+        await deps.reply(ev.groupId, `📌 本群已绑定 ${pinned.owner}/${pinned.repo}#${cmd.number}，之后的发言都会进这个 issue`);
+        return;
+      }
+      if (cmd.kind === "unbind") {
+        const ok = bindings.unpin(ev.groupId);
+        await deps.reply(ev.groupId, ok ? "↩️ 已解绑，恢复项目模式（接收整个项目的回复）" : "本群本来就没有绑定 issue");
+        return;
+      }
       if (cmd.kind === "create") {
         const n = await ework.createIssue(binding.owner, binding.repo, cmd.title ?? "", `${attribution}\n\n${cmd.title ?? ""}`);
-        await deps.reply(ev.groupId, `✅ 已创建 issue #${n}，AI 已接单：${cmd.title ?? ""}`);
+        bindings.pin(ev.groupId, n);
+        const swap = binding.issue !== undefined ? `（原 #${binding.issue} 已解绑）` : "（本群已绑定，长记忆模式）";
+        await deps.reply(ev.groupId, `✅ 已创建 issue #${n}，AI 已接单 ${swap}`);
         return;
       }
       if (cmd.kind === "comment" && cmd.number !== undefined) {

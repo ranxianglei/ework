@@ -1,5 +1,6 @@
 import { loadConfig, parseGroupMap, parseList } from "./config";
 import { BridgeStore } from "./db";
+import { BindingStore } from "./bindings";
 import { createOneBotServer, type OneBotApi, type GroupMessageEvent } from "./onebot";
 import { createRouter } from "./router";
 import { createIngest } from "./ingest";
@@ -14,9 +15,7 @@ async function main() {
 }
 const store = new BridgeStore(cfg.DB_PATH || "/tmp/ework-qq-bridge.db");
 
-  const bindings = parseGroupMap(cfg.GROUP_MAP);
-  const groupIdOfProject = new Map<string, number>();
-  for (const b of bindings) groupIdOfProject.set(`${b.owner}/${b.repo}`, b.groupId);
+  const bindings = new BindingStore(parseGroupMap(cfg.GROUP_MAP), cfg.WORK_BINDINGS_FILE);
 
   let api: OneBotApi | null = null;
   const send = async (groupId: number, text: string) => {
@@ -40,7 +39,7 @@ const store = new BridgeStore(cfg.DB_PATH || "/tmp/ework-qq-bridge.db");
     bridgeLogin: cfg.BRIDGE_LOGIN,
     agentLogins: new Set(parseList(cfg.AGENT_LOGINS)),
     scrub,
-    projectOf: (owner, repo) => groupIdOfProject.get(`${owner}/${repo}`) ?? null,
+    groupsFor: (owner, repo, number) => bindings.groupsFor(owner, repo, number),
     commentForwarded: (id) => store.commentForwarded(id),
     send,
   });

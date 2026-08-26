@@ -16,9 +16,14 @@ const Schema = z.object({
   // comment events here so agent replies can be pushed back to the group.
   EWORK_WEBHOOK_SECRET: z.string().default(""),
 
-  // group_id -> owner/repo mapping. Comma-separated:
-  //   "123456789:ranxianglei/billion-context,987654321:dog/test1"
+  // group_id -> owner/repo mapping, optionally pinned to one issue:
+  //   "123456789:ranxianglei/billion-context#7,987654321:dog/test1"
+  // A `#N` suffix binds the group to that single issue (long-memory mode);
+  // without it the group gets all agent replies from the whole repo.
   GROUP_MAP: z.string().min(1),
+
+  // Runtime pin overrides written by the 绑定/解绑 commands (JSON, group -> issue).
+  WORK_BINDINGS_FILE: z.string().default(""),
 
   // QQ user_ids allowed to dispatch AI work (comma-separated). Messages from
   // other members are logged and ignored — same trust model as the GitHub
@@ -58,6 +63,7 @@ export interface GroupBinding {
   groupId: number;
   owner: string;
   repo: string;
+  issue?: number;
 }
 
 export function parseGroupMap(raw: string): GroupBinding[] {
@@ -65,11 +71,11 @@ export function parseGroupMap(raw: string): GroupBinding[] {
   for (const part of raw.split(",")) {
     const item = part.trim();
     if (!item) continue;
-    const m = /^(\d+):([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/.exec(item);
+    const m = /^(\d+):([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)(?:#(\d+))?$/.exec(item);
     if (!m?.[1] || !m[2] || !m[3]) {
       throw new Error(`invalid GROUP_MAP entry: ${item}`);
     }
-    out.push({ groupId: Number(m[1]), owner: m[2], repo: m[3] });
+    out.push(m[4] ? { groupId: Number(m[1]), owner: m[2], repo: m[3], issue: Number(m[4]) } : { groupId: Number(m[1]), owner: m[2], repo: m[3] });
   }
   if (out.length === 0) throw new Error("GROUP_MAP must define at least one group");
   return out;
@@ -91,6 +97,9 @@ export function loadConfig(): Config {
   const cfg = parsed.data;
   if (!cfg.DB_PATH) {
     cfg.DB_PATH = `${process.env.HOME ?? "/tmp"}/.ework-qq-bridge/qq-bridge.db`;
+  }
+  if (!cfg.WORK_BINDINGS_FILE) {
+    cfg.WORK_BINDINGS_FILE = `${process.env.HOME ?? "/tmp"}/.ework-qq-bridge/bindings.json`;
   }
   return cfg;
 }

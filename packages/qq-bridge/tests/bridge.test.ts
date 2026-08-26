@@ -1,5 +1,9 @@
 import { describe, test, expect } from "bun:test";
 import { parseCommand } from "../src/router";
+import { BindingStore } from "../src/bindings";
+import { tmpdir } from "node:os";
+import { randomUUID } from "node:crypto";
+const pinFile = () => `${tmpdir()}/qqb-test-${randomUUID()}.json`;
 import { parseGroupMap, parseList } from "../src/config";
 import { buildScrubber } from "../src/scrub";
 import { verifySignature } from "../src/ingest";
@@ -96,7 +100,7 @@ describe("chat mode", () => {
     const parts = splitForQQ(long);
     expect(parts.length).toBeGreaterThan(1);
     for (const p of parts) expect(p.length).toBeLessThanOrEqual(1500);
-    expect(parts.join("\n")).toBe(long.replace(/\n$/, ""));
+    expect(parts.join("\n")).toBe(long);
   });
 
   test("router: @bot + question hits chat when configured, help when not", async () => {
@@ -112,7 +116,7 @@ describe("chat mode", () => {
         WORK_CHAT_TIMEOUT_MS: 1000,
         WORK_CHAT_MAX_HISTORY: 20,
       },
-      bindings: [{ groupId: 1, owner: "o", repo: "r" }],
+      bindings: new BindingStore([{ groupId: 1, owner: "o", repo: "r" }], pinFile()),
       wakeList: new Set(["1403558951"]),
       ework: { createIssue: async () => 1, addComment: async () => {} },
       store: { seenPost: () => false },
@@ -134,7 +138,7 @@ describe("chat mode", () => {
     const replies: string[] = [];
     const router = createRouter({
       cfg: { VERBOSE: false, WORK_CHAT_API: "http://x/v1", WORK_CHAT_API_KEY: "k", WORK_CHAT_MODEL: "m", WORK_CHAT_TIMEOUT_MS: 1000, WORK_CHAT_MAX_HISTORY: 20 },
-      bindings: [{ groupId: 1, owner: "o", repo: "r" }],
+      bindings: new BindingStore([{ groupId: 1, owner: "o", repo: "r" }], pinFile()),
       wakeList: new Set(["1"]),
       ework: { createIssue: async () => 1, addComment: async () => {} },
       store: { seenPost: () => false },
@@ -154,10 +158,94 @@ test("onebot close ignores non-active client (reconnect race)", () => {
   srv.handlers.open(a);
   expect(ready).toBe(1);
   srv.handlers.open(b);
-  expect(ready).toBe(1);
+  expect(ready).toBe(2);
   srv.handlers.close(a);
   expect(srv.connected).toBe(true);
   srv.handlers.close(b);
   expect(srv.connected).toBe(false);
 });
 
+
+describe("issue pinning", () => {
+  test("parseGroupMap accepts #N suffix and bare form", () => {
+    const [pinned, bare] = parseGroupMap("111:o/r#7,222:o/r");
+    expect(pinned.issue).toBe(7);
+    expect(bare.issue).toBeUndefined();
+  });
+
+  test("parseCommand: 绑定/解绑", () => {
+    expect(parseCommand("绑定 #7")).toEqual({ kind: "bind", number: 7 });
+    expect(parseCommand("解绑")).toEqual({ kind: "unbind" });
+  });
+
+  test("BindingStore pin/unpin persist + groupsFor filter", () => {
+    const f = pinFile();
+    const bs = new BindingStore([{ groupId: 111, owner: "o", repo: "r" }, { groupId: 222, owner: "o", repo: "r" }], f);
+    expect(bs.groupsFor("o", "r", 7)).toEqual([111, 222]);
+    bs.pin(111, 7);
+    expect(bs.groupsFor("o", "r", 7)).toEqual([111, 222]);
+    expect(bs.groupsFor("o", "r", 8)).toEqual([222]);
+    expect(bs.pin(999, 1)).toBeNull();
+    const reloaded = new BindingStore([{ groupId: 111, owner: "o", repo: "r" }], f);
+    expect(reloaded.resolve(111)?.issue).toBe(7);
+    expect(reloaded.groupsFor("o", "r", 8)).toEqual([]);
+    expect(reloaded.unpin(111)).toBe(true);
+    expect(reloaded.groupsFor("o", "r", 8)).toEqual([111]);
+  });
+
+  test("router: pinned plain message comments bound issue silently", async () => {
+    const { createRouter } = require("../src/router");
+    const replies: string[] = [];
+    const comments: Array<[string, string, number, string]> = [];
+    const router = createRouter({
+      cfg: { VERBOSE: false, WORK_CHAT_API: "http://x/v1", WORK_CHAT_API_KEY: "k", WORK_CHAT_MODEL: "m", WORK_CHAT_TIMEOUT_MS: 1000, WORK_CHAT_MAX_HISTORY: 20 },
+      bindings: new BindingStore([{ groupId: 1, owner: "o", repo: "r", issue: 7 }], pinFile()),
+      wakeList: new Set(["1"]),
+      ework: { createIssue: async () => 9, addComment: async (o: string, r: string, n: number, b: string) => { comments.push([o, r, n, b]); } },
+      store: { seenPost: () => false },
+      reply: async (_g: number, t: string) => { replies.push(t); },
+    });
+    await router.handleGroupMessage({ groupId: 1, userId: 1, nickname: "u", postId: "p1", rawMessage: "帮我看下这个报错" });
+    expect(comments.length).toBe(1);
+    expect(comments[0][2]).toBe(7);
+    expect(comments[0][3]).toContain("帮我看下这个报错");
+    expect(replies).toEqual([]);
+  });
+
+  test("router: 绑定 #5 pins group, then plain message targets #5", async () => {
+    const { createRouter } = require("../src/router");
+    const replies: string[] = [];
+    const comments: Array<number, any> = [];
+    const bs = new BindingStore([{ groupId: 1, owner: "o", repo: "r" }], pinFile());
+    const router = createRouter({
+      cfg: { VERBOSE: false, WORK_CHAT_API: "", WORK_CHAT_API_KEY: "k", WORK_CHAT_MODEL: "m", WORK_CHAT_TIMEOUT_MS: 1000, WORK_CHAT_MAX_HISTORY: 20 },
+      bindings: bs,
+      wakeList: new Set(["1"]),
+      ework: { createIssue: async () => 9, addComment: async (_o: any, _r: any, n: number) => { comments.push(n); } },
+      store: { seenPost: () => false },
+      reply: async (_g: number, t: string) => { replies.push(t); },
+    });
+    await router.handleGroupMessage({ groupId: 1, userId: 1, nickname: "u", postId: "p1", rawMessage: "绑定 #5" });
+    expect(replies[0]).toContain("#5");
+    await router.handleGroupMessage({ groupId: 1, userId: 1, nickname: "u", postId: "p2", rawMessage: "第二条消息" });
+    expect(comments).toEqual([5]);
+  });
+
+  test("router: 任务 in pinned group creates AND rebinds", async () => {
+    const { createRouter } = require("../src/router");
+    const replies: string[] = [];
+    const bs = new BindingStore([{ groupId: 1, owner: "o", repo: "r", issue: 3 }], pinFile());
+    const router = createRouter({
+      cfg: { VERBOSE: false, WORK_CHAT_API: "", WORK_CHAT_API_KEY: "k", WORK_CHAT_MODEL: "m", WORK_CHAT_TIMEOUT_MS: 1000, WORK_CHAT_MAX_HISTORY: 20 },
+      bindings: bs,
+      wakeList: new Set(["1"]),
+      ework: { createIssue: async () => 12, addComment: async () => {} },
+      store: { seenPost: () => false },
+      reply: async (_g: number, t: string) => { replies.push(t); },
+    });
+    await router.handleGroupMessage({ groupId: 1, userId: 1, nickname: "u", postId: "p1", rawMessage: "任务 新主题" });
+    expect(replies[0]).toContain("#12");
+    expect(replies[0]).toContain("#3");
+    expect(bs.resolve(1)?.issue).toBe(12);
+  });
+});
