@@ -1,5 +1,6 @@
 import { getDB } from "./db";
 import { log } from "./logger";
+import { loadConfig } from "./config";
 
 export interface DaemonInfo {
   id: number;
@@ -18,6 +19,50 @@ export interface DaemonDetail {
 }
 
 const HEARTBEAT_STALE_MS = 120_000;
+
+// Split-UID deployments keep the daemon registry in the daemon's own SQLite
+// DB, unreachable (and table-absent) from the web process — the \{\{d_*\}\}
+// queries then fail and every lookup silently degrades to "no daemons".
+// Fall back to the router's registry API, which holds the same rows and is
+// the natural source of truth when web and daemon share no database.
+interface RouterDaemonRow {
+  id: number;
+  displayName: string;
+  endpoint: string;
+  capacity: number;
+  lastHeartbeat: string;
+  status: string;
+}
+
+let routerCache: { at: number; rows: RouterDaemonRow[] } | null = null;
+
+async function routerDaemons(): Promise<RouterDaemonRow[]> {
+  if (routerCache && Date.now() - routerCache.at < 15_000) return routerCache.rows;
+  try {
+    const cfg = await loadConfig();
+    if (!cfg.daemonWebhookUrl) return [];
+    const res = await fetch(`${cfg.daemonWebhookUrl.replace(/\/$/, "")}/api/daemons`, {
+      signal: AbortSignal.timeout(5000),
+    });
+    const data = (await res.json()) as { daemons?: Array<Partial<RouterDaemonRow>> };
+    const rows: RouterDaemonRow[] = (data.daemons ?? [])
+      .filter((d): d is Partial<RouterDaemonRow> & { id: number; endpoint: string } =>
+        typeof d.id === "number" && typeof d.endpoint === "string")
+      .map((d) => ({
+        id: d.id,
+        displayName: typeof d.displayName === "string" ? d.displayName : `daemon-${d.id}`,
+        endpoint: d.endpoint,
+        capacity: typeof d.capacity === "number" ? d.capacity : 0,
+        lastHeartbeat: typeof d.lastHeartbeat === "string" ? d.lastHeartbeat : "",
+        status: typeof d.status === "string" ? d.status : "unknown",
+      }));
+    routerCache = { at: Date.now(), rows };
+    return rows;
+  } catch (e) {
+    log.info(`coordination: router registry fallback failed (${e instanceof Error ? e.message : String(e)})`);
+    return [];
+  }
+}
 
 export async function getActiveDaemons(): Promise<DaemonInfo[]> {
   const stale = new Date(Date.now() - HEARTBEAT_STALE_MS);
@@ -130,18 +175,19 @@ export async function getSessionDaemonMap(): Promise<Map<string, SessionDaemonIn
 
 export async function resolveDaemonEndpoint(daemonId: number): Promise<string | null> {
   try {
-    const rows = await getDB().all<{ internal_endpoint: string | null }>(
-      `SELECT internal_endpoint FROM {{d_daemons}} WHERE id = ?`,
+    const local = await getDB().all<{ internal_endpoint: string }>(
+      "SELECT internal_endpoint FROM {{d_daemons}} WHERE id = ? LIMIT 1",
       [daemonId],
     );
-    const ep = rows[0]?.internal_endpoint;
-    if (!ep) return null;
-    return ep;
+    const ep = local[0]?.internal_endpoint;
+    if (ep) return ep;
   } catch (e) {
-    log.info(`coordination: resolve daemon ${daemonId} failed (${e instanceof Error ? e.message : String(e)})`);
-    return null;
+    log.info(`coordination: local daemon lookup failed (${e instanceof Error ? e.message : String(e)})`);
   }
+  const row = (await routerDaemons()).find((d) => d.id === daemonId);
+  return row ? row.endpoint : null;
 }
+
 
 export interface RunningSessionInfo {
   issueNumber: string;
