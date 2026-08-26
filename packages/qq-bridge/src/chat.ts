@@ -24,42 +24,54 @@ export function estimateTokens(text: string): number {
 // Single-message hard cap so one pasted log cannot eat the whole budget.
 export const CHAT_MSG_CHAR_CAP = 24000;
 
-function capContent(text: string): string {
+// Evict in bulk, never slide. A sliding window re-derives "last N" on every
+// build, shifting the prompt prefix each request, missing the serving
+// engine's prefix cache (radix cache) and forcing a full re-prefill of the
+// whole context every turn once history is full. trimStored is instead
+// STICKY: it is a no-op while under the limits and, on crossing one, drops
+// the oldest turns down to TRIM_FLOOR_RATIO in a single shot. Between
+// evictions the stored history only ever grows append-only, so the prompt
+// prefix (system + history) stays byte-identical and cached prefixes keep
+// hitting; only the first request after each eviction re-fills.
+export const TRIM_FLOOR_RATIO = 0.7;
+
+export function capContent(text: string): string {
   return text.length > CHAT_MSG_CHAR_CAP ? text.slice(0, CHAT_MSG_CHAR_CAP) + "…（已截断）" : text;
 }
 
-// Keep the newest turns that fit the token budget (oldest dropped first).
-export function trimToContext(
-  history: ChatTurn[],
-  maxContextTokens: number,
-  reservedTokens: number,
-): ChatTurn[] {
-  const budget = Math.max(0, maxContextTokens - reservedTokens);
-  const kept: ChatTurn[] = [];
-  let used = 0;
-  for (let i = history.length - 1; i >= 0; i--) {
-    const turn = history[i];
-    if (!turn) continue;
-    const cost = estimateTokens(turn.content);
-    if (used + cost > budget) break;
-    used += cost;
-    kept.unshift(turn);
+function historyTokens(history: ChatTurn[]): number {
+  return history.reduce((n, t) => n + estimateTokens(t.content), 0);
+}
+
+// Headroom for the fixed prompt furniture (system + one max-size question).
+function reserveTokens(): number {
+  return estimateTokens(CHAT_SYSTEM_PROMPT) + estimateTokens("x".repeat(CHAT_MSG_CHAR_CAP));
+}
+
+export function trimStored(history: ChatTurn[], maxHistory: number, maxContextTokens: number): ChatTurn[] {
+  const countLimit = Math.max(2, maxHistory * 2);
+  const tokenLimit = Math.max(0, maxContextTokens - reserveTokens());
+  if (history.length <= countLimit && historyTokens(history) <= tokenLimit) return history;
+  const countFloor = Math.max(2, Math.floor(countLimit * TRIM_FLOOR_RATIO));
+  const tokenFloor = Math.floor(tokenLimit * TRIM_FLOOR_RATIO);
+  let start = 0;
+  let total = historyTokens(history);
+  while (start < history.length && (history.length - start > countFloor || total > tokenFloor)) {
+    const turn = history[start];
+    if (!turn) break;
+    total -= estimateTokens(turn.content);
+    start++;
   }
-  return kept;
+  return history.slice(start);
 }
 
 export function buildChatMessages(
   history: ChatTurn[],
   question: ChatTurn,
-  maxHistory: number,
-  maxContextTokens: number,
 ): { role: string; name?: string; content: string }[] {
-  const system = { role: "system", content: CHAT_SYSTEM_PROMPT };
-  const recent = history.slice(-maxHistory);
-  const kept = trimToContext(recent, maxContextTokens, estimateTokens(CHAT_SYSTEM_PROMPT) + estimateTokens(question.content));
   return [
-    system,
-    ...kept.map((t) => ({ role: t.role, name: t.name, content: capContent(t.content) })),
+    { role: "system", content: CHAT_SYSTEM_PROMPT },
+    ...history.map((t) => ({ role: t.role, name: t.name, content: capContent(t.content) })),
     { role: question.role, name: question.name, content: capContent(question.content) },
   ];
 }

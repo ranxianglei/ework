@@ -231,7 +231,7 @@ describe("issue pinning", () => {
 });
 
 describe("pure-API chat", () => {
-  const { estimateTokens, trimToContext, buildChatMessages, CHAT_SYSTEM_PROMPT, CHAT_MSG_CHAR_CAP } = require("../src/chat");
+  const { estimateTokens, trimStored, buildChatMessages, CHAT_SYSTEM_PROMPT, CHAT_MSG_CHAR_CAP } = require("../src/chat");
   const turn = (content: string, role: "user" | "assistant" = "user") => ({ role, name: "u", content });
 
   test("estimateTokens grows with length", () => {
@@ -239,27 +239,71 @@ describe("pure-API chat", () => {
     expect(estimateTokens("abcd".repeat(100))).toBeGreaterThan(estimateTokens("abcd"));
   });
 
-  test("trimToContext drops oldest first when over budget", () => {
-    const hist = [turn("a".repeat(1000)), turn("b".repeat(1000)), turn("c".repeat(1000)), turn("d".repeat(1000))];
-    const budget = estimateTokens("c".repeat(1000)) + estimateTokens("d".repeat(1000));
-    const kept = trimToContext(hist, budget, 0);
-    expect(kept.map((t: { content: string }) => t.content[0])).toEqual(["c", "d"]);
+  test("trimStored is a no-op under both limits", () => {
+    const hist = [turn("hi"), turn("yo"), turn("lo")];
+    expect(trimStored(hist, 20, 50000)).toBe(hist);
   });
 
-  test("trimToContext keeps everything under budget", () => {
-    const hist = [turn("hi"), turn("yo")];
-    expect(trimToContext(hist, 100000, 0).length).toBe(2);
+  test("trimStored evicts in bulk on count overflow and is sticky", () => {
+    const mk = (n: number) => Array.from({ length: n }, (_, i) => turn("m" + i));
+    const over = trimStored(mk(41), 20, 5000000);
+    expect(over.length).toBe(Math.max(2, Math.floor(40 * 0.7)));
+    expect(over[over.length - 1].content).toBe("m40");
+    expect(trimStored(over, 20, 5000000)).toBe(over);
+  });
+
+  test("trimStored evicts in bulk on token overflow", () => {
+    const hist = Array.from({ length: 10 }, (_, i) => turn("x".repeat(1000) + i));
+    const per = estimateTokens("x".repeat(1000));
+    const reserve = estimateTokens(CHAT_SYSTEM_PROMPT) + estimateTokens("x".repeat(CHAT_MSG_CHAR_CAP));
+    const budget = reserve + per * 6;
+    const kept = trimStored(hist, 100, budget);
+    expect(kept.length).toBeLessThan(10);
+    const keptTotal = kept.reduce((n: number, t: { content: string }) => n + estimateTokens(t.content), 0);
+    const tokenFloor = Math.floor(per * 6 * 0.7);
+    expect(keptTotal).toBeLessThanOrEqual(tokenFloor + per);
+    expect(kept[kept.length - 1].content.endsWith("9")).toBe(true);
+  });
+
+  test("count cap evicts in bulk too (no sliding window)", () => {
+    const mk = (n: number) => Array.from({ length: n }, (_, i) => turn("m" + i));
+    expect(buildChatMessages(mk(40), turn("q")).length).toBe(42);
+    const over = trimStored(mk(41), 20, 5000000);
+    expect(buildChatMessages(over, turn("q")).length).toBe(Math.floor(40 * 0.7) + 2);
+  });
+
+  test("prompt grows append-only between evictions (prefix cache friendly)", () => {
+    const maxHistory = 3;
+    let hist: { role: "user" | "assistant"; name: string; content: string }[] = [];
+    let prev: { role: string; content: string }[] | null = null;
+    let evictions = 0;
+    for (let i = 0; i < 12; i++) {
+      const turnU = { role: "user" as const, name: "u", content: "q" + i };
+      const trimmed = trimStored(hist, maxHistory, 5000000);
+      if (trimmed !== hist) evictions++;
+      hist = trimmed;
+      const msgs = buildChatMessages(hist, turnU).map((m: { role: string; content: string }) => ({ role: m.role, content: m.content }));
+      if (prev) {
+        const prefixIntact = prev.every((pm, idx) => msgs[idx] && msgs[idx].role === pm.role && msgs[idx].content === pm.content);
+        const grewAppendOnly = msgs.length >= prev.length;
+        if (!grewAppendOnly) evictions++;
+        expect(prefixIntact || !grewAppendOnly).toBe(true);
+      }
+      prev = msgs;
+      hist = [...hist, turnU, { role: "assistant", name: "bot", content: "a" + i }];
+    }
+    expect(evictions).toBeGreaterThan(0);
   });
 
   test("buildChatMessages truncates oversized single message", () => {
-    const msgs = buildChatMessages([], turn("x".repeat(CHAT_MSG_CHAR_CAP + 500)), 20, 50000);
+    const msgs = buildChatMessages([], turn("x".repeat(CHAT_MSG_CHAR_CAP + 500)));
     expect(msgs[msgs.length - 1].content.length).toBeLessThanOrEqual(CHAT_MSG_CHAR_CAP + 10);
     expect(msgs[msgs.length - 1].content).toContain("已截断");
   });
 
   test("buildChatMessages keeps system prompt first and reserves question budget", () => {
     const hist = [turn("a".repeat(40000)), turn("b")];
-    const msgs = buildChatMessages(hist, turn("q"), 20, 50000);
+    const msgs = buildChatMessages(trimStored(hist, 20, 50000), turn("q"));
     expect(msgs[0].role).toBe("system");
     expect(msgs[0].content).toBe(CHAT_SYSTEM_PROMPT);
     const total = msgs.reduce((n: number, m: { content: string }) => n + estimateTokens(m.content), 0);

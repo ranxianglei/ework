@@ -3,7 +3,7 @@ import type { EworkClient } from "./ework";
 import type { GroupMessageEvent } from "./onebot";
 import type { BridgeStore } from "./db";
 import type { BindingStore } from "./bindings";
-import { buildChatMessages, chatComplete, splitForQQ, type ChatTurn } from "./chat";
+import { buildChatMessages, capContent, chatComplete, splitForQQ, trimStored, type ChatTurn } from "./chat";
 
 const HELP_TEXT = [
   "用法：",
@@ -52,12 +52,12 @@ export function createRouter(deps: RouterDeps) {
 
   async function answerChat(ev: GroupMessageEvent, question: string): Promise<void> {
     try {
-      const turn: ChatTurn = { role: "user", name: ev.nickname, content: question };
-      const history = chatHistory.get(ev.groupId) ?? [];
-      const messages = buildChatMessages(history, turn, cfg.WORK_CHAT_MAX_HISTORY, cfg.WORK_CHAT_MAX_CONTEXT);
+      const turn: ChatTurn = { role: "user", name: ev.nickname, content: capContent(question) };
+      const stored = trimStored(chatHistory.get(ev.groupId) ?? [], cfg.WORK_CHAT_MAX_HISTORY, cfg.WORK_CHAT_MAX_CONTEXT);
+      chatHistory.set(ev.groupId, stored);
+      const messages = buildChatMessages(stored, turn);
       const answer = await chatComplete(cfg.WORK_CHAT_API, cfg.WORK_CHAT_API_KEY, cfg.WORK_CHAT_MODEL, messages, cfg.WORK_CHAT_TIMEOUT_MS);
-      history.push(turn, { role: "assistant", name: "bot", content: answer });
-      chatHistory.set(ev.groupId, history.slice(-cfg.WORK_CHAT_MAX_HISTORY * 2));
+      chatHistory.set(ev.groupId, [...stored, turn, { role: "assistant", name: "bot", content: capContent(answer) }]);
       for (const part of splitForQQ(answer)) {
         await deps.reply(ev.groupId, part);
       }
