@@ -10,6 +10,7 @@ import { formatKey, parseKey } from "./trackers/types";
 import type { RuntimeBackend, RuntimeHandle } from "./runtime/types";
 import { OpencodeBackend } from "./runtime/opencode-backend";
 import { PiBackend } from "./runtime/pi-backend";
+import { downloadIssueAttachments, attachmentNote } from "./attachments";
 
 // ─── Types ───
 
@@ -1278,13 +1279,33 @@ export class Engine {
 
     const childEnv = spawnEnvFor(process.env, this.hookEnvFor(issue, session, workdir), workdir);
 
+    let spawnPrompt = msg.content;
+    try {
+      const atts = await downloadIssueAttachments(
+        msg.content,
+        this.cfg.gitea.url,
+        this.cfg.gitea.token,
+        workdir,
+      );
+      if (atts.length > 0) {
+        log.info(
+          `engine: attachments for ${k}: ${atts
+            .map((a) => `${a.filename || a.uuid}${a.skipped ? ` (skip: ${a.skipped})` : ""}`)
+            .join(", ")}`,
+        );
+        spawnPrompt += attachmentNote(atts);
+      }
+    } catch {
+      // Best-effort: the agent still has the raw message without files.
+    }
+
     let exitCode: number | null = null;
 
     try {
       const handle = await backend.spawn(
         {
           workdir,
-          prompt: msg.content,
+          prompt: spawnPrompt,
           model: model || undefined,
           resumeSessionId: resumeSessionId || undefined,
           env: childEnv,
