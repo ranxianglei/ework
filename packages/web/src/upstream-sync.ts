@@ -3,7 +3,9 @@ import {
   type ProjectRow,
   type IssueRow,
   getProjectById,
+  getIssue,
   getIssueByUpstreamNumber,
+  linkIssueToUpstream,
   getCommentByUpstreamId,
   createIssue,
   ensureUser,
@@ -110,6 +112,22 @@ export class UpstreamSync {
   }
 
   private async importIssue(gi: GiteaIssue, emit: boolean): Promise<void> {
+    const body = gi.body ?? "";
+    // Issues ework-mirror created upstream reference their origin issue by
+    // number in the footer. Linking instead of importing prevents the echo
+    // loop (local → mirror → GitHub → poll → twin) while keeping comment and
+    // state sync flowing to the original.
+    const mirrored = body.includes("<!-- ework-mirror -->")
+      ? body.match(/Mirrored from ework issue #(\d+)/)
+      : null;
+    if (mirrored?.[1]) {
+      const origin = await getIssue(this.project.id, Number(mirrored[1]));
+      if (origin) {
+        await linkIssueToUpstream(origin.id, gi.number);
+        return;
+      }
+    }
+    if (body.includes("<!-- ework-mirror -->")) return;
     await ensureUser(gi.user?.login ?? "upstream", fromGithubBot(gi.user?.login) ? "bot" : "human");
     await createIssue(
       this.project.id,

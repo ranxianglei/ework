@@ -2,6 +2,7 @@ import { afterEach, beforeAll, describe, expect, test } from "bun:test";
 
 import { getDB, initDB } from "../src/db";
 import {
+  createIssue,
   createProject,
   ensureUser,
   getIssueByUpstreamNumber,
@@ -219,5 +220,41 @@ describe('upstream-sync agent-PR feedback loop guard', () => {
     await engine({ ...sync, issue_cursor: '2020-01-01T00:00:00Z' }, project).pollOnce();
     await new Promise((r) => setTimeout(r, 150));
     expect(calledUrls.filter((u) => u.startsWith('http://hook.local')).length).toBe(1);
+  });
+});
+
+describe("mirrored-issue echo guard (issue level)", () => {
+  test("mirror-created issue links to its origin instead of twin-importing", async () => {
+    const { sync, project } = await setup();
+    await ensureUser("dog");
+    const local = await createIssue(
+      project.id,
+      "local born",
+      "body",
+      "dog",
+      { state: "open" }
+    );
+    issuePages = [[ghIssue(238, {
+      title: "local born",
+      user: { login: "ranxianglei" },
+      body: "body\n\n---\n_Mirrored from ework issue #" + local.number + "_\n\n<!-- ework-mirror -->",
+    })]];
+    mockFetch();
+    await engine(sync, project).pollOnce();
+    const rows = await listIssues(project.id);
+    expect(rows).toHaveLength(1);
+    const relinked = await getIssueByUpstreamNumber(project.id, 238);
+    expect(relinked?.id).toBe(local.id);
+  });
+
+  test("mirrored issue with unresolvable origin never twins", async () => {
+    const { sync, project } = await setup();
+    issuePages = [[ghIssue(77, {
+      body: "orphan\n\n---\n_Mirrored from ework issue #999_\n\n<!-- ework-mirror -->",
+    })]];
+    mockFetch();
+    await engine(sync, project).pollOnce();
+    const rows = await listIssues(project.id);
+    expect(rows).toHaveLength(0);
   });
 });

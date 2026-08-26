@@ -627,6 +627,20 @@ export async function getIssueByUpstreamNumber(projectId: number, upstreamNumber
   );
 }
 
+export async function linkIssueToUpstream(issueId: number, upstreamNumber: number): Promise<boolean> {
+  try {
+    const res = await getDB().run(
+      "UPDATE {{issues}} SET upstream_issue_number = ?, updated_at = ? WHERE id = ? AND upstream_issue_number IS NULL",
+      [upstreamNumber, now(), issueId]
+    );
+    return res.changes > 0;
+  } catch {
+    // Unique index (project_id, upstream_issue_number): another row already
+    // holds this mapping — leave it alone, the existing winner stays linked.
+    return false;
+  }
+}
+
 export async function getCommentByUpstreamId(upstreamCommentId: number): Promise<CommentRow | null> {
   return await getDB().get<CommentRow>(
     "SELECT * FROM {{comments}} WHERE upstream_comment_id = ?",
