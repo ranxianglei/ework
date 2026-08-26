@@ -36,6 +36,16 @@ const MIRROR_MARKER = "\n\n<!-- ework-mirror -->";
 
 // Issues imported from the upstream keep its numbering; mirror in place
 // instead of creating a retroactive twin on the target.
+// Events carrying these markers/ids originated on the upstream host and were
+// imported by ework's sync engine — writing them back would duplicate content
+// on the upstream thread.
+const UPSTREAM_SYNC_MARKER = "<!-- upstream-sync -->";
+
+export function isSyncedFromUpstream<T extends { issue: { upstream_issue_number?: number | null }; comment?: { body?: string } }>(ev: T): boolean {
+  if (ev.issue.upstream_issue_number != null) return true;
+  return ev.comment != null && (ev.comment.body ?? "").includes(UPSTREAM_SYNC_MARKER);
+}
+
 function upstreamMap(ev: { projectOwner: string; projectName: string; issue: { number: number; upstream_issue_number?: number | null; title?: string | null } }, repo: { owner: string; repo: string }): IssueMapRow | null {
   const up = (ev.issue as any).upstream_issue_number;
   if (typeof up !== "number" || !Number.isFinite(up)) return null;
@@ -90,6 +100,19 @@ export async function handleIssueEvent(
       gitea_target: giteaTarget,
       outcome: OUTCOME_SKIPPED_SELF,
       detail: `sender=${ev.senderLogin}`,
+    });
+    return;
+  }
+
+  if (isSyncedFromUpstream(ev)) {
+    logEvent({
+      event: "issues",
+      action: ev.action,
+      ework_project: projectKey,
+      ework_issue: ev.issue.number,
+      gitea_target: giteaTarget,
+      outcome: OUTCOME_SKIPPED_SELF,
+      detail: "synced-from-upstream",
     });
     return;
   }
@@ -240,6 +263,19 @@ export async function handleCommentEvent(
       gitea_target: giteaTarget,
       outcome: OUTCOME_SKIPPED_NO_REPO,
       detail: "system comment",
+    });
+    return;
+  }
+  if (isSyncedFromUpstream(ev)) {
+    logEvent({
+      event: "issue_comment",
+      action: "created",
+      ework_project: projectKey,
+      ework_issue: ev.issue.number,
+      ework_comment: ev.comment.id,
+      gitea_target: giteaTarget,
+      outcome: OUTCOME_SKIPPED_SELF,
+      detail: "synced-from-upstream",
     });
     return;
   }

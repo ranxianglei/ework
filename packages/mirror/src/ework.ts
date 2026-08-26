@@ -15,6 +15,7 @@ interface PayloadRepo {
 interface PayloadIssue {
   id?: number;
   number: number;
+  upstream_issue_number?: number | null;
   title: string;
   body?: string;
   state?: "open" | "closed";
