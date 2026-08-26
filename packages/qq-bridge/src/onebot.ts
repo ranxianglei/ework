@@ -123,7 +123,11 @@ export function createOneBotServer(opts: OneBotServerOptions) {
           void opts.onEvent(ev);
         }
       },
-      close() {
+      close(client: ServerWebSocket<unknown>) {
+        // A reconnect race can fire the OLD socket's close after the NEW
+        // socket's open; only tear down when the active client is the one
+        // that closed, else the live connection is orphaned.
+        if (ws !== client) return;
         rejectAll("connection closed");
       },
     },

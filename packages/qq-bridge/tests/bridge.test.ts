@@ -144,3 +144,20 @@ describe("chat mode", () => {
     expect(replies[0]).toContain("没看懂指令");
   });
 });
+
+test("onebot close ignores non-active client (reconnect race)", () => {
+  const { createOneBotServer } = require("../src/onebot");
+  let ready = 0;
+  const srv = createOneBotServer({ path: "/ws", accessToken: "t", onEvent: () => {}, onReady: () => { ready++; } });
+  const fake = (id: string) => ({ id, send: () => {}, close: () => {} });
+  const a = fake("a"), b = fake("b");
+  srv.handlers.open(a);
+  expect(ready).toBe(1);
+  srv.handlers.open(b);
+  expect(ready).toBe(1);
+  srv.handlers.close(a);
+  expect(srv.connected).toBe(true);
+  srv.handlers.close(b);
+  expect(srv.connected).toBe(false);
+});
+
