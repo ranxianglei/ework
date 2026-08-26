@@ -134,7 +134,7 @@ describe("upstream-sync github adapter", () => {
     const db = getDB();
     const rows = await db.all(`SELECT author, body FROM {{comments}}`);
     expect(rows.length).toBe(1);
-    expect((rows[0] as any).body).toBe("comment 11");
+    expect((rows[0] as any).body).toBe("comment 11\n\n<!-- upstream-sync -->");
   });
 
   test("live poll uses github comment cursor params and skips markers", async () => {
