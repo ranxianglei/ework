@@ -41,14 +41,6 @@ const Schema = z.object({
 
   DB_PATH: z.string().default(""),
 
-  // Chat mode (instant Q&A). When WORK_CHAT_API is set, @bot messages without
-  // a recognized command are answered directly by the LLM instead of usage
-  // help. Empty = chat mode disabled.
-  WORK_CHAT_API: z.string().default(""),
-  WORK_CHAT_API_KEY: z.string().default("sk-vllm"),
-  WORK_CHAT_MODEL: z.string().default("qwen3.8-27b"),
-  WORK_CHAT_TIMEOUT_MS: z.coerce.number().int().positive().default(90_000),
-  WORK_CHAT_MAX_HISTORY: z.coerce.number().int().positive().default(20),
 
   VERBOSE: z.coerce.boolean().default(false),
 

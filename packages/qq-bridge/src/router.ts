@@ -3,7 +3,6 @@ import type { EworkClient } from "./ework";
 import type { GroupMessageEvent } from "./onebot";
 import type { BridgeStore } from "./db";
 import type { BindingStore } from "./bindings";
-import { buildChatMessages, chatComplete, splitForQQ, type ChatTurn } from "./chat";
 
 const HELP_TEXT = [
   "用法：",
@@ -12,7 +11,7 @@ const HELP_TEXT = [
   "  绑定 #<编号> —— 把本群绑定到该 issue（长记忆模式：此后发言都进这个 issue）",
   "  解绑 —— 恢复为项目模式（接收整个项目的回复）",
   "  查询 —— 列出最近 issue",
-  "  @我 + 任意问题 —— 即时问答（不建 issue、不留痕）",
+  "  （绑定后：@我 和普通发言等效，都进入绑定的 issue，AI 回复自动回群）",
 ].join("\n");
 
 export interface RouterDeps {
@@ -47,24 +46,6 @@ export function parseCommand(raw: string): ParsedCommand | null {
 
 export function createRouter(deps: RouterDeps) {
   const { cfg, bindings, wakeList, ework, store } = deps;
-  const chatHistory = new Map<number, ChatTurn[]>();
-
-  async function answerChat(ev: GroupMessageEvent, question: string): Promise<void> {
-    const turn: ChatTurn = { role: "user", name: ev.nickname, content: question };
-    const history = chatHistory.get(ev.groupId) ?? [];
-    const messages = buildChatMessages(history, turn, cfg.WORK_CHAT_MAX_HISTORY);
-    const answer = await chatComplete(cfg.WORK_CHAT_API, cfg.WORK_CHAT_API_KEY, cfg.WORK_CHAT_MODEL, messages, cfg.WORK_CHAT_TIMEOUT_MS);
-    history.push(turn, { role: "assistant", name: "bot", content: answer });
-    if (history.length > cfg.WORK_CHAT_MAX_HISTORY * 2) {
-      chatHistory.set(ev.groupId, history.slice(-cfg.WORK_CHAT_MAX_HISTORY * 2));
-    } else {
-      chatHistory.set(ev.groupId, history);
-    }
-    for (const part of splitForQQ(answer)) {
-      await deps.reply(ev.groupId, part);
-    }
-  }
-
   async function handleGroupMessage(ev: GroupMessageEvent): Promise<void> {
     if (store.seenPost(ev.postId)) return;
     const binding = bindings.resolve(ev.groupId);
@@ -77,26 +58,19 @@ export function createRouter(deps: RouterDeps) {
 
     const atBot = ev.rawMessage.includes("[CQ:at,qq=") || /^\s*(任务|task|新任务|#|绑定|解绑|帮助|help|查询)/.test(ev.rawMessage);
     const cmd = parseCommand(ev.rawMessage);
-    if (!cmd && !atBot && binding.issue === undefined) {
-      if (cfg.VERBOSE) console.log(`[qq-bridge] unrecognized message from ${ev.userId}: ${ev.rawMessage.slice(0, 80)}`);
-      return;
-    }
     if (!cmd) {
-      const question = ev.rawMessage.replace(/\[CQ:[^\]]*\]/g, "").trim();
-      if (binding.issue !== undefined && !atBot) {
-        await ework.addComment(binding.owner, binding.repo, binding.issue, `> 来自 QQ 群用户 **${ev.nickname}** (${ev.userId})\n\n${question}`);
-        return;
-      }
-      if (cfg.WORK_CHAT_API && question) {
-        try {
-          await answerChat(ev, question);
-        } catch (err) {
-          console.error(`[qq-bridge] chat failed: ${err instanceof Error ? err.message : err}`);
-          await deps.reply(ev.groupId, "🤖 回答失败了，稍后再试一次。");
+      if (binding.issue !== undefined) {
+        const text = ev.rawMessage.replace(/\[CQ:[^\]]*\]/g, "").trim();
+        if (text) {
+          await ework.addComment(binding.owner, binding.repo, binding.issue, `> 来自 QQ 群用户 **${ev.nickname}** (${ev.userId})\n\n${text}`);
         }
         return;
       }
-      await deps.reply(ev.groupId, "没看懂指令。\n" + HELP_TEXT);
+      if (atBot) {
+        await deps.reply(ev.groupId, "本群还没绑定 issue。发「绑定 #<编号>」绑定已有任务，或「任务 <标题>」新建并自动绑定。");
+        return;
+      }
+      if (cfg.VERBOSE) console.log(`[qq-bridge] ignore non-command message from ${ev.userId}`);
       return;
     }
     if (cmd.kind === "help") {

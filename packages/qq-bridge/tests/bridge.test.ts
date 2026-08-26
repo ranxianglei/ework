@@ -80,72 +80,52 @@ test("helps when @bot without verb", () => {
   expect(parseCommand("[CQ:at,qq=2661222094] 测试2")).toBeNull();
 });
 
-describe("chat mode", () => {
-  const { buildChatMessages, splitForQQ, CHAT_SYSTEM_PROMPT } = require("../src/chat");
-
-  test("buildChatMessages: system + capped history + new turn", () => {
-    const hist = Array.from({ length: 30 }, (_, i) => ({ role: "user" as const, name: `u${i}`, content: `m${i}` }));
-    const msgs = buildChatMessages(hist, { role: "user", name: "dog", content: "q" }, 20);
-    expect(msgs[0].role).toBe("system");
-    expect(msgs[0].content).toBe(CHAT_SYSTEM_PROMPT);
-    expect(msgs).toHaveLength(22);
-    expect(msgs[1].name).toBe("u10");
-    expect(msgs[msgs.length - 1]).toEqual({ role: "user", name: "dog", content: "q" });
-  });
-
-  test("splitForQQ keeps <=1500 chunks and prefers newline cuts", () => {
-    const short = splitForQQ("hello");
-    expect(short).toEqual(["hello"]);
-    const long = "line\n".repeat(600);
-    const parts = splitForQQ(long);
-    expect(parts.length).toBeGreaterThan(1);
-    for (const p of parts) expect(p.length).toBeLessThanOrEqual(1500);
-    expect(parts.join("\n")).toBe(long);
-  });
-
-  test("router: @bot + question hits chat when configured, help when not", async () => {
+describe("@bot unified routing", () => {
+  const mk = (bs: BindingStore) => {
     const { createRouter } = require("../src/router");
     const replies: string[] = [];
-    const chatCalls: string[] = [];
-    const baseDeps = (chatApi: string) => ({
-      cfg: {
-        VERBOSE: false,
-        WORK_CHAT_API: chatApi,
-        WORK_CHAT_API_KEY: "k",
-        WORK_CHAT_MODEL: "m",
-        WORK_CHAT_TIMEOUT_MS: 1000,
-        WORK_CHAT_MAX_HISTORY: 20,
-      },
-      bindings: new BindingStore([{ groupId: 1, owner: "o", repo: "r" }], pinFile()),
-      wakeList: new Set(["1403558951"]),
-      ework: { createIssue: async () => 1, addComment: async () => {} },
-      store: { seenPost: () => false },
-      reply: async (_g: number, text: string) => { replies.push(text); },
-    });
-    // chat disabled → usage help
-    let router = createRouter(baseDeps(""));
-    await router.handleGroupMessage({ groupId: 1, userId: 1403558951, nickname: "dog", postId: "p1", rawMessage: "[CQ:at,qq=2661222094] 你好呀" });
-    expect(replies[0]).toContain("没看懂指令");
-    // chat enabled → mocked LLM answer (patch chatComplete via env endpoint failure is overkill; test buildChatMessages path instead)
-    replies.length = 0;
-    router = createRouter(baseDeps("http://invalid.test/v1"));
-    await router.handleGroupMessage({ groupId: 1, userId: 1403558951, nickname: "dog", postId: "p2", rawMessage: "[CQ:at,qq=2661222094] 你好呀" });
-    expect(replies[0]).toContain("回答失败");
-  });
-
-  test("router: @bot with CQ-only payload (no text) still gets help", async () => {
-    const { createRouter } = require("../src/router");
-    const replies: string[] = [];
+    const comments: Array<[string, string, number, string]> = [];
     const router = createRouter({
-      cfg: { VERBOSE: false, WORK_CHAT_API: "http://x/v1", WORK_CHAT_API_KEY: "k", WORK_CHAT_MODEL: "m", WORK_CHAT_TIMEOUT_MS: 1000, WORK_CHAT_MAX_HISTORY: 20 },
-      bindings: new BindingStore([{ groupId: 1, owner: "o", repo: "r" }], pinFile()),
+      cfg: { VERBOSE: false },
+      bindings: bs,
       wakeList: new Set(["1"]),
-      ework: { createIssue: async () => 1, addComment: async () => {} },
+      ework: { createIssue: async () => 9, addComment: async (o: string, r: string, n: number, b: string) => { comments.push([o, r, n, b]); } },
       store: { seenPost: () => false },
-      reply: async (_g: number, text: string) => { replies.push(text); },
+      reply: async (_g: number, x: string) => { replies.push(x); },
     });
-    await router.handleGroupMessage({ groupId: 1, userId: 1, nickname: "u", postId: "p3", rawMessage: "[CQ:at,qq=2661222094]" });
-    expect(replies[0]).toContain("没看懂指令");
+    return { router, replies, comments };
+  };
+  const ev = (postId: string, raw: string) => ({ groupId: 1, userId: 1, nickname: "u", postId, rawMessage: raw });
+
+  test("pinned: @bot question goes to bound issue like plain messages", async () => {
+    const { router, replies, comments } = mk(new BindingStore([{ groupId: 1, owner: "o", repo: "r", issue: 7 }], pinFile()));
+    await router.handleGroupMessage(ev("p1", "[CQ:at,qq=2661222094] 这个报错啥意思"));
+    expect(comments.length).toBe(1);
+    expect(comments[0][2]).toBe(7);
+    expect(comments[0][3]).toContain("这个报错啥意思");
+    expect(comments[0][3]).not.toContain("CQ:at");
+    expect(replies).toEqual([]);
+  });
+
+  test("pinned: @bot CQ-only payload silently dropped", async () => {
+    const { router, replies, comments } = mk(new BindingStore([{ groupId: 1, owner: "o", repo: "r", issue: 7 }], pinFile()));
+    await router.handleGroupMessage(ev("p2", "[CQ:at,qq=2661222094]"));
+    expect(comments).toEqual([]);
+    expect(replies).toEqual([]);
+  });
+
+  test("unpinned: @bot question gets bind guidance", async () => {
+    const { router, replies, comments } = mk(new BindingStore([{ groupId: 1, owner: "o", repo: "r" }], pinFile()));
+    await router.handleGroupMessage(ev("p3", "[CQ:at,qq=2661222094] 你好呀"));
+    expect(comments).toEqual([]);
+    expect(replies[0]).toContain("绑定");
+  });
+
+  test("unpinned: plain chatter stays silent", async () => {
+    const { router, replies, comments } = mk(new BindingStore([{ groupId: 1, owner: "o", repo: "r" }], pinFile()));
+    await router.handleGroupMessage(ev("p4", "今天天气不错"));
+    expect(comments).toEqual([]);
+    expect(replies).toEqual([]);
   });
 });
 
@@ -198,7 +178,7 @@ describe("issue pinning", () => {
     const replies: string[] = [];
     const comments: Array<[string, string, number, string]> = [];
     const router = createRouter({
-      cfg: { VERBOSE: false, WORK_CHAT_API: "http://x/v1", WORK_CHAT_API_KEY: "k", WORK_CHAT_MODEL: "m", WORK_CHAT_TIMEOUT_MS: 1000, WORK_CHAT_MAX_HISTORY: 20 },
+      cfg: { VERBOSE: false },
       bindings: new BindingStore([{ groupId: 1, owner: "o", repo: "r", issue: 7 }], pinFile()),
       wakeList: new Set(["1"]),
       ework: { createIssue: async () => 9, addComment: async (o: string, r: string, n: number, b: string) => { comments.push([o, r, n, b]); } },
@@ -218,7 +198,7 @@ describe("issue pinning", () => {
     const comments: Array<number, any> = [];
     const bs = new BindingStore([{ groupId: 1, owner: "o", repo: "r" }], pinFile());
     const router = createRouter({
-      cfg: { VERBOSE: false, WORK_CHAT_API: "", WORK_CHAT_API_KEY: "k", WORK_CHAT_MODEL: "m", WORK_CHAT_TIMEOUT_MS: 1000, WORK_CHAT_MAX_HISTORY: 20 },
+      cfg: { VERBOSE: false },
       bindings: bs,
       wakeList: new Set(["1"]),
       ework: { createIssue: async () => 9, addComment: async (_o: any, _r: any, n: number) => { comments.push(n); } },
@@ -236,7 +216,7 @@ describe("issue pinning", () => {
     const replies: string[] = [];
     const bs = new BindingStore([{ groupId: 1, owner: "o", repo: "r", issue: 3 }], pinFile());
     const router = createRouter({
-      cfg: { VERBOSE: false, WORK_CHAT_API: "", WORK_CHAT_API_KEY: "k", WORK_CHAT_MODEL: "m", WORK_CHAT_TIMEOUT_MS: 1000, WORK_CHAT_MAX_HISTORY: 20 },
+      cfg: { VERBOSE: false },
       bindings: bs,
       wakeList: new Set(["1"]),
       ework: { createIssue: async () => 12, addComment: async () => {} },
