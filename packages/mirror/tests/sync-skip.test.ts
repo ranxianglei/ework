@@ -12,6 +12,14 @@ describe("echo guards", () => {
     expect(isImportedComment({ comment: { body: "[bot] done" } })).toBe(false);
   });
 
+  test("comment carrying upstream_comment_id field is imported even without marker", () => {
+    expect(isImportedComment({ comment: { body: "npm error ETARGET", upstream_comment_id: 5428162249 } })).toBe(true);
+  });
+
+  test("comment with null upstream_comment_id and no marker mirrors", () => {
+    expect(isImportedComment({ comment: { body: "local voice", upstream_comment_id: null } })).toBe(false);
+  });
+
   test("issue with upstream number is imported (opened never twins)", () => {
     expect(isImportedIssue({ issue: { number: 5, upstream_issue_number: 329 } })).toBe(true);
   });

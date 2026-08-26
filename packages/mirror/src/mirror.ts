@@ -42,11 +42,17 @@ const MIRROR_MARKER = "\n\n<!-- ework-mirror -->";
 const UPSTREAM_SYNC_MARKER = "<!-- upstream-sync -->";
 
 // Echo guard. Comments are mirrored only when NOT imported: imports carry the
-// upstream-sync marker. The issue-level upstream number must NOT suppress
-// comments — AI replies and local discussion on imported issues must mirror.
-// It only stops mirroring an imported issue's "opened" (no twin creation).
-export function isImportedComment(ev: { comment?: { body?: string } }): boolean {
-  return (ev.comment?.body ?? "").includes(UPSTREAM_SYNC_MARKER);
+// upstream-sync marker in the body AND the upstream_comment_id payload field.
+// The issue-level upstream number must NOT suppress comments — AI replies and
+// local discussion on imported issues must mirror. It only stops mirroring an
+// imported issue's "opened" (no twin creation).
+export function isImportedComment(ev: {
+  comment?: { body?: string; upstream_comment_id?: number | null };
+}): boolean {
+  return (
+    (ev.comment?.body ?? "").includes(UPSTREAM_SYNC_MARKER) ||
+    ev.comment?.upstream_comment_id != null
+  );
 }
 
 export function isImportedIssue<T extends { issue: { upstream_issue_number?: number | null } }>(ev: T): boolean {
