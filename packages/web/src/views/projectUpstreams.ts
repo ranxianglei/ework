@@ -82,7 +82,7 @@ function syncCardHtml(project: ProjectRow, sync: UpstreamSyncRow | null): string
 ${statusHtml}
 <div class="form-grid">
 <div><label for="s-base">上游地址（Gitea 根地址，如 http://host:3000）</label>
-<input id="s-base" name="base_url" type="url" placeholder="http://192.168.10.96:3300" value="${escapeAttr(baseUrl)}" required></div>
+<input id="s-base" name="base_url" type="url" placeholder="http://192.168.1.100:3300" value="${escapeAttr(baseUrl)}" required></div>
 <div><label for="s-owner">上游 owner</label>
 <input id="s-owner" name="upstream_owner" value="${escapeAttr(sync?.upstream_owner ?? project.owner)}" required></div>
 <div><label for="s-repo">上游 repo</label>

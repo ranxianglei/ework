@@ -2,7 +2,7 @@ import { expect, test, describe } from "bun:test";
 import { buildEnvBlock, type DeployTarget } from "../src/daemon-deploy";
 
 const baseTarget: DeployTarget = {
-  sshHost: "192.168.10.96",
+  sshHost: "192.168.1.100",
   sshUser: "dog",
   sshPort: 1194,
   mysqlHost: "192.168.10.157",
