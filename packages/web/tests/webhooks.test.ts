@@ -6,6 +6,7 @@ import {
   buildIssuePayload,
   createWebhook,
   deleteWebhook,
+  emitCommentEvent,
   emitIssueEvent,
   listWebhooks,
   setWebhookActive,
@@ -239,4 +240,64 @@ describe("concurrency cap (WORK_WEBHOOK_MAX_CONCURRENT=3)", () => {
     expect(completed).toBeGreaterThanOrEqual(6);
     expect(maxInFlight).toBeLessThanOrEqual(3);
   }, 15000);
+});
+
+describe("comment payload provenance (echo prevention)", () => {
+  test("imported comment carries upstream_comment_id in payload", async () => {
+    await ensureUser("alice");
+    const project = await createProject("dog", "echo", "");
+    const issue = await createIssue(project.id, "t", "b", "alice");
+    const row = await postComment(issue.id, "npm error ETARGET", "stirp", {
+      upstreamCommentId: 5428162249,
+    });
+    await createWebhook({
+      project_id: project.id,
+      url: "http://echo.local/hook",
+      secret: "",
+      events: ["issue_comment"],
+    });
+
+    let received: any = null;
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (_input: any, init?: any) => {
+      received = JSON.parse(String(init?.body));
+      return new Response("ok", { status: 200 });
+    }) as typeof fetch;
+    try {
+      await emitCommentEvent(project.id, issue.id, row.id, ORIGIN);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+
+    expect(received).not.toBeNull();
+    expect(received.comment.upstream_comment_id).toBe(5428162249);
+  });
+
+  test("locally authored comment carries null upstream_comment_id", async () => {
+    await ensureUser("alice");
+    const project = await createProject("dog", "echo2", "");
+    const issue = await createIssue(project.id, "t", "b", "alice");
+    const row = await postComment(issue.id, "local voice", "alice");
+    await createWebhook({
+      project_id: project.id,
+      url: "http://echo2.local/hook",
+      secret: "",
+      events: ["issue_comment"],
+    });
+
+    let received: any = null;
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (_input: any, init?: any) => {
+      received = JSON.parse(String(init?.body));
+      return new Response("ok", { status: 200 });
+    }) as typeof fetch;
+    try {
+      await emitCommentEvent(project.id, issue.id, row.id, ORIGIN);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+
+    expect(received).not.toBeNull();
+    expect(received.comment.upstream_comment_id).toBeNull();
+  });
 });

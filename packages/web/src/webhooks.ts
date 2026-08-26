@@ -307,6 +307,9 @@ interface PayloadComment {
   updated_at: string;
   user: PayloadUser;
   author_kind?: string;
+  /** Set when this comment was imported from an upstream tracker — receivers
+   * must skip echoing it back (defense beyond the body marker). */
+  upstream_comment_id?: number | null;
 }
 
 interface IssueEventPayload {
@@ -467,6 +470,7 @@ function buildComment(
     body: comment.body,
     created_at: comment.created_at,
     updated_at: comment.updated_at,
+    upstream_comment_id: comment.upstream_comment_id ?? null,
     user: buildUser(comment.author, origin),
   };
 }

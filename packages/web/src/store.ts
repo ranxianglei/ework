@@ -95,6 +95,7 @@ export interface CommentRow {
   author_kind?: UserKind;
   author_display_name?: string | null;
   model?: string;
+  upstream_comment_id?: number | null;
 }
 
 export interface LabelRow {
