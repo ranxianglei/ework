@@ -330,6 +330,23 @@ export function wakePolicySkips(
   return null;
 }
 
+// Per-issue npm prefix: `npm install -g <pkg>` inside a session lands in the issue's
+// workdir instead of the system global, so concurrent agents debugging different
+// issues cannot clobber each other's global installs (nor poison the shared daemon env).
+export function spawnEnvFor(
+  base: Record<string, string | undefined>,
+  hooks: Record<string, string | undefined>,
+  workdir: string,
+): Record<string, string> {
+  const npmHome = `${workdir}/.npm-global`;
+  return {
+    ...base,
+    ...hooks,
+    NPM_CONFIG_PREFIX: npmHome,
+    PATH: `${npmHome}/bin:${base.PATH ?? ""}`,
+  };
+}
+
 export class Engine {
   private cfg: Config;
   private store: Store;
@@ -1259,7 +1276,7 @@ export class Engine {
       try { await tracker.setReaction(ref, msg.sourceCommentId, "eyes"); } catch { /* non-critical */ }
     }
 
-    const childEnv = { ...process.env, ...this.hookEnvFor(issue, session, workdir) };
+    const childEnv = spawnEnvFor(process.env, this.hookEnvFor(issue, session, workdir), workdir);
 
     let exitCode: number | null = null;
 
