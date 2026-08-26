@@ -5,7 +5,7 @@ const DEAD_PORT = 59998;
 
 describe("forwardToDaemon — URL normalization (Bug 1 regression)", () => {
   test("prepends http:// to bare host:port endpoint", async () => {
-    const result = await forwardToDaemon("192.168.10.96:3101", { test: true }, 500);
+    const result = await forwardToDaemon("192.168.1.100:3101", { test: true }, 500);
     expect(result.body).not.toContain("Invalid URL");
     expect(result.body).not.toContain("TypeError");
   });
