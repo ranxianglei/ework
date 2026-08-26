@@ -89,3 +89,25 @@ describe("agent provenance badge", () => {
     ]);
   });
 });
+
+describe("close-state upstream fallback", () => {
+  test("echo-linked issue resolves to upstream number, not retroactive twin", async () => {
+    const { initDB } = await import("../src/db");
+    initDB(`/tmp/qq-bridge-test-${process.pid}/mirror.db`);
+    const { upstreamMap } = await import("../src/mirror");
+    const row = upstreamMap(
+      { projectOwner: "ranxianglei", projectName: "billion-context", issue: { number: 255, upstream_issue_number: 255, title: "t" } },
+      { owner: "ranxianglei", repo: "billion-context" }
+    );
+    expect(row?.gitea_issue_num).toBe(255);
+  });
+
+  test("unlinked issue resolves to null (retroactive path stays)", async () => {
+    const { upstreamMap } = await import("../src/mirror");
+    const row = upstreamMap(
+      { projectOwner: "ranxianglei", projectName: "billion-context", issue: { number: 9, upstream_issue_number: null, title: "t" } },
+      { owner: "ranxianglei", repo: "billion-context" }
+    );
+    expect(row).toBeNull();
+  });
+});

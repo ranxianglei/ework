@@ -53,7 +53,7 @@ export function isImportedIssue<T extends { issue: { upstream_issue_number?: num
   return ev.issue.upstream_issue_number != null;
 }
 
-function upstreamMap(ev: { projectOwner: string; projectName: string; issue: { number: number; upstream_issue_number?: number | null; title?: string | null } }, repo: { owner: string; repo: string }): IssueMapRow | null {
+export function upstreamMap(ev: { projectOwner: string; projectName: string; issue: { number: number; upstream_issue_number?: number | null; title?: string | null } }, repo: { owner: string; repo: string }): IssueMapRow | null {
   const up = (ev.issue as any).upstream_issue_number;
   if (typeof up !== "number" || !Number.isFinite(up)) return null;
   const existing = getIssueMap(ev.projectOwner, ev.projectName, ev.issue.number);
@@ -222,7 +222,8 @@ export async function handleIssueEvent(
       return;
     }
 
-    const map = getIssueMap(ev.projectOwner, ev.projectName, ev.issue.number);
+    const map =
+      upstreamMap(ev, repo) ?? getIssueMap(ev.projectOwner, ev.projectName, ev.issue.number);
     if (!map) {
       const created = await createIssue(
         cfg,
