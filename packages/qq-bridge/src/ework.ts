@@ -4,7 +4,7 @@ export interface EworkClient {
 }
 
 export function createEworkClient(baseUrl: string, token: string): EworkClient {
-  const root = baseUrl.replace(/\/+$/, "");
+  const root = baseUrl.replace(/\/+$/, "").replace(/\/api\/v1$/, "") + "/api/v1";
   const headers = {
     "Content-Type": "application/json",
     Authorization: `Bearer ${token}`,
