@@ -361,3 +361,53 @@ describe("pure-API chat", () => {
     }
   });
 });
+
+describe("no-think", () => {
+  const { stripThink } = require("../src/chat");
+
+  test("stripThink removes inline think blocks", () => {
+    expect(stripThink("<think>internal</think>答案")).toBe("答案");
+    expect(stripThink("<think>a</think>前<think>b</think>后")).toBe("前后");
+    expect(stripThink("普通回复")).toBe("普通回复");
+  });
+
+  test("chat request carries enable_thinking:false by default", async () => {
+    const origFetch = globalThis.fetch;
+    let sent: Record<string, unknown> = {};
+    globalThis.fetch = (async (_u: unknown, init?: { body?: string }) => {
+      sent = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), { status: 200 });
+    }) as typeof fetch;
+    try {
+      const { chatComplete } = require("../src/chat");
+      const out = await chatComplete("http://x/v1", "k", "m", [{ role: "user", content: "q" }], 1000);
+      expect(out).toBe("ok");
+      expect((sent.chat_template_kwargs as { enable_thinking?: boolean })?.enable_thinking).toBe(false);
+      await chatComplete("http://x/v1", "k", "m", [{ role: "user", content: "q" }], 1000, false);
+      expect(sent.chat_template_kwargs).toBeUndefined();
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  test("thinking payload is stripped before replying", async () => {
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(JSON.stringify({ choices: [{ message: { content: "<think>隐藏推理</think>可见答案" } }] }), { status: 200 })) as typeof fetch;
+    try {
+      const { createRouter } = require("../src/router");
+      const replies: string[] = [];
+      const router = createRouter({
+        cfg: { VERBOSE: false, WORK_CHAT_API: "http://x/v1", WORK_CHAT_API_KEY: "k", WORK_CHAT_MODEL: "m", WORK_CHAT_TIMEOUT_MS: 1000, WORK_CHAT_MAX_HISTORY: 20, WORK_CHAT_MAX_CONTEXT: 50000, WORK_CHAT_NO_THINK: true },
+        bindings: new BindingStore([{ groupId: 1, owner: "o", repo: "r" }], pinFile()),
+        wakeList: new Set(["1"]),
+        ework: { createIssue: async () => 9, addComment: async () => {} },
+        store: { seenPost: () => false },
+        reply: async (_g: number, x: string) => { replies.push(x); },
+      });
+      await router.handleGroupMessage({ groupId: 1, userId: 1, nickname: "u", postId: "nt1", rawMessage: "[CQ:at,qq=2661222094] 问" });
+      expect(replies).toEqual(["可见答案"]);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+});

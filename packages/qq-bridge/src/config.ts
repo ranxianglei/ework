@@ -35,6 +35,10 @@ const Schema = z.object({
   // Token budget (heuristic estimate) for one chat request; when history
   // exceeds it the oldest turns are dropped ("满了就清理").
   WORK_CHAT_MAX_CONTEXT: z.coerce.number().int().default(50000),
+  // Disable the model's thinking pass for QQ chat replies only (default on:
+  // "仅仅这个机器人关掉"); "0" restores thinking. Daemon/opencode sessions
+  // are untouched — they use their own runtime.
+  WORK_CHAT_NO_THINK: z.preprocess((v) => (v === undefined || v === "" ? "1" : v), z.string()).transform((v) => v !== "0"),
 
   // QQ user_ids allowed to dispatch AI work (comma-separated). Messages from
   // other members are logged and ignored — same trust model as the GitHub

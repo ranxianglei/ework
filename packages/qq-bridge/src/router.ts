@@ -56,7 +56,7 @@ export function createRouter(deps: RouterDeps) {
       const stored = trimStored(chatHistory.get(ev.groupId) ?? [], cfg.WORK_CHAT_MAX_HISTORY, cfg.WORK_CHAT_MAX_CONTEXT);
       chatHistory.set(ev.groupId, stored);
       const messages = buildChatMessages(stored, turn);
-      const answer = await chatComplete(cfg.WORK_CHAT_API, cfg.WORK_CHAT_API_KEY, cfg.WORK_CHAT_MODEL, messages, cfg.WORK_CHAT_TIMEOUT_MS);
+      const answer = await chatComplete(cfg.WORK_CHAT_API, cfg.WORK_CHAT_API_KEY, cfg.WORK_CHAT_MODEL, messages, cfg.WORK_CHAT_TIMEOUT_MS, cfg.WORK_CHAT_NO_THINK);
       chatHistory.set(ev.groupId, [...stored, turn, { role: "assistant", name: "bot", content: capContent(answer) }]);
       for (const part of splitForQQ(answer)) {
         await deps.reply(ev.groupId, part);

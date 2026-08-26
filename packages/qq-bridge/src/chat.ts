@@ -76,12 +76,17 @@ export function buildChatMessages(
   ];
 }
 
+export function stripThink(text: string): string {
+  return text.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+}
+
 export async function chatComplete(
   apiBase: string,
   apiKey: string,
   model: string,
   messages: { role: string; name?: string; content: string }[],
   timeoutMs: number,
+  noThink = true,
 ): Promise<string> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -89,14 +94,18 @@ export async function chatComplete(
     const res = await fetch(`${apiBase.replace(/\/+$/, "")}/chat/completions`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({ model, messages, max_tokens: 1024, temperature: 0.4 }),
+      body: JSON.stringify(
+        noThink
+          ? { model, messages, max_tokens: 1024, temperature: 0.4, chat_template_kwargs: { enable_thinking: false } }
+          : { model, messages, max_tokens: 1024, temperature: 0.4 },
+      ),
       signal: ctrl.signal,
     });
     if (!res.ok) {
       throw new Error(`LLM ${res.status}: ${(await res.text()).slice(0, 120)}`);
     }
     const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
-    const text = data.choices?.[0]?.message?.content?.trim();
+    const text = stripThink(data.choices?.[0]?.message?.content ?? "");
     if (!text) throw new Error("LLM returned empty content");
     return text;
   } finally {
