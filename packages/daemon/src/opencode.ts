@@ -787,6 +787,21 @@ export class Engine {
     const tracker = this.getTracker(ref.trackerType);
     const scopeKey = tracker.formatScopeKey(ref.scope);
 
+    // State bookkeeping that must survive every wake gate: `issue_closed` is
+    // never gated, so if a later `reopened` (mapped to issue_opened) is
+    // dropped by paused/halted/dispatch_off/wake gates, the row stays
+    // "closed" forever and swallows ALL future comments ("is closed in DB").
+    // Heal the stale state unconditionally; dispatch remains gated below.
+    if (event.type === "issue_opened") {
+      const existing = await this.store.findIssue(ref.trackerType, scopeKey, ref.issueId);
+      if (existing?.state === "closed") {
+        await this.store.updateIssueState(existing.id, "active");
+        log.info(
+          `engine: reopened — cleared stale closed state for ${ref.trackerType}:${scopeKey}#${ref.issueId} (bookkeeping only; dispatch still gated)`,
+        );
+      }
+    }
+
     if (this.paused && (event.type === "issue_opened" || event.type === "comment_created")) {
       log.info(`engine: paused — skipping ${event.type} for ${ref.trackerType}:${scopeKey}#${ref.issueId}`);
       return;
