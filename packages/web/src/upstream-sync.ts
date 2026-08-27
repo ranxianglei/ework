@@ -258,7 +258,10 @@ export class UpstreamSync {
         if (!local) continue;
         const gcAuthor = gc.user?.login ?? "upstream";
         await ensureUser(gcAuthor, fromGithubBot(gcAuthor) ? "bot" : "human");
-        const row = await postComment(local.id, gc.body ?? "", gcAuthor, {
+        // invisible provenance marker (same as importIssueComments): ework-mirror
+        // skips events carrying it, so synced-in comments never echo upstream
+        const body = (gc.body ?? "") + "\n\n<!-- upstream-sync -->";
+        const row = await postComment(local.id, body, gcAuthor, {
           createdAt: gc.created_at,
           updatedAt: gc.updated_at,
           upstreamCommentId: gc.id,
