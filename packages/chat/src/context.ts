@@ -1,8 +1,17 @@
-// Context management, ported from the battle-tested qq-bridge implementation.
-// Key invariant: the SEND window must never slide. A sliding window re-derives
-// "last N" every request, shifting the prompt prefix and missing the serving
-// engine's prefix cache. Eviction is therefore bulk + sticky: no-op under the
-// limits, one 30% cut on crossing, append-only between cuts.
+// Context management for the send window.
+//
+// Default topology is .../bili/<upstream> where bili transparently compresses,
+// keeping the UPSTREAM body bounded. bili works best with an append-only,
+// strictly growing client history: it incrementally compresses the new tail.
+// A client-side cut would shift the prefix and force bili to re-recognize
+// state — so with bili in the path the correct policy is: send everything,
+// never evict (caps disabled / 0).
+//
+// The caps still exist as an opt-in fuse for DIRECT upstream mode (no proxy
+// compressing for you). There the policy is bulk + sticky: no-op under the
+// limits, one 30% cut on crossing, append-only between cuts — never a sliding
+// window (which would re-derive "last N" every request, missing the serving
+// engine's prefix cache).
 // The DISK log keeps every turn forever (agent-style); eviction only moves the
 // send-window start offset (persisted in a sidecar meta file).
 
@@ -39,8 +48,11 @@ function reserveTokens(systemPrompt: string): number {
   return estimateTokens(systemPrompt) + estimateTokens("x".repeat(CHAT_MSG_CHAR_CAP));
 }
 
-// Returns the send-window start index for a full history: sticky under the
-// limits (returns prevFrom unchanged), bulk-cut on crossing either limit.
+// Returns the send-window start index for a full history. A limit of 0 (or
+// negative) disables that dimension; with both disabled (the bili topology)
+// the full history is always sent (append-only, bili compresses upstream).
+// With caps active: sticky under the limits (returns prevFrom unchanged),
+// bulk-cut on crossing either limit.
 export function windowFrom(
   history: ChatTurn[],
   prevFrom: number,
@@ -48,16 +60,18 @@ export function windowFrom(
   maxContextTokens: number,
   systemPrompt: string,
 ): number {
-  const countLimit = Math.max(2, maxHistory * 2);
-  const tokenLimit = Math.max(0, maxContextTokens - reserveTokens(systemPrompt));
+  const countLimit = maxHistory > 0 ? Math.max(2, maxHistory * 2) : 0;
+  const tokenLimit = maxContextTokens > 0
+    ? Math.max(0, maxContextTokens - reserveTokens(systemPrompt))
+    : 0;
   const from = Math.min(prevFrom, Math.max(0, history.length - 2));
   const visible = history.slice(from);
-  if (visible.length <= countLimit && historyTokens(visible) <= tokenLimit) return from;
-  const countFloor = Math.max(2, Math.floor(countLimit * TRIM_FLOOR_RATIO));
-  const tokenFloor = Math.floor(tokenLimit * TRIM_FLOOR_RATIO);
+  if ((countLimit === 0 || visible.length <= countLimit) && (tokenLimit === 0 || historyTokens(visible) <= tokenLimit)) return from;
+  const countFloor = countLimit > 0 ? Math.max(2, Math.floor(countLimit * TRIM_FLOOR_RATIO)) : 0;
+  const tokenFloor = tokenLimit > 0 ? Math.floor(tokenLimit * TRIM_FLOOR_RATIO) : 0;
   let start = from;
   let total = historyTokens(visible);
-  while (start < history.length && (history.length - start > countFloor || total > tokenFloor)) {
+  while (start < history.length && ((countFloor > 0 && history.length - start > countFloor) || (tokenFloor > 0 && total > tokenFloor))) {
     const turn = history[start];
     if (!turn) break;
     total -= estimateTokens(turn.content);

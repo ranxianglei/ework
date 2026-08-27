@@ -39,6 +39,20 @@ describe("context window", () => {
     expect(windowFrom(grown, cut, 2, 200000, sys)).toBe(cut);
   });
 
+  test("windowFrom with caps disabled (0) never evicts regardless of size", () => {
+    const sys = "sys";
+    const big = Array.from({ length: 5000 }, (_, i) => ({
+      role: "user" as const, name: `u${i}`, content: `msg-${i}-${"x".repeat(200)}`,
+    }));
+    expect(windowFrom(big, 0, 0, 0, sys)).toBe(0);
+    // single-dimension disable: only the active dimension can evict
+    const small = big.slice(0, 4);
+    expect(windowFrom(small, 0, 0, 200000, sys)).toBe(0);
+    expect(windowFrom(small, 0, 500, 0, sys)).toBe(0);
+    // a stale prevFrom from a capped era is clamped but not further advanced
+    expect(windowFrom(big, 4998, 0, 0, sys)).toBe(4998);
+  });
+
   test("built prompt prefix is byte-identical between evictions", () => {
     const sys = "sys";
     let history: { role: "user" | "assistant"; name: string; content: string }[] = [];

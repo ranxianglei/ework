@@ -35,8 +35,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     CHAT_API_KEY: z.string().default(""),
     CHAT_MODEL: z.string().default(""),
     CHAT_TIMEOUT_MS: z.coerce.number().int().min(1000).default(90000),
-    CHAT_MAX_HISTORY: z.coerce.number().int().min(1).default(500),
-    CHAT_MAX_CONTEXT_TOKENS: z.coerce.number().int().min(1000).default(200000),
+    CHAT_MAX_HISTORY: z.coerce.number().int().min(0).default(0),
+    CHAT_MAX_CONTEXT_TOKENS: z.coerce.number().int().min(0).default(0),
     CHAT_NO_THINK: z.preprocess((x) => x === undefined || x === "" || x === "1" || x === "true", z.boolean()).default(true),
     CHAT_TOKEN: z.string().default(""),
   });
