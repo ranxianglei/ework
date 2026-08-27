@@ -96,10 +96,21 @@ describe("conversation store", () => {
 
   test("sendFrom survives reload; clamped to valid range", () => {
     const s = new ConversationStore(join(dir, "b"));
-    for (let i = 0; i < 6; i++) s.append("g2", { role: "user", name: "u", content: `m${i}` });
+    for (let i = 0; i < 6; i++) s.append("g2", { role: i % 2 ? "assistant" : "user", name: "u", content: `m${i}` });
     s.setSendFrom("g2", 4);
     const s2 = new ConversationStore(join(dir, "b"));
     expect(s2.sendFrom("g2")).toBe(4);
+  });
+
+  test("trailing unanswered user turn is dropped on load (self-heal)", () => {
+    const d = join(dir, "b2");
+    const s = new ConversationStore(d);
+    s.append("g2h", { role: "user", name: "u", content: "q1" });
+    s.append("g2h", { role: "assistant", name: "", content: "a1" });
+    s.append("g2h", { role: "user", name: "u", content: "poison" });
+    const s2 = new ConversationStore(d);
+    expect(s2.history("g2h")).toHaveLength(2);
+    expect(s2.history("g2h")[1]?.content).toBe("a1");
   });
 
   test("torn tail line after crash is dropped, valid lines kept", () => {

@@ -45,6 +45,10 @@ export class ConversationStore {
         }
       }
       if (parsed.length > 0) this.turns.set(id, parsed);
+      // Trailing unanswered user turn = failed/502'd call; replaying it re-poisons bili's state
+      // with the same tool-bait input. Drop it — conversation heals on next success.
+      const last = parsed[parsed.length - 1];
+      if (last?.role === "user" && parsed.length > 1) parsed.splice(parsed.length - 1, 1);
       const metaFile = join(dir, f + ".meta");
       let sendFrom = 0;
       if (existsSync(metaFile)) {
