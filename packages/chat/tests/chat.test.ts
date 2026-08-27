@@ -172,6 +172,9 @@ describe("http service", () => {
       // the second request body must contain the first turn (memory across restart)
       expect(captured[1]).toContain("暗号是西瓜，记住了吗");
       expect(captured[1]).toContain("记住暗号西瓜");
+      // regression: tool_choice must never be sent — it passes through bili to the
+      // model and would suppress the proxy-side compression tool calls
+      for (const body of captured) expect(body).not.toContain("tool_choice");
     } finally {
       globalThis.fetch = realFetch;
     }

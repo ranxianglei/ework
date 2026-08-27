@@ -1,6 +1,6 @@
 {
   "name": "ework-chat",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Standalone chat component: chat-only LLM with transparent compression (bili) and per-turn disk persistence (agent-style JSONL sessions)",
   "type": "module",
   "main": "src/index.ts",

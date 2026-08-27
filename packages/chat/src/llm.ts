@@ -16,8 +16,8 @@ export async function chatComplete(
       headers: { "Content-Type": "application/json", ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}) },
       body: JSON.stringify(
         noThink
-          ? { model, messages, max_tokens: 1024, temperature: 0.4, chat_template_kwargs: { enable_thinking: false }, tool_choice: "none" }
-          : { model, messages, max_tokens: 1024, temperature: 0.4, tool_choice: "none" },
+          ? { model, messages, max_tokens: 1024, temperature: 0.4, chat_template_kwargs: { enable_thinking: false } }
+          : { model, messages, max_tokens: 1024, temperature: 0.4 },
       ),
       signal: ctrl.signal,
     });
@@ -25,8 +25,10 @@ export async function chatComplete(
       throw new Error(`LLM ${res.status}: ${(await res.text()).slice(0, 120)}`);
     }
     const data = (await res.json()) as { choices?: { message?: { content?: string; tool_calls?: unknown[] } }[] };
-    // Security: bili's injected tools sometimes elicit tool_calls here (content:"" → 502 loop).
-    // tool_choice:"none" blocks new ones; this fallback keeps residual ones conversational.
+    // Security: never send tool_choice:"none" — bili transparently injects+executes its
+    // compression tools proxy-side, and the field passes through to the model; suppressing
+    // it kills compression. Hallucinated tool_calls (bili only intercepts its own names)
+    // hit this fallback and stay conversational instead of erroring with empty content.
     if (data.choices?.[0]?.message?.tool_calls?.length) {
       return "（我刚才试图调用工具，但这里是纯聊天模式，已忽略。请换个问法，或换个话题。）";
     }
