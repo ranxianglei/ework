@@ -7,6 +7,18 @@ import { estimateTokens, capContent, windowFrom, buildChatMessages, CHAT_MSG_CHA
 
 let dir: string;
 
+const sse = (events: object[]) => {
+  const enc = new TextEncoder();
+  const stream = new ReadableStream({
+    start(c) {
+      for (const e of events) c.enqueue(enc.encode(`data: ${JSON.stringify(e)}\n\n`));
+      c.enqueue(enc.encode("data: [DONE]\n\n"));
+      c.close();
+    },
+  });
+  return new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } });
+};
+
 beforeAll(() => {
   dir = mkdtempSync(join(tmpdir(), "ework-chat-test-"));
 });
@@ -141,11 +153,12 @@ describe("conversation store", () => {
     globalThis.fetch = (async (_u: unknown, init?: { body?: string }) => {
       bodies.push(init?.body ?? "");
       call++;
-      const payload =
-        call === 1
-          ? { choices: [{ message: { content: "", tool_calls: [{ id: "call_9", function: { name: "acp_status", arguments: "{}" } }] } }] }
-          : { choices: [{ message: { content: "acp status 是查看 ACP 会话状态的命令，在纯聊天模式里我可以直接解释。" } }] };
-      return new Response(JSON.stringify(payload), { status: 200 });
+      return call === 1
+        ? sse([
+            { choices: [{ delta: { tool_calls: [{ index: 0, id: "call_9", function: { name: "acp_status", arguments: "" } }] } }] },
+            { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: "{}" } }] } }] },
+          ])
+        : sse([{ choices: [{ delta: { content: "acp status 是查看 ACP 会话状态的命令，我可以直接解释。" } }] }]);
     }) as typeof fetch;
     try {
       const out = await chatComplete("http://x/v1", "k", "m", [{ role: "user", name: "u", content: "acp status 是啥" }], 5000, true);
@@ -155,7 +168,10 @@ describe("conversation store", () => {
       expect(bodies[1]).toContain("acp status 是啥");
       expect(bodies[1]).toContain('"role":"tool"');
       expect(bodies[1]).toContain("call_9");
-      for (const b of bodies) expect(b).not.toContain("tool_choice");
+      for (const b of bodies) {
+        expect(b).toContain('"stream":true');
+        expect(b).not.toContain("tool_choice");
+      }
     } finally {
       globalThis.fetch = realFetch;
     }
@@ -167,15 +183,12 @@ describe("conversation store", () => {
     let call = 0;
     globalThis.fetch = (async () => {
       call++;
-      return new Response(
-        JSON.stringify({ choices: [{ message: { content: "", tool_calls: [{ id: `c${call}`, function: { name: "loop", arguments: "{}" } }] } }] }),
-        { status: 200 },
-      );
+      return sse([{ choices: [{ delta: { tool_calls: [{ index: 0, id: `c${call}`, function: { name: "loop", arguments: "{}" } }] } }] }]);
     }) as typeof fetch;
     try {
       const out = await chatComplete("http://x/v1", "k", "m", [{ role: "user", name: "u", content: "q" }], 5000, true);
       expect(call).toBe(3);
-      expect(out).toContain("纯聊天模式");
+      expect(out).toContain("文字");
     } finally {
       globalThis.fetch = realFetch;
     }
@@ -193,7 +206,11 @@ describe("http service", () => {
     const realFetch = globalThis.fetch;
     globalThis.fetch = (async (_url: unknown, init?: { body?: string }) => {
       captured.push(init?.body ?? "");
-      return new Response(JSON.stringify({ choices: [{ message: { content: replies[call++] ?? "?" } }] }), { status: 200 });
+      const text = replies[call++] ?? "?";
+      return sse([
+        { choices: [{ delta: { content: text.slice(0, 2) } }] },
+        { choices: [{ delta: { content: text.slice(2) } }] },
+      ]);
     }) as typeof fetch;
     try {
       const { loadConfig } = await import("../src/config");
