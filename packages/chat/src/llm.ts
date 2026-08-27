@@ -1,13 +1,21 @@
 import { stripThink, type WireMessage } from "./context";
 
-export async function chatComplete(
+type ToolCall = { id?: string; type?: string; function?: { name?: string; arguments?: string } };
+
+type WireTurn =
+  | ({ role: "system" | "user" | "assistant"; name?: string; content: string } & Record<string, unknown>)
+  | ({ role: "tool"; tool_call_id: string; content: string } & Record<string, unknown>);
+
+const TOOL_HINT = "（我多次尝试调用工具，但这里是纯聊天模式，已忽略。请直接用文字问我想了解的内容。）";
+
+async function oneHop(
   upstream: string,
   apiKey: string,
   model: string,
-  messages: WireMessage[],
+  messages: WireTurn[],
   timeoutMs: number,
   noThink: boolean,
-): Promise<string> {
+): Promise<{ content: string; toolCalls: ToolCall[] }> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
@@ -21,21 +29,43 @@ export async function chatComplete(
       ),
       signal: ctrl.signal,
     });
-    if (!res.ok) {
-      throw new Error(`LLM ${res.status}: ${(await res.text()).slice(0, 120)}`);
-    }
-    const data = (await res.json()) as { choices?: { message?: { content?: string; tool_calls?: unknown[] } }[] };
-    // Security: never send tool_choice:"none" — bili transparently injects+executes its
-    // compression tools proxy-side, and the field passes through to the model; suppressing
-    // it kills compression. Hallucinated tool_calls (bili only intercepts its own names)
-    // hit this fallback and stay conversational instead of erroring with empty content.
-    if (data.choices?.[0]?.message?.tool_calls?.length) {
-      return "（我刚才试图调用工具，但这里是纯聊天模式，已忽略。请换个问法，或换个话题。）";
-    }
-    const text = stripThink(data.choices?.[0]?.message?.content ?? "");
-    if (!text) throw new Error("LLM returned empty content");
-    return text;
+    if (!res.ok) throw new Error(`LLM ${res.status}: ${(await res.text()).slice(0, 120)}`);
+    const data = (await res.json()) as { choices?: { message?: { content?: string; tool_calls?: ToolCall[] } }[] };
+    const m = data.choices?.[0]?.message;
+    return { content: m?.content ?? "", toolCalls: m?.tool_calls?.length ? m.tool_calls : [] };
   } finally {
     clearTimeout(timer);
   }
+}
+
+export async function chatComplete(
+  upstream: string,
+  apiKey: string,
+  model: string,
+  messages: WireMessage[],
+  timeoutMs: number,
+  noThink: boolean,
+): Promise<string> {
+  // Security: never send tool_choice:"none" — bili transparently injects+executes its
+  // compression tools proxy-side, and the field passes through to the model; suppressing
+  // it kills compression. Hallucinated tool_calls (bili only intercepts its own names)
+  // are closed like an agent would: feed a tool error back so the model answers in text.
+  const convo: WireTurn[] = messages.map((m) => ({ ...m }) as WireTurn);
+  for (let hop = 0; hop < 3; hop++) {
+    const { content, toolCalls } = await oneHop(upstream, apiKey, model, convo, timeoutMs, noThink);
+    if (!toolCalls.length) {
+      const text = stripThink(content);
+      if (!text) throw new Error("LLM returned empty content");
+      return text;
+    }
+    convo.push({ role: "assistant", content, tool_calls: toolCalls });
+    for (const tc of toolCalls) {
+      convo.push({
+        role: "tool",
+        tool_call_id: tc.id ?? "call_0",
+        content: `工具 '${tc.function?.name ?? "unknown"}' 在纯聊天模式不可用。请直接用文字回答用户的问题。`,
+      });
+    }
+  }
+  return TOOL_HINT;
 }
