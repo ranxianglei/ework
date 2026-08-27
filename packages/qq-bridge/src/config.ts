@@ -40,6 +40,10 @@ const Schema = z.object({
   // are untouched — they use their own runtime.
   WORK_CHAT_NO_THINK: z.preprocess((v) => (v === undefined || v === "" ? "1" : v), z.string()).transform((v) => v !== "0"),
 
+  // Where @bot chat history is persisted (JSON, group -> turns). Restarting
+  // the bridge no longer clears conversations.
+  WORK_CHAT_HISTORY_FILE: z.string().default(""),
+
   // QQ user_ids allowed to dispatch AI work (comma-separated). Messages from
   // other members are logged and ignored — same trust model as the GitHub
   // side (WORK_WAKE_LOGINS): strangers never wake the AI.
@@ -107,6 +111,9 @@ export function loadConfig(): Config {
   }
   if (!cfg.WORK_BINDINGS_FILE) {
     cfg.WORK_BINDINGS_FILE = `${process.env.HOME ?? "/tmp"}/.ework-qq-bridge/bindings.json`;
+  }
+  if (!cfg.WORK_CHAT_HISTORY_FILE) {
+    cfg.WORK_CHAT_HISTORY_FILE = `${process.env.HOME ?? "/tmp"}/.ework-qq-bridge/chat-history.json`;
   }
   return cfg;
 }

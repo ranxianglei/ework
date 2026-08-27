@@ -3,6 +3,7 @@ import type { EworkClient } from "./ework";
 import type { GroupMessageEvent } from "./onebot";
 import type { BridgeStore } from "./db";
 import type { BindingStore } from "./bindings";
+import type { ChatHistoryStore } from "./chat-store";
 import { buildChatMessages, capContent, chatComplete, splitForQQ, trimStored, type ChatTurn } from "./chat";
 
 const HELP_TEXT = [
@@ -12,13 +13,14 @@ const HELP_TEXT = [
   "  绑定 #<编号> —— 把本群绑定到该 issue（长记忆模式：此后发言都进这个 issue）",
   "  解绑 —— 恢复为项目模式（接收整个项目的回复）",
   "  查询 —— 列出最近 issue",
-  "  @我 <问题> —— 即时问答（纯 API，不留 issue，上下文满自动清理）",
+  "  @我 <问题> —— 即时问答（纯 API 直连 bili 压缩，历史落盘，重启不清）",
   "  （绑定后：普通发言进绑定的 issue，AI 回复自动回群）",
 ].join("\n");
 
 export interface RouterDeps {
   cfg: Config;
   bindings: BindingStore;
+  chatHistory: ChatHistoryStore;
   wakeList: Set<string>;
   ework: EworkClient;
   store: BridgeStore;
@@ -47,14 +49,12 @@ export function parseCommand(raw: string): ParsedCommand | null {
 }
 
 export function createRouter(deps: RouterDeps) {
-  const { cfg, bindings, wakeList, ework, store } = deps;
-  const chatHistory = new Map<number, ChatTurn[]>();
+  const { cfg, bindings, chatHistory, wakeList, ework, store } = deps;
 
   async function answerChat(ev: GroupMessageEvent, question: string): Promise<void> {
     try {
       const turn: ChatTurn = { role: "user", name: ev.nickname, content: capContent(question) };
-      const stored = trimStored(chatHistory.get(ev.groupId) ?? [], cfg.WORK_CHAT_MAX_HISTORY, cfg.WORK_CHAT_MAX_CONTEXT);
-      chatHistory.set(ev.groupId, stored);
+      const stored = trimStored(chatHistory.get(ev.groupId), cfg.WORK_CHAT_MAX_HISTORY, cfg.WORK_CHAT_MAX_CONTEXT);
       const messages = buildChatMessages(stored, turn);
       const answer = await chatComplete(cfg.WORK_CHAT_API, cfg.WORK_CHAT_API_KEY, cfg.WORK_CHAT_MODEL, messages, cfg.WORK_CHAT_TIMEOUT_MS, cfg.WORK_CHAT_NO_THINK);
       chatHistory.set(ev.groupId, [...stored, turn, { role: "assistant", name: "bot", content: capContent(answer) }]);

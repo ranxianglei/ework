@@ -1,9 +1,11 @@
 import { describe, test, expect } from "bun:test";
 import { parseCommand } from "../src/router";
 import { BindingStore } from "../src/bindings";
+import { ChatHistoryStore } from "../src/chat-store";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 const pinFile = () => `${tmpdir()}/qqb-test-${randomUUID()}.json`;
+const histFile = () => `${tmpdir()}/qqb-hist-${randomUUID()}.json`;
 import { parseGroupMap, parseList } from "../src/config";
 import { buildScrubber } from "../src/scrub";
 import { verifySignature } from "../src/ingest";
@@ -88,6 +90,7 @@ describe("@bot unified routing", () => {
     const router = createRouter({
       cfg: { VERBOSE: false },
       bindings: bs,
+      chatHistory: new ChatHistoryStore(histFile()),
       wakeList: new Set(["1"]),
       ework: { createIssue: async () => 9, addComment: async (o: string, r: string, n: number, b: string) => { comments.push([o, r, n, b]); } },
       store: { seenPost: () => false },
@@ -180,6 +183,7 @@ describe("issue pinning", () => {
     const router = createRouter({
       cfg: { VERBOSE: false },
       bindings: new BindingStore([{ groupId: 1, owner: "o", repo: "r", issue: 7 }], pinFile()),
+      chatHistory: new ChatHistoryStore(histFile()),
       wakeList: new Set(["1"]),
       ework: { createIssue: async () => 9, addComment: async (o: string, r: string, n: number, b: string) => { comments.push([o, r, n, b]); } },
       store: { seenPost: () => false },
@@ -324,6 +328,7 @@ describe("pure-API chat", () => {
       const router = createRouter({
         cfg: { VERBOSE: false, WORK_CHAT_API: "http://x/v1", WORK_CHAT_API_KEY: "k", WORK_CHAT_MODEL: "m", WORK_CHAT_TIMEOUT_MS: 1000, WORK_CHAT_MAX_HISTORY: 20, WORK_CHAT_MAX_CONTEXT: 50000 },
         bindings: new BindingStore([{ groupId: 1, owner: "o", repo: "r", issue: 7 }], pinFile()),
+        chatHistory: new ChatHistoryStore(histFile()),
         wakeList: new Set(["1"]),
         ework: { createIssue: async () => 9, addComment: async (...a: unknown[]) => { comments.push(a); } },
         store: { seenPost: () => false },
@@ -349,6 +354,7 @@ describe("pure-API chat", () => {
       const router = createRouter({
         cfg: { VERBOSE: false, WORK_CHAT_API: "http://x/v1", WORK_CHAT_API_KEY: "k", WORK_CHAT_MODEL: "m", WORK_CHAT_TIMEOUT_MS: 1000, WORK_CHAT_MAX_HISTORY: 20, WORK_CHAT_MAX_CONTEXT: 50000 },
         bindings: new BindingStore([{ groupId: 1, owner: "o", repo: "r" }], pinFile()),
+        chatHistory: new ChatHistoryStore(histFile()),
         wakeList: new Set(["1"]),
         ework: { createIssue: async () => 9, addComment: async () => {} },
         store: { seenPost: () => false },
@@ -399,6 +405,7 @@ describe("no-think", () => {
       const router = createRouter({
         cfg: { VERBOSE: false, WORK_CHAT_API: "http://x/v1", WORK_CHAT_API_KEY: "k", WORK_CHAT_MODEL: "m", WORK_CHAT_TIMEOUT_MS: 1000, WORK_CHAT_MAX_HISTORY: 20, WORK_CHAT_MAX_CONTEXT: 50000, WORK_CHAT_NO_THINK: true },
         bindings: new BindingStore([{ groupId: 1, owner: "o", repo: "r" }], pinFile()),
+        chatHistory: new ChatHistoryStore(histFile()),
         wakeList: new Set(["1"]),
         ework: { createIssue: async () => 9, addComment: async () => {} },
         store: { seenPost: () => false },
@@ -406,6 +413,81 @@ describe("no-think", () => {
       });
       await router.handleGroupMessage({ groupId: 1, userId: 1, nickname: "u", postId: "nt1", rawMessage: "[CQ:at,qq=2661222094] 问" });
       expect(replies).toEqual(["可见答案"]);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+});
+
+describe("chat history persistence", () => {
+  const { ChatHistoryStore } = require("../src/chat-store");
+  const { trimStored } = require("../src/chat");
+  const { writeFileSync } = require("node:fs");
+
+  test("set then reload returns same turns", () => {
+    const f = histFile();
+    const a = new ChatHistoryStore(f);
+    a.set(1, [{ role: "user", content: "早" }, { role: "assistant", content: "早呀" }]);
+    a.set(2, [{ role: "user", content: "群二的问题" }]);
+    const b = new ChatHistoryStore(f);
+    expect(b.get(1)).toEqual([{ role: "user", content: "早" }, { role: "assistant", content: "早呀" }]);
+    expect(b.get(2)).toEqual([{ role: "user", content: "群二的问题" }]);
+    expect(b.get(3)).toEqual([]);
+  });
+
+  test("invalid file starts clean", () => {
+    const f = histFile();
+    writeFileSync(f, "{not json");
+    const s = new ChatHistoryStore(f);
+    expect(s.get(1)).toEqual([]);
+    s.set(1, [{ role: "user", content: "x" }]);
+    expect(new ChatHistoryStore(f).get(1)).toEqual([{ role: "user", content: "x" }]);
+  });
+
+  test("invalid turns filtered on load, groups isolated", () => {
+    const f = histFile();
+    writeFileSync(f, JSON.stringify({ "1": [{ role: "system", content: "bad" }, { role: "user", content: "ok" }], "2": "nope" }));
+    const s = new ChatHistoryStore(f);
+    expect(s.get(1)).toEqual([{ role: "user", content: "ok" }]);
+    expect(s.get(2)).toEqual([]);
+  });
+
+  test("evicted turns stay evicted across reload", () => {
+    const f = histFile();
+    const turns = Array.from({ length: 50 }, (_, i) => ({ role: "user" as const, content: `msg${i}` }));
+    const trimmed = trimStored(turns, 10, 500000);
+    expect(trimmed.length).toBeLessThan(50);
+    new ChatHistoryStore(f).set(7, trimmed);
+    const re = new ChatHistoryStore(f);
+    expect(re.get(7)).toEqual(trimmed);
+    const again = trimStored(re.get(7), 10, 500000);
+    expect(again.length).toBe(trimmed.length);
+  });
+
+  test("router chat survives simulated restart", async () => {
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(JSON.stringify({ choices: [{ message: { content: "第一答" } }] }), { status: 200 })) as typeof fetch;
+    try {
+      const { createRouter } = require("../src/router");
+      const f = histFile();
+      const mk2 = () => {
+        const replies: string[] = [];
+        const router = createRouter({
+          cfg: { VERBOSE: false, WORK_CHAT_API: "http://x/v1", WORK_CHAT_API_KEY: "k", WORK_CHAT_MODEL: "m", WORK_CHAT_TIMEOUT_MS: 1000, WORK_CHAT_MAX_HISTORY: 20, WORK_CHAT_MAX_CONTEXT: 50000 },
+          bindings: new BindingStore([{ groupId: 1, owner: "o", repo: "r", issue: 7 }], pinFile()),
+          chatHistory: new ChatHistoryStore(f),
+          wakeList: new Set(["1"]),
+          ework: { createIssue: async () => 9, addComment: async () => {} },
+          store: { seenPost: () => false },
+          reply: async (_g: number, x: string) => { replies.push(x); },
+        });
+        return { router, replies };
+      };
+      const first = mk2();
+      await first.router.handleGroupMessage({ groupId: 1, userId: 1, nickname: "u", postId: "r1", rawMessage: "[CQ:at,qq=2661222094] 记住暗号是西瓜" });
+      const second = mk2();
+      await second.router.handleGroupMessage({ groupId: 1, userId: 1, nickname: "u", postId: "r2", rawMessage: "[CQ:at,qq=2661222094] 我刚才说了什么" });
+      expect(new ChatHistoryStore(f).get(1).map((t: { content: string }) => t.content)).toContain("记住暗号是西瓜");
     } finally {
       globalThis.fetch = origFetch;
     }

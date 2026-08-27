@@ -1,6 +1,6 @@
 {
   "name": "ework-qq-bridge",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "description": "QQ group <-> ework issue bridge (OneBot 11 reverse WebSocket)",
   "type": "module",
   "main": "src/index.ts",
