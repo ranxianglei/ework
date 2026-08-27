@@ -391,6 +391,8 @@ const REPO_MEMBER_ACTION_RE = /^\/([^/]+)\/([^/]+)\/settings\/members\/([^/]+)\/
 const REPO_MEMBER_ADD_RE = /^\/([^/]+)\/([^/]+)\/settings\/members\/add$/;
 const REPO_VISIBILITY_RE = /^\/([^/]+)\/([^/]+)\/settings\/visibility$/;
 const REPO_DISPATCH_RE = /^\/([^/]+)\/([^/]+)\/settings\/dispatch$/;
+
+const REPO_WAKE_LOGINS_RE = /^\/([^/]+)\/([^/]+)\/settings\/ai\/wake-logins$/;
 const REPO_HALT_ALL_RE = /^\/([^/]+)\/([^/]+)\/settings\/ai\/halt-all$/;
 const SETTINGS_DISPATCH_RE = /^\/settings\/dispatch$/;
 const REPO_UPSTREAMS_RE = /^\/([^/]+)\/([^/]+)\/settings\/upstreams$/;
@@ -610,6 +612,15 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
       const aiStatus = issue?.ai_status ?? "";
       const issueOff = aiStatus === "dispatch_off" || aiStatus === "halted";
       return json({ dispatchOff: globalOff || projectOff || issueOff, aiStatus });
+    }
+    if (url.pathname === "/api/v1/wake-logins" && req.method === "GET") {
+      const owner = url.searchParams.get("owner") ?? "";
+      const repo = url.searchParams.get("repo") ?? "";
+      if (!owner || !repo) return json({ error: "owner, repo required" }, 400);
+      const cfgKv = await getConfigAll();
+      const logins = (cfgKv[`wakeLogins:${owner}/${repo}`] ?? "")
+        .split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
+      return json({ logins });
     }
     const evStatus = url.pathname.match(/^\/api\/v1\/repos\/([^/]+)\/([^/]+)\/issues\/(\d+)\/status$/);
     if (evStatus && req.method === "POST") {
@@ -2128,6 +2139,57 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
       return Response.redirect(`${back}?ok=1&ok_msg=${encodeURIComponent(isOff ? "已开启自动接单" : "已关闭自动接单")}`, 303);
     }
 
+    const repoWakeLoginsMatch = url.pathname.match(REPO_WAKE_LOGINS_RE);
+    if (repoWakeLoginsMatch) {
+      const [, owner, repo] = repoWakeLoginsMatch;
+      if (!(owner && repo)) return html(errorPage("bad path", ""), 400);
+      const project = await getProject(owner, repo);
+      if (!project) return html(errorPage("项目不存在", ""), 404);
+      const aiBack = `${url.origin}/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/settings/ai`;
+      const wantsJson = url.searchParams.get("json") === "1";
+      if (!(await canAdminProject(project.id, ctx.user))) {
+        if (wantsJson) return json({ error: "需要该项目 admin 角色" }, 403);
+        return Response.redirect(`${aiBack}?err=${encodeURIComponent("无权限")}`, 303);
+      }
+      const fd = await req.formData();
+      const key = `wakeLogins:${owner}/${repo}`;
+      const current = ((await getConfigAll())[key] ?? "")
+        .split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
+      const validLogin = (l: string) => /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38}[A-Za-z0-9])?$/.test(l);
+      let next: string[];
+      const add = String(fd.get("add") ?? "").trim();
+      if (add) {
+        if (!validLogin(add)) {
+          if (wantsJson) return json({ error: "无效的用户名" }, 400);
+          return Response.redirect(`${aiBack}?err=${encodeURIComponent(`无效的用户名：${add}`)}`, 303);
+        }
+        next = current.some((l) => l.toLowerCase() === add.toLowerCase())
+          ? current
+          : [...current, add];
+      } else {
+        const seen = new Set<string>();
+        next = String(fd.get("logins") ?? "")
+          .split(/[\s,]+/).map((s) => s.trim()).filter(Boolean)
+          .filter((l) => {
+            if (!validLogin(l)) return false;
+            const lower = l.toLowerCase();
+            if (seen.has(lower)) return false;
+            seen.add(lower);
+            return true;
+          });
+      }
+      if (next.length === 0) await deleteConfig(key);
+      else await setConfig(key, next.join(","));
+      if (wantsJson) return json({ ok: true, logins: next });
+      const backRaw = String(fd.get("back") ?? "").trim();
+      const back = backRaw && backRaw.startsWith("/") ? backRaw : aiBack;
+      const sep = back.includes("?") ? "&" : "?";
+      return Response.redirect(
+        `${back}${sep}ok=1&ok_msg=${encodeURIComponent(add ? `已把 ${add} 加入唤醒白名单` : "唤醒白名单已保存")}`,
+        303,
+      );
+    }
+
     const repoHaltAllMatch = url.pathname.match(REPO_HALT_ALL_RE);
     if (repoHaltAllMatch) {
       const [, owner, repo] = repoHaltAllMatch;
@@ -2431,7 +2493,8 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     const globalDispatchOff = dispatchCfg["dispatchEnabled"] === "false";
     const running = await getRunningSessionsForProject(`${owner}/${repo}`);
     const processingCount = new Set(running.map((r) => r.issueNumber)).size;
-    return html(buildProjectAiPage(project, dispatchOff, globalDispatchOff, processingCount).html);
+    const wakeLoginsRaw = dispatchCfg[`wakeLogins:${owner}/${repo}`] ?? "";
+    return html(buildProjectAiPage(project, dispatchOff, globalDispatchOff, processingCount, wakeLoginsRaw).html);
   }
 
   const upstreamsPage = url.pathname.match(REPO_UPSTREAMS_RE);

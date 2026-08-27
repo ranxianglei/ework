@@ -83,6 +83,8 @@ header.topbar .num{opacity:.7}
 .ttsstop:hover{color:var(--accent)}
 .cbtn,.tbtn{background:none;border:none;cursor:pointer;font-size:13px;color:var(--text-muted);padding:0 .2rem;opacity:.6;line-height:1.5}
 .cbtn:hover,.tbtn:hover{opacity:1;color:var(--accent)}
+.wlbtn{background:none;border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:11px;color:var(--text-muted);padding:.05rem .35rem;margin-right:.3rem;line-height:1.5}
+.wlbtn:hover{color:var(--accent);border-color:var(--accent)}
 .clink:hover{opacity:1;color:var(--accent)}
 .clink.done{color:var(--green);opacity:1}
 .rx{display:inline-flex;gap:.3rem;align-items:center;margin-left:.2rem;flex-wrap:wrap}

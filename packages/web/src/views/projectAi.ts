@@ -7,6 +7,7 @@ export function buildProjectAiPage(
   dispatchOff: boolean,
   globalDispatchOff: boolean,
   processingCount: number,
+  wakeLoginsRaw = "",
 ): { html: string } {
   const aiBase = `/${encodeURIComponent(project.owner)}/${encodeURIComponent(project.name)}/settings/ai`;
   const dispatchAction = `/${encodeURIComponent(project.owner)}/${encodeURIComponent(project.name)}/settings/dispatch`;
@@ -27,6 +28,14 @@ ${hint}
 <button type="submit" class="${dispatchOff ? "primary" : "secondary"}" ${disabled ? "disabled" : ""}>${dispatchOff ? "🔔 开启自动接单" : "🔕 关闭自动接单"}</button>
 </form>`;
   })();
+
+  const wakeList = wakeLoginsRaw.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
+  const wakeCard = `<form class="card" method="POST" action="${escapeAttr(`${aiBase}/wake-logins`)}">
+<h2>👥 唤醒白名单</h2>
+<div class="hint">默认只有平台成员能唤醒 AI。把外部 GitHub 用户加进来（逗号或换行分隔），他们在<b>本项目</b>的新 issue / 评论就会自动触发 AI 处理。bot 账号（如 github-actions[bot]）永远无效；全局与项目接单开关仍是总闸。issue 评论区对外部用户也有「＋白名单」一键按钮。清空内容保存即删除白名单。</div>
+<textarea name="logins" rows="4" style="width:100%;box-sizing:border-box;background:var(--bg-muted);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:.5rem;font-family:inherit;font-size:13px" placeholder="stirp&#10;Rika-xie">${escapeHtml(wakeList.join("\n"))}</textarea>
+<button type="submit" class="primary" style="margin-top:.5rem">保存白名单${wakeList.length > 0 ? `（当前 ${wakeList.length} 人）` : ""}</button>
+</form>`;
 
   const haltCard = (() => {
     const hint = processingCount > 0
@@ -77,11 +86,12 @@ ${projectSettingsTabsHTML(project.owner, project.name, "ai")}
 <h1>🤖 AI 设置</h1>
 <p class="hint">两个独立控制：<b>🔔 自动接单</b>控制是否自动派新单（不影响运行中）；<b>⏹️ 停止</b>杀死当前所有运行中AI会话（不影响接单状态）。模型选择请去 <a href="${escapeAttr(`/${encodeURIComponent(project.owner)}/${encodeURIComponent(project.name)}/settings/model`)}">⚙️ 模型</a> 标签页。</p>
 ${dispatchCard}
+${wakeCard}
 ${haltCard}
 
 <div class="card future">
 <h2>更多配置（规划中）</h2>
-<div class="hint">后续版本将在此标签页增加：项目级唤醒策略、Nudge 间隔、Observer 开关等。</div>
+<div class="hint">后续版本将在此标签页增加：Nudge 间隔、Observer 开关等。</div>
 </div>
 </main></body></html>`;
   return { html };

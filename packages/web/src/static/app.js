@@ -36,7 +36,16 @@
     seenIds: new Set(P.comments.map((c) => c.id)),
     newIds: new Set(),
     booted: false,
+    canWhitelist: P.canWhitelist === true,
+    wakeSet: toSet(P.wakeLogins),
+    trustedSet: toSet(P.trustedLogins),
   };
+
+  function toSet(list) {
+    const s = {};
+    (list || []).forEach(function (l) { s[String(l).toLowerCase()] = 1; });
+    return s;
+  }
 
   const $ = (id) => document.getElementById(id);
   const itemsEl = $("items");
@@ -131,6 +140,9 @@
       `<span class="when" data-ts="${esc(c.created_at)}" title="${esc(c.created_at)}">${relTime(c.created_at)}</span>` +
       rx +
       `<span class="card-actions">` +
+      (state.canWhitelist && tag === "human" && c.login && !state.trustedSet[c.login.toLowerCase()] && !state.wakeSet[c.login.toLowerCase()]
+        ? `<button type="button" class="wlbtn" data-login="${esc(c.login)}" title="把 ${esc(c.login)} 加入本项目唤醒白名单">＋白名单</button>`
+        : "") +
       `<button type="button" class="cbtn" data-cid="${c.id}" title="复制">📋</button>` +
       `<button type="button" class="clink" data-cid="${c.id}" title="复制楼层链接">🔗</button>` +
       `<button type="button" class="tbtn" data-cid="${c.id}" title="翻译">翻译</button>` +
@@ -359,6 +371,22 @@
     }
     if (e.target.closest(".cbtn")) { doCopy(e.target.closest(".cbtn")); return; }
     if (e.target.closest(".tbtn")) { doTranslate(e.target.closest(".tbtn")); return; }
+    const wl = e.target.closest(".wlbtn");
+    if (wl) {
+      const login = wl.getAttribute("data-login") || "";
+      if (!login || wl.disabled) return;
+      wl.disabled = true;
+      wl.textContent = "…";
+      fetch(`/${encodeURIComponent(state.owner)}/${encodeURIComponent(state.repo)}/settings/ai/wake-logins?json=1`, {
+        method: "POST",
+        body: new URLSearchParams({ add: login }),
+      }).then((r) => r.json().then((d) => ({ ok: r.ok, d }))).then(({ ok, d }) => {
+        if (!ok) { wl.disabled = false; wl.textContent = "＋白名单"; alert((d && d.error) || "加白失败"); return; }
+        state.wakeSet[login.toLowerCase()] = 1;
+        render();
+      }).catch(() => { wl.disabled = false; wl.textContent = "＋白名单"; alert("网络错误，加白失败"); });
+      return;
+    }
   });
 
   itemsEl.addEventListener("click", (e) => {

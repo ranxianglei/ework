@@ -15,10 +15,12 @@ import {
   listLabelsForIssue,
   getUserByLogin,
   listCachedModels,
+  listProjectMembersWithUsers,
   type CommentRow,
   type IssueWithMeta,
   type ProjectRow,
 } from "../store";
+import { getConfigAll } from "../db";
 import { webUrlFromClone } from "./projectUpstreams";
 
 export const PAGE_SIZE = 30;
@@ -36,6 +38,9 @@ export interface IssueThreadPayload {
   sinceISO: string;
   commentSort: "desc" | "asc";
   comments: CommentView[];
+  canWhitelist?: boolean;
+  wakeLogins?: string[];
+  trustedLogins?: string[];
 }
 
 // Issues in a project cloned from an upstream are that upstream's issues:
@@ -127,7 +132,6 @@ export async function buildIssueThread(
   const hasOlder = currentPage > 1;
   const displayViews = orderForDisplay(views, cfg.commentSort);
   const payload = payloadFromComments(issue, displayViews, currentPage, hasOlder, cfg.commentSort);
-
   const descriptionHtml = renderMarkdown(issue.body, "", issuePath);
   const descriptionCollapsed = issue.body.length > 1200;
   const upstreamWebUrl = (() => {
@@ -138,6 +142,13 @@ export async function buildIssueThread(
   const labels = await listLabelsForIssue(issue.id);
   const viewerUser = viewerLogin ? await getUserByLogin(viewerLogin) : null;
   const viewerIsAdmin = !!viewerUser?.is_admin;
+
+  // Consumed by app.js to render ＋白名单 buttons on external authors' comments.
+  const cfgKv = await getConfigAll();
+  payload.canWhitelist = viewerIsAdmin;
+  payload.wakeLogins = (cfgKv[`wakeLogins:${owner}/${repo}`] ?? "")
+    .split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
+  payload.trustedLogins = (await listProjectMembersWithUsers(project.id)).map((m) => m.user_login);
 
   let customActions: IssueAction[] = [];
   let extraStatusBadges: Record<string, { cls: string; label: string }> | undefined;
