@@ -938,7 +938,7 @@ export class Engine {
     // (or hit the 10-min cap), and the user must see pickup feedback immediately.
     // The session link is a placeholder until the backend reports its session id;
     // the onSessionId callback rewrites this comment with the real reference.
-    await tracker.createComment(ref, `[system] 🔄 **${session.name}** picked up this issue — preparing workspace…`).then(
+    await tracker.createComment(ref, `[system] 🏷 ${this.sessionRef(session)} 🔄 **${session.name}** picked up this issue — preparing workspace…`).then(
       (c) => this.pickupCommentId.set(k, c.id),
       () => {},
     );
@@ -1029,7 +1029,7 @@ export class Engine {
 
         // Immediate ack
         {
-          const c = await tracker.createComment(ref, `[system] ✓ Message forwarded to **${session.name}**${this.running.has(this.sessionKey(session, issue)) ? " (running)" : ""}.\n> session: ${this.sessionRef(session)} | workdir: ${this.workdirLink(workdir)}`);
+          const c = await tracker.createComment(ref, `[system] 🏷 ${this.sessionRef(session)} ✓ Message forwarded to **${session.name}**${this.running.has(this.sessionKey(session, issue)) ? " (running)" : ""}.\n> workdir: ${this.workdirLink(workdir)}`);
           if (!session.opencodeSessionId) this.forwardCommentId.set(this.sessionKey(session, issue), c.id);
         }
 
@@ -1043,7 +1043,7 @@ export class Engine {
         }
         const workdir = await this.resolveWorkdir(session, issue);
 
-        await tracker.createComment(ref, `[system] 🔄 **${session.name}** joined the conversation.`);
+        await tracker.createComment(ref, `[system] 🏷 ${this.sessionRef(session)} 🔄 **${session.name}** joined the conversation.`);
 
         const instructions = tracker.getTrackerInstructions(ref);
         const payloadClone = this.cloneUrls.get(`${ref.trackerType}:${scopeKey}#${ref.issueId}`);
@@ -1080,7 +1080,7 @@ export class Engine {
         session.name, this.handleLargeContent(workdir, comment.body, `comment-${comment.id}.txt`),
         comment.author, comment.authorKind, issueData.title, workdir, instructions
       );
-      await tracker.createComment(ref, `[system] ✓ Message forwarded to **${session.name}**${this.running.has(this.sessionKey(session, issue)) ? " (running)" : ""}.\n> session: ${this.sessionRef(session)} | workdir: ${this.workdirLink(workdir)}`);
+      await tracker.createComment(ref, `[system] 🏷 ${this.sessionRef(session)} ✓ Message forwarded to **${session.name}**${this.running.has(this.sessionKey(session, issue)) ? " (running)" : ""}.\n> workdir: ${this.workdirLink(workdir)}`);
       await this.enqueueOrRun(session, issue, prompt, comment.id, model);
     }
     } finally {
@@ -1392,13 +1392,13 @@ export class Engine {
                 this.pickupCommentId.delete(k);
     this.forwardCommentId.delete(k);
                 await tracker
-                  .editComment(ref, pickupId, `[system] 🔄 **${session.name}** picked up this issue.\n> session: ${this.sessionRef(session)} | workdir: ${this.workdirLink(workdir)}`)
+                  .editComment(ref, pickupId, `[system] 🏷 ${this.sessionRef(session)} 🔄 **${session.name}** picked up this issue.\n> workdir: ${this.workdirLink(workdir)}`)
                   .catch((err) => log.error(`engine: failed to rewrite pickup comment for ${k}:`, (err as Error).message));
               }
               const forwardId = this.forwardCommentId.get(k);
               if (forwardId) {
                 this.forwardCommentId.delete(k);
-                const body = `[system] ✓ Message forwarded to **${session.name}**${this.running.has(k) ? " (running)" : ""}.\n> session: ${this.sessionRef(session)} | workdir: ${this.workdirLink(workdir)}`;
+                const body = `[system] 🏷 ${this.sessionRef(session)} ✓ Message forwarded to **${session.name}**${this.running.has(k) ? " (running)" : ""}.\n> workdir: ${this.workdirLink(workdir)}`;
                 await tracker.editComment(ref, forwardId, body).catch(() => { /* cosmetic rewrite */ });
               }
             }
@@ -1563,7 +1563,7 @@ export class Engine {
         log.error(`engine: empty model response for ${k} after ${emptyRound} retries, reporting error`);
         this.emptyResponseRounds.delete(k);
         this.nudgeRounds.delete(k);
-        await tracker.createComment(ref, `[system] ❌ **${session.name}** 模型返回空响应（0 token），已重试 ${emptyRound} 次。请检查模型配置或稍后重试。`).catch(() => {});
+        await tracker.createComment(ref, `[system] 🏷 ${this.sessionRef(session)} ❌ **${session.name}** 模型返回空响应（0 token），已重试 ${emptyRound} 次。请检查模型配置或稍后重试。`).catch(() => {});
         void tracker.updateStatus(ref, "failed", "empty model response");
       } else {
         const nudgeRound = this.nudgeRounds.get(k) ?? 0;
@@ -1582,7 +1582,7 @@ export class Engine {
         log.info(`engine: no [bot] reply for ${k} (promptTime=${started ?? "unknown"}), marking done (nudge exhausted or process failed)`);
         this.nudgeRounds.delete(k);
         const detail = exitCode === 0 ? "ran but did not post a reply" : `crashed (exit ${exitCode})`;
-        await tracker.createComment(ref, `[system] ❌ **${session.name}** ${detail}. Try posting again or @${session.name} to retry.`).catch(() => {});
+        await tracker.createComment(ref, `[system] 🏷 ${this.sessionRef(session)} ❌ **${session.name}** ${detail}. Try posting again or @${session.name} to retry.`).catch(() => {});
         void tracker.updateStatus(ref, "failed", detail);
       }
     }
@@ -1975,7 +1975,7 @@ export class Engine {
 
       const ref = this.sessionToRef(session, issue);
       const duration = this.formatDuration(now - started);
-      const body = `[system] ⏳ **${session.name}** processing, running for ${duration}...`;
+      const body = `[system] 🏷 ${this.sessionRef(session)} ⏳ **${session.name}** processing, running for ${duration}...`;
 
       const existingId = this.progressCommentId.get(k);
       try {
