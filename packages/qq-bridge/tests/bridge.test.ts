@@ -1,7 +1,6 @@
 import { describe, test, expect } from "bun:test";
 import { parseCommand } from "../src/router";
 import { BindingStore } from "../src/bindings";
-import { ChatHistoryStore } from "../src/chat-store";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 const pinFile = () => `${tmpdir()}/qqb-test-${randomUUID()}.json`;
@@ -90,7 +89,6 @@ describe("@bot unified routing", () => {
     const router = createRouter({
       cfg: { VERBOSE: false },
       bindings: bs,
-      chatHistory: new ChatHistoryStore(histFile()),
       wakeList: new Set(["1"]),
       ework: { createIssue: async () => 9, addComment: async (o: string, r: string, n: number, b: string) => { comments.push([o, r, n, b]); } },
       store: { seenPost: () => false },
@@ -183,7 +181,6 @@ describe("issue pinning", () => {
     const router = createRouter({
       cfg: { VERBOSE: false },
       bindings: new BindingStore([{ groupId: 1, owner: "o", repo: "r", issue: 7 }], pinFile()),
-      chatHistory: new ChatHistoryStore(histFile()),
       wakeList: new Set(["1"]),
       ework: { createIssue: async () => 9, addComment: async (o: string, r: string, n: number, b: string) => { comments.push([o, r, n, b]); } },
       store: { seenPost: () => false },
@@ -234,112 +231,37 @@ describe("issue pinning", () => {
   });
 });
 
-describe("pure-API chat", () => {
-  const { estimateTokens, trimStored, buildChatMessages, CHAT_SYSTEM_PROMPT, CHAT_MSG_CHAR_CAP } = require("../src/chat");
-  const turn = (content: string, role: "user" | "assistant" = "user") => ({ role, name: "u", content });
 
-  test("estimateTokens grows with length", () => {
-    expect(estimateTokens("ab")).toBeGreaterThan(0);
-    expect(estimateTokens("abcd".repeat(100))).toBeGreaterThan(estimateTokens("abcd"));
-  });
 
-  test("trimStored is a no-op under both limits", () => {
-    const hist = [turn("hi"), turn("yo"), turn("lo")];
-    expect(trimStored(hist, 20, 50000)).toBe(hist);
-  });
 
-  test("trimStored evicts in bulk on count overflow and is sticky", () => {
-    const mk = (n: number) => Array.from({ length: n }, (_, i) => turn("m" + i));
-    const over = trimStored(mk(41), 20, 5000000);
-    expect(over.length).toBe(Math.max(2, Math.floor(40 * 0.7)));
-    expect(over[over.length - 1].content).toBe("m40");
-    expect(trimStored(over, 20, 5000000)).toBe(over);
-  });
-
-  test("trimStored evicts in bulk on token overflow", () => {
-    const hist = Array.from({ length: 10 }, (_, i) => turn("x".repeat(1000) + i));
-    const per = estimateTokens("x".repeat(1000));
-    const reserve = estimateTokens(CHAT_SYSTEM_PROMPT) + estimateTokens("x".repeat(CHAT_MSG_CHAR_CAP));
-    const budget = reserve + per * 6;
-    const kept = trimStored(hist, 100, budget);
-    expect(kept.length).toBeLessThan(10);
-    const keptTotal = kept.reduce((n: number, t: { content: string }) => n + estimateTokens(t.content), 0);
-    const tokenFloor = Math.floor(per * 6 * 0.7);
-    expect(keptTotal).toBeLessThanOrEqual(tokenFloor + per);
-    expect(kept[kept.length - 1].content.endsWith("9")).toBe(true);
-  });
-
-  test("count cap evicts in bulk too (no sliding window)", () => {
-    const mk = (n: number) => Array.from({ length: n }, (_, i) => turn("m" + i));
-    expect(buildChatMessages(mk(40), turn("q")).length).toBe(42);
-    const over = trimStored(mk(41), 20, 5000000);
-    expect(buildChatMessages(over, turn("q")).length).toBe(Math.floor(40 * 0.7) + 2);
-  });
-
-  test("prompt grows append-only between evictions (prefix cache friendly)", () => {
-    const maxHistory = 3;
-    let hist: { role: "user" | "assistant"; name: string; content: string }[] = [];
-    let prev: { role: string; content: string }[] | null = null;
-    let evictions = 0;
-    for (let i = 0; i < 12; i++) {
-      const turnU = { role: "user" as const, name: "u", content: "q" + i };
-      const trimmed = trimStored(hist, maxHistory, 5000000);
-      if (trimmed !== hist) evictions++;
-      hist = trimmed;
-      const msgs = buildChatMessages(hist, turnU).map((m: { role: string; content: string }) => ({ role: m.role, content: m.content }));
-      if (prev) {
-        const prefixIntact = prev.every((pm, idx) => msgs[idx] && msgs[idx].role === pm.role && msgs[idx].content === pm.content);
-        const grewAppendOnly = msgs.length >= prev.length;
-        if (!grewAppendOnly) evictions++;
-        expect(prefixIntact || !grewAppendOnly).toBe(true);
-      }
-      prev = msgs;
-      hist = [...hist, turnU, { role: "assistant", name: "bot", content: "a" + i }];
-    }
-    expect(evictions).toBeGreaterThan(0);
-  });
-
-  test("buildChatMessages truncates oversized single message", () => {
-    const msgs = buildChatMessages([], turn("x".repeat(CHAT_MSG_CHAR_CAP + 500)));
-    expect(msgs[msgs.length - 1].content.length).toBeLessThanOrEqual(CHAT_MSG_CHAR_CAP + 10);
-    expect(msgs[msgs.length - 1].content).toContain("已截断");
-  });
-
-  test("buildChatMessages keeps system prompt first and reserves question budget", () => {
-    const hist = [turn("a".repeat(40000)), turn("b")];
-    const msgs = buildChatMessages(trimStored(hist, 20, 50000), turn("q"));
-    expect(msgs[0].role).toBe("system");
-    expect(msgs[0].content).toBe(CHAT_SYSTEM_PROMPT);
-    const total = msgs.reduce((n: number, m: { content: string }) => n + estimateTokens(m.content), 0);
-    expect(total).toBeLessThanOrEqual(50000 + estimateTokens("q") + estimateTokens(CHAT_SYSTEM_PROMPT));
-  });
-
-  test("router: @bot routes to chat when WORK_CHAT_API set", async () => {
+describe("chat delegation to ework-chat", () => {
+  test("router: @bot delegates to ework-chat service", async () => {
     const origFetch = globalThis.fetch;
-    const bodies: unknown[] = [];
-    globalThis.fetch = (async (_url: unknown, init?: { body?: string }) => {
-      bodies.push(JSON.parse(String(init?.body)));
-      return new Response(JSON.stringify({ choices: [{ message: { content: "秒回的答案" } }] }), { status: 200 });
+    const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
+    globalThis.fetch = (async (url: unknown, init?: { body?: string; headers?: Record<string, string> }) => {
+      calls.push({ url: String(url), body: JSON.parse(String(init?.body)) });
+      return new Response(JSON.stringify({ conversation: "1", reply: "秒回的答案" }), { status: 200 });
     }) as typeof fetch;
     try {
       const { createRouter } = require("../src/router");
       const replies: string[] = [];
       const comments: unknown[] = [];
       const router = createRouter({
-        cfg: { VERBOSE: false, WORK_CHAT_API: "http://x/v1", WORK_CHAT_API_KEY: "k", WORK_CHAT_MODEL: "m", WORK_CHAT_TIMEOUT_MS: 1000, WORK_CHAT_MAX_HISTORY: 20, WORK_CHAT_MAX_CONTEXT: 50000 },
+        cfg: { VERBOSE: false, WORK_CHAT_URL: "http://127.0.0.1:8210", WORK_CHAT_TOKEN: "t0" },
         bindings: new BindingStore([{ groupId: 1, owner: "o", repo: "r", issue: 7 }], pinFile()),
-        chatHistory: new ChatHistoryStore(histFile()),
         wakeList: new Set(["1"]),
         ework: { createIssue: async () => 9, addComment: async (...a: unknown[]) => { comments.push(a); } },
         store: { seenPost: () => false },
         reply: async (_g: number, x: string) => { replies.push(x); },
       });
-      await router.handleGroupMessage({ groupId: 1, userId: 1, nickname: "u", postId: "c1", rawMessage: "[CQ:at,qq=2661222094] 快问快答" });
+      await router.handleGroupMessage({ groupId: 1, userId: 1, nickname: "小狗", postId: "c1", rawMessage: "[CQ:at,qq=2661222094] 快问快答" });
       expect(replies).toEqual(["秒回的答案"]);
       expect(comments).toEqual([]);
-      expect((bodies[0] as { messages: { content: string }[] }).messages[0].role).toBe("system");
-      await router.handleGroupMessage({ groupId: 1, userId: 1, nickname: "u", postId: "c2", rawMessage: "[CQ:at,qq=2661222094] 追问一句" });
-      expect((bodies[1] as { messages: { content: string }[] }).messages.length).toBe(4);
+      expect(calls[0]?.url).toBe("http://127.0.0.1:8210/v1/chat");
+      expect(calls[0]?.body.conversation).toBe("1");
+      expect(calls[0]?.body.message).toBe("快问快答");
+      expect(calls[0]?.body.user).toBe("小狗");
+      expect(typeof calls[0]?.body.system).toBe("string");
     } finally {
       globalThis.fetch = origFetch;
     }
@@ -352,142 +274,15 @@ describe("pure-API chat", () => {
       const { createRouter } = require("../src/router");
       const replies: string[] = [];
       const router = createRouter({
-        cfg: { VERBOSE: false, WORK_CHAT_API: "http://x/v1", WORK_CHAT_API_KEY: "k", WORK_CHAT_MODEL: "m", WORK_CHAT_TIMEOUT_MS: 1000, WORK_CHAT_MAX_HISTORY: 20, WORK_CHAT_MAX_CONTEXT: 50000 },
+        cfg: { VERBOSE: false, WORK_CHAT_URL: "http://x", WORK_CHAT_TOKEN: "" },
         bindings: new BindingStore([{ groupId: 1, owner: "o", repo: "r" }], pinFile()),
-        chatHistory: new ChatHistoryStore(histFile()),
         wakeList: new Set(["1"]),
         ework: { createIssue: async () => 9, addComment: async () => {} },
         store: { seenPost: () => false },
         reply: async (_g: number, x: string) => { replies.push(x); },
       });
-      await router.handleGroupMessage({ groupId: 1, userId: 1, nickname: "u", postId: "c3", rawMessage: "[CQ:at,qq=2661222094] 会失败吗" });
-      expect(replies[0]).toContain("问答失败");
-    } finally {
-      globalThis.fetch = origFetch;
-    }
-  });
-});
-
-describe("no-think", () => {
-  const { stripThink } = require("../src/chat");
-
-  test("stripThink removes inline think blocks", () => {
-    expect(stripThink("<think>internal</think>答案")).toBe("答案");
-    expect(stripThink("<think>a</think>前<think>b</think>后")).toBe("前后");
-    expect(stripThink("普通回复")).toBe("普通回复");
-  });
-
-  test("chat request carries enable_thinking:false by default", async () => {
-    const origFetch = globalThis.fetch;
-    let sent: Record<string, unknown> = {};
-    globalThis.fetch = (async (_u: unknown, init?: { body?: string }) => {
-      sent = JSON.parse(String(init?.body));
-      return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), { status: 200 });
-    }) as typeof fetch;
-    try {
-      const { chatComplete } = require("../src/chat");
-      const out = await chatComplete("http://x/v1", "k", "m", [{ role: "user", content: "q" }], 1000);
-      expect(out).toBe("ok");
-      expect((sent.chat_template_kwargs as { enable_thinking?: boolean })?.enable_thinking).toBe(false);
-      await chatComplete("http://x/v1", "k", "m", [{ role: "user", content: "q" }], 1000, false);
-      expect(sent.chat_template_kwargs).toBeUndefined();
-    } finally {
-      globalThis.fetch = origFetch;
-    }
-  });
-
-  test("thinking payload is stripped before replying", async () => {
-    const origFetch = globalThis.fetch;
-    globalThis.fetch = (async () => new Response(JSON.stringify({ choices: [{ message: { content: "<think>隐藏推理</think>可见答案" } }] }), { status: 200 })) as typeof fetch;
-    try {
-      const { createRouter } = require("../src/router");
-      const replies: string[] = [];
-      const router = createRouter({
-        cfg: { VERBOSE: false, WORK_CHAT_API: "http://x/v1", WORK_CHAT_API_KEY: "k", WORK_CHAT_MODEL: "m", WORK_CHAT_TIMEOUT_MS: 1000, WORK_CHAT_MAX_HISTORY: 20, WORK_CHAT_MAX_CONTEXT: 50000, WORK_CHAT_NO_THINK: true },
-        bindings: new BindingStore([{ groupId: 1, owner: "o", repo: "r" }], pinFile()),
-        chatHistory: new ChatHistoryStore(histFile()),
-        wakeList: new Set(["1"]),
-        ework: { createIssue: async () => 9, addComment: async () => {} },
-        store: { seenPost: () => false },
-        reply: async (_g: number, x: string) => { replies.push(x); },
-      });
-      await router.handleGroupMessage({ groupId: 1, userId: 1, nickname: "u", postId: "nt1", rawMessage: "[CQ:at,qq=2661222094] 问" });
-      expect(replies).toEqual(["可见答案"]);
-    } finally {
-      globalThis.fetch = origFetch;
-    }
-  });
-});
-
-describe("chat history persistence", () => {
-  const { ChatHistoryStore } = require("../src/chat-store");
-  const { trimStored } = require("../src/chat");
-  const { writeFileSync } = require("node:fs");
-
-  test("set then reload returns same turns", () => {
-    const f = histFile();
-    const a = new ChatHistoryStore(f);
-    a.set(1, [{ role: "user", content: "早" }, { role: "assistant", content: "早呀" }]);
-    a.set(2, [{ role: "user", content: "群二的问题" }]);
-    const b = new ChatHistoryStore(f);
-    expect(b.get(1)).toEqual([{ role: "user", content: "早" }, { role: "assistant", content: "早呀" }]);
-    expect(b.get(2)).toEqual([{ role: "user", content: "群二的问题" }]);
-    expect(b.get(3)).toEqual([]);
-  });
-
-  test("invalid file starts clean", () => {
-    const f = histFile();
-    writeFileSync(f, "{not json");
-    const s = new ChatHistoryStore(f);
-    expect(s.get(1)).toEqual([]);
-    s.set(1, [{ role: "user", content: "x" }]);
-    expect(new ChatHistoryStore(f).get(1)).toEqual([{ role: "user", content: "x" }]);
-  });
-
-  test("invalid turns filtered on load, groups isolated", () => {
-    const f = histFile();
-    writeFileSync(f, JSON.stringify({ "1": [{ role: "system", content: "bad" }, { role: "user", content: "ok" }], "2": "nope" }));
-    const s = new ChatHistoryStore(f);
-    expect(s.get(1)).toEqual([{ role: "user", content: "ok" }]);
-    expect(s.get(2)).toEqual([]);
-  });
-
-  test("evicted turns stay evicted across reload", () => {
-    const f = histFile();
-    const turns = Array.from({ length: 50 }, (_, i) => ({ role: "user" as const, content: `msg${i}` }));
-    const trimmed = trimStored(turns, 10, 500000);
-    expect(trimmed.length).toBeLessThan(50);
-    new ChatHistoryStore(f).set(7, trimmed);
-    const re = new ChatHistoryStore(f);
-    expect(re.get(7)).toEqual(trimmed);
-    const again = trimStored(re.get(7), 10, 500000);
-    expect(again.length).toBe(trimmed.length);
-  });
-
-  test("router chat survives simulated restart", async () => {
-    const origFetch = globalThis.fetch;
-    globalThis.fetch = (async () => new Response(JSON.stringify({ choices: [{ message: { content: "第一答" } }] }), { status: 200 })) as typeof fetch;
-    try {
-      const { createRouter } = require("../src/router");
-      const f = histFile();
-      const mk2 = () => {
-        const replies: string[] = [];
-        const router = createRouter({
-          cfg: { VERBOSE: false, WORK_CHAT_API: "http://x/v1", WORK_CHAT_API_KEY: "k", WORK_CHAT_MODEL: "m", WORK_CHAT_TIMEOUT_MS: 1000, WORK_CHAT_MAX_HISTORY: 20, WORK_CHAT_MAX_CONTEXT: 50000 },
-          bindings: new BindingStore([{ groupId: 1, owner: "o", repo: "r", issue: 7 }], pinFile()),
-          chatHistory: new ChatHistoryStore(f),
-          wakeList: new Set(["1"]),
-          ework: { createIssue: async () => 9, addComment: async () => {} },
-          store: { seenPost: () => false },
-          reply: async (_g: number, x: string) => { replies.push(x); },
-        });
-        return { router, replies };
-      };
-      const first = mk2();
-      await first.router.handleGroupMessage({ groupId: 1, userId: 1, nickname: "u", postId: "r1", rawMessage: "[CQ:at,qq=2661222094] 记住暗号是西瓜" });
-      const second = mk2();
-      await second.router.handleGroupMessage({ groupId: 1, userId: 1, nickname: "u", postId: "r2", rawMessage: "[CQ:at,qq=2661222094] 我刚才说了什么" });
-      expect(new ChatHistoryStore(f).get(1).map((t: { content: string }) => t.content)).toContain("记住暗号是西瓜");
+      await router.handleGroupMessage({ groupId: 1, userId: 1, nickname: "u", postId: "c3", rawMessage: "[CQ:at,qq=2661222094] 问点啥" });
+      expect(replies[0]).toContain("❌ 问答失败");
     } finally {
       globalThis.fetch = origFetch;
     }

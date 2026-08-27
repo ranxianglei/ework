@@ -1,7 +1,6 @@
 import { loadConfig, parseGroupMap, parseList } from "./config";
 import { BridgeStore } from "./db";
 import { BindingStore } from "./bindings";
-import { ChatHistoryStore } from "./chat-store";
 import { createOneBotServer, type OneBotApi, type GroupMessageEvent } from "./onebot";
 import { createRouter } from "./router";
 import { createIngest } from "./ingest";
@@ -17,7 +16,6 @@ async function main() {
 const store = new BridgeStore(cfg.DB_PATH || "/tmp/ework-qq-bridge.db");
 
   const bindings = new BindingStore(parseGroupMap(cfg.GROUP_MAP), cfg.WORK_BINDINGS_FILE);
-  const chatHistory = new ChatHistoryStore(cfg.WORK_CHAT_HISTORY_FILE);
 
   let api: OneBotApi | null = null;
   const send = async (groupId: number, text: string) => {
@@ -30,7 +28,6 @@ const store = new BridgeStore(cfg.DB_PATH || "/tmp/ework-qq-bridge.db");
   const router = createRouter({
     cfg,
     bindings,
-    chatHistory,
     wakeList: new Set(parseList(cfg.QQ_WAKE_LIST)),
     ework,
     store,

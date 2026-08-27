@@ -3,8 +3,29 @@ import type { EworkClient } from "./ework";
 import type { GroupMessageEvent } from "./onebot";
 import type { BridgeStore } from "./db";
 import type { BindingStore } from "./bindings";
-import type { ChatHistoryStore } from "./chat-store";
-import { buildChatMessages, capContent, chatComplete, splitForQQ, trimStored, type ChatTurn } from "./chat";
+
+export const QQ_CHAT_SYSTEM = [
+  "你是 QQ 群里的即时问答助手，背后是 ework 开发平台。",
+  "风格：简短直接，能用一两句话说清的就别铺开；技术问题给结论和关键理由，需要展开再展开。",
+  "群里成员通过 @你 提问。你看到的多轮对话里每条 user 消息前缀了提问者的昵称，注意区分不同人。",
+  "如果请求明显是需要长时间执行的开发任务（改代码、查仓库、提交 PR），不要假装去做——建议对方发「任务 <标题>」创建 issue，AI agent 会接单处理。",
+  "不知道就直说，不要编造。",
+].join("\n");
+
+export function splitForQQ(text: string, maxLen = 1500): string[] {
+  if (text.length <= maxLen) return [text];
+  const parts: string[] = [];
+  let remaining = text;
+  while (remaining.length > maxLen) {
+    let cut = remaining.lastIndexOf("\n", maxLen);
+    if (cut < maxLen * 0.5) cut = remaining.lastIndexOf("。", maxLen);
+    if (cut < maxLen * 0.5) cut = maxLen;
+    parts.push(remaining.slice(0, cut + 1));
+    remaining = remaining.slice(cut + 1);
+  }
+  if (remaining) parts.push(remaining);
+  return parts;
+}
 
 const HELP_TEXT = [
   "用法：",
@@ -13,14 +34,13 @@ const HELP_TEXT = [
   "  绑定 #<编号> —— 把本群绑定到该 issue（长记忆模式：此后发言都进这个 issue）",
   "  解绑 —— 恢复为项目模式（接收整个项目的回复）",
   "  查询 —— 列出最近 issue",
-  "  @我 <问题> —— 即时问答（纯 API 直连 bili 压缩，历史落盘，重启不清）",
+  "  @我 <问题> —— 即时问答（透明压缩长记忆，历史落盘）",
   "  （绑定后：普通发言进绑定的 issue，AI 回复自动回群）",
 ].join("\n");
 
 export interface RouterDeps {
   cfg: Config;
   bindings: BindingStore;
-  chatHistory: ChatHistoryStore;
   wakeList: Set<string>;
   ework: EworkClient;
   store: BridgeStore;
@@ -49,16 +69,27 @@ export function parseCommand(raw: string): ParsedCommand | null {
 }
 
 export function createRouter(deps: RouterDeps) {
-  const { cfg, bindings, chatHistory, wakeList, ework, store } = deps;
+  const { cfg, bindings, wakeList, ework, store } = deps;
 
   async function answerChat(ev: GroupMessageEvent, question: string): Promise<void> {
     try {
-      const turn: ChatTurn = { role: "user", name: ev.nickname, content: capContent(question) };
-      const stored = trimStored(chatHistory.get(ev.groupId), cfg.WORK_CHAT_MAX_HISTORY, cfg.WORK_CHAT_MAX_CONTEXT);
-      const messages = buildChatMessages(stored, turn);
-      const answer = await chatComplete(cfg.WORK_CHAT_API, cfg.WORK_CHAT_API_KEY, cfg.WORK_CHAT_MODEL, messages, cfg.WORK_CHAT_TIMEOUT_MS, cfg.WORK_CHAT_NO_THINK);
-      chatHistory.set(ev.groupId, [...stored, turn, { role: "assistant", name: "bot", content: capContent(answer) }]);
-      for (const part of splitForQQ(answer)) {
+      const res = await fetch(`${cfg.WORK_CHAT_URL.replace(/\/+$/, "")}/v1/chat`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(cfg.WORK_CHAT_TOKEN ? { Authorization: `Bearer ${cfg.WORK_CHAT_TOKEN}` } : {}),
+        },
+        body: JSON.stringify({
+          conversation: String(ev.groupId),
+          message: question,
+          user: ev.nickname,
+          system: QQ_CHAT_SYSTEM,
+        }),
+      });
+      if (!res.ok) throw new Error(`chat service ${res.status}: ${(await res.text()).slice(0, 120)}`);
+      const data = (await res.json()) as { reply?: string };
+      if (!data.reply) throw new Error("chat service returned no reply");
+      for (const part of splitForQQ(data.reply)) {
         await deps.reply(ev.groupId, part);
       }
     } catch (e) {
@@ -81,7 +112,7 @@ export function createRouter(deps: RouterDeps) {
     const cmd = parseCommand(ev.rawMessage);
     if (!cmd) {
       const text = ev.rawMessage.replace(/\[CQ:[^\]]*\]/g, "").trim();
-      if (atBot && text && cfg.WORK_CHAT_API) {
+      if (atBot && text && cfg.WORK_CHAT_URL) {
         await answerChat(ev, text);
         return;
       }

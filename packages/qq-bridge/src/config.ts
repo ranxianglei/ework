@@ -25,24 +25,12 @@ const Schema = z.object({
   // Runtime pin overrides written by the 绑定/解绑 commands (JSON, group -> issue).
   WORK_BINDINGS_FILE: z.string().default(""),
 
-  // Pure-API chat (@bot Q&A): OpenAI-compatible endpoint, no tools/session.
-  // Empty WORK_CHAT_API disables chat and falls back to usage guidance.
-  WORK_CHAT_API: z.string().default(""),
-  WORK_CHAT_API_KEY: z.string().default(""),
-  WORK_CHAT_MODEL: z.string().default(""),
-  WORK_CHAT_TIMEOUT_MS: z.coerce.number().int().default(90000),
-  WORK_CHAT_MAX_HISTORY: z.coerce.number().int().default(20),
-  // Token budget (heuristic estimate) for one chat request; when history
-  // exceeds it the oldest turns are dropped ("满了就清理").
-  WORK_CHAT_MAX_CONTEXT: z.coerce.number().int().default(50000),
-  // Disable the model's thinking pass for QQ chat replies only (default on:
-  // "仅仅这个机器人关掉"); "0" restores thinking. Daemon/opencode sessions
-  // are untouched — they use their own runtime.
-  WORK_CHAT_NO_THINK: z.preprocess((v) => (v === undefined || v === "" ? "1" : v), z.string()).transform((v) => v !== "0"),
-
-  // Where @bot chat history is persisted (JSON, group -> turns). Restarting
-  // the bridge no longer clears conversations.
-  WORK_CHAT_HISTORY_FILE: z.string().default(""),
+  // Pure chat (@bot Q&A) is delegated to the standalone ework-chat service
+  // (chat-only LLM + bili transparent compression + JSONL per-turn disk
+  // persistence). Empty WORK_CHAT_URL disables chat and falls back to usage
+  // guidance.
+  WORK_CHAT_URL: z.string().default(""),
+  WORK_CHAT_TOKEN: z.string().default(""),
 
   // QQ user_ids allowed to dispatch AI work (comma-separated). Messages from
   // other members are logged and ignored — same trust model as the GitHub
@@ -111,9 +99,6 @@ export function loadConfig(): Config {
   }
   if (!cfg.WORK_BINDINGS_FILE) {
     cfg.WORK_BINDINGS_FILE = `${process.env.HOME ?? "/tmp"}/.ework-qq-bridge/bindings.json`;
-  }
-  if (!cfg.WORK_CHAT_HISTORY_FILE) {
-    cfg.WORK_CHAT_HISTORY_FILE = `${process.env.HOME ?? "/tmp"}/.ework-qq-bridge/chat-history.json`;
   }
   return cfg;
 }
