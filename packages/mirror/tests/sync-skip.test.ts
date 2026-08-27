@@ -60,18 +60,19 @@ test("mirrored issue footer carries provenance marker and no origin URL", async 
 });
 
 describe("agent provenance badge", () => {
-  test("footer includes model when provided", async () => {
-    const { agentFooter } = await import("../src/mirror");
-    const f = agentFooter("vllm-qwen/qwen3.8-27b");
+  test("badge leads with model when provided", async () => {
+    const { agentBadgeText } = await import("../src/mirror");
+    const f = agentBadgeText("vllm-qwen/qwen3.8-27b");
     expect(f).toContain("🤖 ework agent");
     expect(f).toContain("vllm-qwen/qwen3.8-27b");
-    expect(f).toContain("<sub>");
+    expect(f.startsWith("> ")).toBe(true);
+    expect(f.endsWith("\n\n")).toBe(true);
   });
 
   test("footer degrades gracefully without model", async () => {
-    const { agentFooter } = await import("../src/mirror");
-    expect(agentFooter(undefined)).toBe("\n\n<sub>🤖 ework agent</sub>");
-    expect(agentFooter("")).toBe("\n\n<sub>🤖 ework agent</sub>");
+    const { agentBadgeText } = await import("../src/mirror");
+    expect(agentBadgeText(undefined)).toBe("> 🤖 ework agent\n\n");
+    expect(agentBadgeText("")).toBe("> 🤖 ework agent\n\n");
   });
 
   test("parseEvent surfaces payload model and comment author", async () => {

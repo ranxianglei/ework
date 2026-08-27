@@ -104,13 +104,11 @@ export function agentLogins(cfg: Config): string[] {
 }
 
 // Visible provenance badge: upstream readers see agent output relayed under
-// the human account's name — without this footer there is no way to tell
-// them apart. Model comes from the webhook payload's resolved override.
-export function agentFooter(model?: string): string {
+// the human account's name — it LEADS the body so the speaker is known
+// before reading. Model comes from the webhook payload's resolved override.
+export function agentBadgeText(model?: string): string {
   const m = (model || "").trim();
-  return m
-    ? `\n\n<sub>🤖 ework agent · ${m}</sub>`
-    : `\n\n<sub>🤖 ework agent</sub>`;
+  return m ? `> 🤖 ework agent · ${m}\n\n` : `> 🤖 ework agent\n\n`;
 }
 
 function issueBadge(
@@ -118,7 +116,7 @@ function issueBadge(
   ev: Pick<ParsedIssueEvent, "issue"> & { model?: string | undefined }
 ): string {
   return agentLogins(cfg).includes(ev.issue.user?.login ?? "")
-    ? agentFooter(ev.model)
+    ? agentBadgeText(ev.model)
     : "";
 }
 
@@ -204,8 +202,8 @@ export async function handleIssueEvent(
         cfg,
         repo,
         ev.issue.title,
-        scrubInternalRefs(ev.issue.body ?? "", cfg) +
-          issueBadge(cfg, ev) +
+        issueBadge(cfg, ev) +
+          scrubInternalRefs(ev.issue.body ?? "", cfg) +
           mirrorFooter(ev.issue.number)
       );
       recordIssueMap({
@@ -236,8 +234,8 @@ export async function handleIssueEvent(
         repo,
         ev.issue.title,
         `(retroactive mirror for state=${ev.action})\n\n` +
-          scrubInternalRefs(ev.issue.body ?? "", cfg) +
           issueBadge(cfg, ev) +
+          scrubInternalRefs(ev.issue.body ?? "", cfg) +
           mirrorFooter(ev.issue.number)
       );
       recordIssueMap({
@@ -376,8 +374,8 @@ export async function handleCommentEvent(
       repo,
       ev.issue.title || `(untitled ework issue #${ev.issue.number})`,
       `(retroactive mirror for comment)\n\n` +
-        scrubInternalRefs(ev.issue.body ?? "", cfg) +
         issueBadge(cfg, ev) +
+        scrubInternalRefs(ev.issue.body ?? "", cfg) +
         mirrorFooter(ev.issue.number)
     );
     map = {
@@ -403,13 +401,13 @@ export async function handleCommentEvent(
 
   try {
     const agentBadge = agentLogins(cfg).includes(ev.comment.user?.login ?? "")
-      ? agentFooter(ev.model)
+      ? agentBadgeText(ev.model)
       : "";
     const created = await addComment(
       cfg,
       repo,
       map.gitea_issue_num,
-      scrubInternalRefs(ev.comment.body, cfg) + agentBadge + MIRROR_MARKER
+      agentBadge + scrubInternalRefs(ev.comment.body, cfg) + MIRROR_MARKER
     );
     recordCommentMap({
       eworkCommentId: ev.comment.id,
