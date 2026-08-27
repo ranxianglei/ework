@@ -321,13 +321,16 @@ function createBackendFor(cfg: Config, runtime: string): RuntimeBackend {
 // Wake policy shared by issue_opened and comment_created: blacklist wins,
 // then an explicit login whitelist (which replaces the kind check), then
 // author kind. Issue openers carry no kind and default to human.
+// extraLogins extends the env whitelist with per-project entries fetched
+// from the web config center; kinds still apply to them (bots never wake).
 export function wakePolicySkips(
   d: { nonWakingAuthors: string[]; noWakeLogins: string[]; wakeLogins: string[]; wakeKinds: string[] },
   author: string,
   authorKind: string,
+  extraLogins: string[] = [],
 ): string | null {
   if ([...d.nonWakingAuthors, ...d.noWakeLogins].includes(author)) return `non-waking author ${author}`;
-  if (d.wakeLogins.length > 0 && !d.wakeLogins.includes(author)) return `author ${author} not in wakeLogins`;
+  if (d.wakeLogins.length > 0 && ![...d.wakeLogins, ...extraLogins].includes(author)) return `author ${author} not in wakeLogins`;
   if (!d.wakeKinds.includes(authorKind)) return `author kind ${authorKind} not in wakeKinds [${d.wakeKinds.join(",")}]`;
   return null;
 }
@@ -414,6 +417,7 @@ export class Engine {
   private envInitialized = new Set<string>();
   private replyBurstCfg?: { max: number; windowMs: number };
   private replyStamps = new Map<string, number[]>();
+  private wakeWhitelistCache = new Map<string, { at: number; logins: string[] }>();
 
   private static MAX_INLINE_SIZE = 4000;
   private static MAX_NUDGE_ROUNDS = 1;
@@ -493,6 +497,32 @@ export class Engine {
         this.maxConcurrent = cap;
       }
     } catch { /* non-critical */ }
+  }
+
+  // Per-project wake whitelist from the web config center (admin-managed
+  // external GitHub users). Cached 60s; on fetch failure a stale cache is
+  // still honored (it was a prior web decision) but an empty first fetch
+  // fails closed.
+  private async projectWakeLogins(scopeKey: string): Promise<string[]> {
+    const hit = this.wakeWhitelistCache.get(scopeKey);
+    if (hit && Date.now() - hit.at < 60_000) return hit.logins;
+    const parts = scopeKey.split("/");
+    const owner = parts[0] ?? "";
+    const repo = parts.slice(1).join("/");
+    if (!owner || !repo) return [];
+    const url = `${this.cfg.gitea.url}/api/v1/wake-logins?owner=${encodeURIComponent(owner)}&repo=${encodeURIComponent(repo)}`;
+    try {
+      const resp = await fetch(url, { signal: AbortSignal.timeout(5000), headers: { Authorization: `token ${this.cfg.gitea.token}` } });
+      if (!resp.ok) throw new Error(`web returned ${resp.status}`);
+      const data = await resp.json() as { logins?: string[] };
+      const logins = (Array.isArray(data.logins) ? data.logins : [])
+        .map((s) => String(s).trim()).filter(Boolean);
+      this.wakeWhitelistCache.set(scopeKey, { at: Date.now(), logins });
+      return logins;
+    } catch (err) {
+      log.warn(`engine: wake whitelist query failed for ${scopeKey}: ${(err as Error).message}${hit ? " — using stale cache" : " — fail-closed"}`);
+      return hit?.logins ?? [];
+    }
   }
 
   private async webGateAllows(issue: Issue): Promise<{ allowed: boolean; reason: string }> {
@@ -827,7 +857,19 @@ export class Engine {
     const wakeAuthor = event.type === "comment_created" ? event.comment?.author : event.type === "issue_opened" ? event.issue?.author : undefined;
     const wakeKind = event.type === "comment_created" ? event.comment?.authorKind ?? "human" : "human";
     if (wakeAuthor) {
-      const skip = wakePolicySkips(this.cfg.daemon, wakeAuthor, wakeKind);
+      let skip = wakePolicySkips(this.cfg.daemon, wakeAuthor, wakeKind);
+      if (skip && skip.includes("not in wakeLogins")) {
+        // GitHub logins are case-insensitive; match the project whitelist that
+        // way, then inject the exact author string for the exact-match check.
+        const extra = (await this.projectWakeLogins(scopeKey))
+          .filter((l) => l.toLowerCase() === wakeAuthor.toLowerCase());
+        if (extra.length > 0) {
+          skip = wakePolicySkips(this.cfg.daemon, wakeAuthor, wakeKind, [wakeAuthor]);
+          if (!skip) {
+            log.info(`engine: author ${wakeAuthor} is in project wake whitelist — allowing ${event.type} for ${ref.trackerType}:${scopeKey}#${ref.issueId}`);
+          }
+        }
+      }
       if (skip) {
         log.info(`engine: ${skip} — skipping ${event.type} for ${ref.trackerType}:${scopeKey}#${ref.issueId}`);
         return;
@@ -1024,7 +1066,8 @@ export class Engine {
         const instructions = tracker.getTrackerInstructions(ref);
         const prompt = this.buildForwardPrompt(
           session.name, this.handleLargeContent(workdir, comment.body, `comment-${comment.id}.txt`),
-          comment.author, comment.authorKind, issueData.title, workdir, instructions
+          comment.author, comment.authorKind, issueData.title, workdir, instructions,
+          this.wakeWhitelistCache.get(scopeKey)?.logins ?? []
         );
 
         // Immediate ack
@@ -1078,7 +1121,8 @@ export class Engine {
       const instructions = tracker.getTrackerInstructions(ref);
       const prompt = this.buildForwardPrompt(
         session.name, this.handleLargeContent(workdir, comment.body, `comment-${comment.id}.txt`),
-        comment.author, comment.authorKind, issueData.title, workdir, instructions
+        comment.author, comment.authorKind, issueData.title, workdir, instructions,
+        this.wakeWhitelistCache.get(scopeKey)?.logins ?? []
       );
       await tracker.createComment(ref, `[system] 🏷 ${this.sessionRef(session)} ✓ Message forwarded to **${session.name}**${this.running.has(this.sessionKey(session, issue)) ? " (running)" : ""}.\n> workdir: ${this.workdirLink(workdir)}`);
       await this.enqueueOrRun(session, issue, prompt, comment.id, model);
@@ -1698,11 +1742,13 @@ export class Engine {
   // Wake-policy whitelist mirrors the dispatch decision: an author outside
   // wakeLogins cannot start work, but their comments still enter a running
   // session's prompt — flag them so the model treats their text as data.
-  private isTrustedAuthor(login: string): boolean {
+  // The project whitelist (case-insensitive) counts as trusted: vetting a
+  // user is an explicit operator trust decision.
+  private isTrustedAuthor(login: string, extraTrusted: string[] = []): boolean {
     const d = this.cfg.daemon;
     if ([...d.nonWakingAuthors, ...d.noWakeLogins].includes(login)) return false;
-    if (d.wakeLogins.length > 0) return d.wakeLogins.includes(login);
-    return true;
+    if (d.wakeLogins.length === 0) return true;
+    return [...d.wakeLogins, ...extraTrusted].some((l) => l.toLowerCase() === login.toLowerCase());
   }
 
   private buildForwardPrompt(
@@ -1712,10 +1758,11 @@ export class Engine {
     authorKind: string | undefined,
     issueTitle: string,
     workdir: string,
-    instructions: { issueRef: string }
+    instructions: { issueRef: string },
+    extraTrusted: string[] = [],
   ): string {
     const who = authorKind === "bot" ? `@${commentUser} (bot)` : `@${commentUser} (user)`;
-    const trusted = this.isTrustedAuthor(commentUser);
+    const trusted = this.isTrustedAuthor(commentUser, extraTrusted);
     return [
       `[SYSTEM FORWARD] User ${who}${trusted ? "" : " (unverified outside user)"} posted a new comment on ${instructions.issueRef} "${issueTitle}".`,
       trusted

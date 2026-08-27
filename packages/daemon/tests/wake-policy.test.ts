@@ -33,6 +33,18 @@ describe("wakePolicySkips (comments + issue_opened share it)", () => {
     expect(wakePolicySkips(c, "x", "bot")).toContain("not in wakeKinds");
     expect(wakePolicySkips(c, "x", "human")).toBeNull();
   });
+
+  test("project whitelist (extraLogins) admits vetted strangers, still no bots", () => {
+    const c = cfg({ wakeLogins: ["dog", "ranxianglei"] });
+    expect(wakePolicySkips(c, "stirp", "human", ["stirp"])).toBeNull();
+    expect(wakePolicySkips(c, "some-bot", "bot", ["some-bot"])).toContain("not in wakeKinds");
+    expect(wakePolicySkips(c, "stranger", "human", ["stirp"])).toContain("not in wakeLogins");
+  });
+
+  test("project whitelist does not override the blacklist", () => {
+    const c = cfg({ wakeLogins: ["dog"], noWakeLogins: ["stirp"] });
+    expect(wakePolicySkips(c, "stirp", "human", ["stirp"])).toContain("non-waking author");
+  });
 });
 
 describe("buildForwardPrompt trust marker", () => {
