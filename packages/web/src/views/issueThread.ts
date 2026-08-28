@@ -1,7 +1,7 @@
 import type { Config } from "../config";
 import { classifyActor, renderCommentCard, type CommentView } from "../render/components";
 import { renderMarkdown } from "../render/markdown";
-import { renderLayout, escapeHtml } from "../render/layout";
+import { renderLayout, escapeHtml, escapeAttr } from "../render/layout";
 import { runIssueActionsHook, type IssueActionContext, type IssueAction } from "../issue-actions-hook";
 import { hydrateReactions } from "../reactions";
 import {
@@ -150,6 +150,29 @@ export async function buildIssueThread(
     .split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
   payload.trustedLogins = (await listProjectMembersWithUsers(project.id)).map((m) => m.user_login);
 
+  // Submitter line: synced upstream issues/PRs carry their real author. The
+  // ＋白名单 form targets the wake-logins route (add+back fields, 303 back).
+  const authorUser = await getUserByLogin(issue.author);
+  const authorKind = authorUser?.kind ?? "human";
+  const trustedList = payload.trustedLogins ?? [];
+  const wakeList = payload.wakeLogins ?? [];
+  const lowerAuthor = issue.author.toLowerCase();
+  const showAuthorWhitelist =
+    viewerIsAdmin &&
+    authorKind === "human" &&
+    !trustedList.some((l) => l.toLowerCase() === lowerAuthor) &&
+    !wakeList.some((l) => l.toLowerCase() === lowerAuthor);
+  const authorLineHtml =
+    `<div class="author-line">由 <strong>${escapeHtml(issue.author)}</strong> 提交` +
+    (authorKind === "bot" ? ` <span class="kind-tag">bot</span>` : "") +
+    (showAuthorWhitelist
+      ? `<form method="post" action="/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/settings/ai/wake-logins" class="wl-form">` +
+        `<input type="hidden" name="back" value="/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${issue.number}">` +
+        `<input type="hidden" name="add" value="${escapeAttr(issue.author)}">` +
+        `<button type="submit" class="wlbtn">＋白名单</button></form>`
+      : "") +
+    `</div>`;
+
   let customActions: IssueAction[] = [];
   let extraStatusBadges: Record<string, { cls: string; label: string }> | undefined;
   if (cfg.issueActionsHook && viewerLogin) {
@@ -194,6 +217,7 @@ export async function buildIssueThread(
         ? { current: issue.model ?? "", options: (await listCachedModels()).map((m) => ({ id: m.id, label: m.label })) }
         : null,
       runtimeSelect: cfg.writesEnabled !== false ? { current: issue.runtime ?? "" } : null,
+      authorLineHtml,
     },
     safeJsonEmbed(payload),
     displayViews.map((v) => renderCommentCard(v, cfg)).join("")

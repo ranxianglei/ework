@@ -26,6 +26,7 @@ export interface LayoutProps {
   extraStatusBadges?: Record<string, { cls: string; label: string }>;
   modelSelect?: { current: string; options: { id: string; label: string }[] } | null;
   runtimeSelect?: { current: string } | null;
+  authorLineHtml?: string;
 }
 
 export const THEME_CSS = `
@@ -163,6 +164,9 @@ header.topbar .num{opacity:.7}
 .action-btn.dispatch-btn:hover{background:#6f7781;color:#fff}
 .action-btn.custom-btn{color:var(--accent)}
 .action-btn.custom-btn:hover{background:var(--accent);color:#fff}
+.author-line{color:var(--fg-muted);font-size:.9em;margin:2px 0 6px}
+.author-line .wl-form{display:inline;margin-left:8px}
+.author-line .kind-tag{font-size:.75em;border:1px solid var(--border);border-radius:8px;padding:0 6px;margin-left:4px;color:var(--fg-muted)}
 `;
 
 export function renderLayout(props: LayoutProps, inner: string, initialItems: string): string {
@@ -243,6 +247,7 @@ export function renderLayout(props: LayoutProps, inner: string, initialItems: st
 </header>
 <div class="meta-bar">
   <h1>${escapeHtml(props.issueTitle)}</h1>
+  ${props.authorLineHtml ?? ""}
   <div class="meta-status">
     <span class="state-badge ${stateClass}">${stateLabel}</span>
     ${aiBadgeHtml}

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { join } from "node:path";
-import { createProject, ensureUser } from "../src/store";
+import { addProjectMember, createIssue, createProject, ensureUser } from "../src/store";
 import { initDB } from "../src/db";
 
 // Wake whitelist API + AI-tab form regression. /api/v1/wake-logins feeds the
@@ -149,4 +149,55 @@ test("AI settings page renders the wake whitelist card with current entries", as
   expect(page.status).toBe(200);
   expect(html).toContain("唤醒白名单");
   expect(html).toContain("stirp");
+});
+
+test("issue page shows submitter; external humans get a ＋白名单 form", async () => {
+  const AREPO = `wla${process.pid % 1000}`;
+  await ensureUser("dog");
+  await ensureUser("Rika-xie", "human");
+  await ensureUser("merge-app[bot]", "bot");
+  const project = await createProject(OWNER, AREPO, "author line");
+  await addProjectMember(project.id, "dog", "admin");
+  const ext = await createIssue(project.id, "upstream report", "body", "Rika-xie");
+  const bot = await createIssue(project.id, "[PR] automated change", "body", "merge-app[bot]");
+  const own = await createIssue(project.id, "local issue", "body", "dog");
+
+  const base = `${BASE}/${OWNER}/${AREPO}/issues`;
+  const extHtml = await (await fetch(`${base}/${ext.number}`, { headers: { Cookie: cookie } })).text();
+  expect(extHtml).toContain('由 <strong>Rika-xie</strong> 提交');
+  expect(extHtml).toContain(`name="add" value="Rika-xie"`);
+  expect(extHtml).toContain(`name="back" value="/${OWNER}/${AREPO}/issues/${ext.number}"`);
+
+  const botHtml = await (await fetch(`${base}/${bot.number}`, { headers: { Cookie: cookie } })).text();
+  expect(botHtml).toContain('由 <strong>merge-app[bot]</strong> 提交');
+  expect(botHtml).toContain('kind-tag">bot');
+  expect(botHtml).not.toContain(`name="add" value="merge-app[bot]"`);
+
+  const ownHtml = await (await fetch(`${base}/${own.number}`, { headers: { Cookie: cookie } })).text();
+  expect(ownHtml).toContain('由 <strong>dog</strong> 提交');
+  expect(ownHtml).not.toContain(`name="add" value="dog"`);
+});
+
+test("submitter ＋白名单 form posts and the button disappears once whitelisted", async () => {
+  const AREPO = `wlb${process.pid % 1000}`;
+  await ensureUser("Rika-xie", "human");
+  const project = await createProject(OWNER, AREPO, "author line 2");
+  const ext = await createIssue(project.id, "another report", "body", "Rika-xie");
+
+  const form = new URLSearchParams({ add: "Rika-xie", back: `/${OWNER}/${AREPO}/issues/${ext.number}` });
+  const post = await fetch(`${BASE}/${OWNER}/${AREPO}/settings/ai/wake-logins`, {
+    method: "POST",
+    headers: { Cookie: cookie },
+    body: form,
+    redirect: "manual",
+  });
+  expect(post.status).toBe(303);
+  const loc = post.headers.get("location") ?? "";
+  expect(loc).toContain(`/${OWNER}/${AREPO}/issues/${ext.number}`);
+  expect(decodeURIComponent(loc)).toContain("已把 Rika-xie 加入唤醒白名单");
+
+  const page = await fetch(`${BASE}/${OWNER}/${AREPO}/issues/${ext.number}`, { headers: { Cookie: cookie } });
+  const html = await page.text();
+  expect(html).toContain('由 <strong>Rika-xie</strong> 提交');
+  expect(html).not.toContain(`name="add" value="Rika-xie"`);
 });
