@@ -50,6 +50,12 @@ export const configSchema = z.object({
     .default("ework-actions"),
   upstreamTimeoutMs: z.coerce.number().default(15000),
   secureCookie: z.boolean().default(false),
+  // Cookies are domain-scoped, NOT port-scoped: two ework webs on the same host
+  // (different ports) overwrite/kick each other's login unless names differ.
+  cookieName: z
+    .string()
+    .regex(/^[A-Za-z0-9_-]+$/, "WORK_COOKIE_NAME must be alphanumeric/dash/underscore")
+    .default("ework_auth"),
   // ework is human-facing; writes on by default. Flip off to use as a read-only mirror.
   writesEnabled: z.boolean().default(true),
   // Issue-thread comment order: 'desc' = newest first (top), 'asc' = oldest first.
@@ -167,6 +173,7 @@ export async function loadConfig(): Promise<Config> {
     host: process.env.WORK_HOST,
     authToken: process.env.WORK_TOKEN,
     cookieSecret: process.env.WORK_COOKIE_SECRET,
+    cookieName: process.env.WORK_COOKIE_NAME,
     operatorLogin: process.env.WORK_OPERATOR_LOGIN,
     systemLogin: process.env.WORK_SYSTEM_LOGIN,
     upstreamTimeoutMs: process.env.WORK_UPSTREAM_TIMEOUT_MS,

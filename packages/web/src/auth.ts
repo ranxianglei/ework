@@ -46,7 +46,8 @@ export interface AuthResult {
 export function authCookieName(cfg: Config): string {
   // __Host- prefix (C2 hardening) requires Secure + Path=/ + no Domain and is only
   // honored by browsers over TLS; cfg.secureCookie is flipped on only after Caddy/TLS.
-  return cfg.secureCookie ? `__Host-${AUTH_COOKIE_NAME}` : AUTH_COOKIE_NAME;
+  const name = cfg.cookieName ?? AUTH_COOKIE_NAME;
+  return cfg.secureCookie ? `__Host-${name}` : name;
 }
 
 export async function makeAuthCookieHeader(cfg: Config, login: string): Promise<string> {
