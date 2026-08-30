@@ -1,5 +1,5 @@
 import { beforeAll, beforeEach, afterEach, describe, test, expect } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { Store } from "../src/op";
@@ -101,6 +101,7 @@ async function eventually(assert: () => void | Promise<void>, timeoutMs = 2000):
 
 beforeAll(async () => {
   writeFileSync(FAKE_BIN, "#!/bin/sh\nsleep 0.3\nexit 0\n");
+  chmodSync(FAKE_BIN, 0o755);
   await initDB();
 });
 
