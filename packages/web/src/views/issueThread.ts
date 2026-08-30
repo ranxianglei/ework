@@ -1,5 +1,5 @@
 import type { Config } from "../config";
-import { classifyActor, renderCommentCard, type CommentView } from "../render/components";
+import { classifyActor, renderCommentCard, relTime, type CommentView } from "../render/components";
 import { renderMarkdown } from "../render/markdown";
 import { renderLayout, escapeHtml, escapeAttr } from "../render/layout";
 import { runIssueActionsHook, type IssueActionContext, type IssueAction } from "../issue-actions-hook";
@@ -164,6 +164,7 @@ export async function buildIssueThread(
     !wakeList.some((l) => l.toLowerCase() === lowerAuthor);
   const authorLineHtml =
     `<div class="author-line">由 <strong>${escapeHtml(issue.author)}</strong> 提交` +
+    ` <span class="when" data-ts="${escapeAttr(issue.created_at)}" title="${escapeAttr(issue.created_at)}">${relTime(issue.created_at)}</span>` +
     (authorKind === "bot" ? ` <span class="kind-tag">bot</span>` : "") +
     (showAuthorWhitelist
       ? `<form method="post" action="/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/settings/ai/wake-logins" class="wl-form">` +

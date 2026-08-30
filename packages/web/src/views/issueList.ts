@@ -25,9 +25,11 @@ function issueRow(
     : "";
   const aiBadge = aiStatusBadge(it.ai_status);
   const modelChip = it.model ? ` · <span class="row-model" title="模型">${escapeHtml(it.model)}</span>` : "";
+  // Synced issues carry their upstream (GitHub) author; local ones the poster.
+  const authorChip = it.author ? ` · <span class="row-author" title="创建者">👤 ${escapeHtml(it.author)}</span>` : "";
   return `<a class="row" href="${escapeAttr(href)}">
     <div class="row-title">${title}${chips}</div>
-    <div class="row-meta">#${it.number} · 💬 ${it.comment_count} · ${relTime(it.updated_at)}${aiBadge ? ` · ${aiBadge}` : ""}${modelChip}</div>
+    <div class="row-meta">#${it.number}${authorChip} · 💬 ${it.comment_count} · ${relTime(it.updated_at)}${aiBadge ? ` · ${aiBadge}` : ""}${modelChip}</div>
   </a>`;
 }
 

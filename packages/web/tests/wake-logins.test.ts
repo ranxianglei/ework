@@ -165,8 +165,13 @@ test("issue page shows submitter; external humans get a ＋白名单 form", asyn
   const base = `${BASE}/${OWNER}/${AREPO}/issues`;
   const extHtml = await (await fetch(`${base}/${ext.number}`, { headers: { Cookie: cookie } })).text();
   expect(extHtml).toContain('由 <strong>Rika-xie</strong> 提交');
+  expect(extHtml).toContain('class="when" data-ts="');
   expect(extHtml).toContain(`name="add" value="Rika-xie"`);
   expect(extHtml).toContain(`name="back" value="/${OWNER}/${AREPO}/issues/${ext.number}"`);
+
+  const listHtml = await (await fetch(`${base}?state=all`, { headers: { Cookie: cookie } })).text();
+  expect(listHtml).toContain('row-author" title="创建者">👤 Rika-xie');
+  expect(listHtml).toContain('👤 merge-app[bot]');
 
   const botHtml = await (await fetch(`${base}/${bot.number}`, { headers: { Cookie: cookie } })).text();
   expect(botHtml).toContain('由 <strong>merge-app[bot]</strong> 提交');
