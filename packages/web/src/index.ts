@@ -811,6 +811,10 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
         }
       }
     }
+    if (!daemonEp && /^ses_[0-9A-Za-z]{8,}/.test(sid)) {
+      const scanned = await tryAllDaemons();
+      if (scanned) return scanned;
+    }
     const client = daemonEp ? new RemoteOpencodeClient(daemonEp) : opencode;
     try {
       const { html: body } = await buildSessionView(client, sid, desc, cfg.collapseLines, limit, all);
