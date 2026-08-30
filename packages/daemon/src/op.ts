@@ -447,6 +447,23 @@ export class Store {
     );
   }
 
+  // reset_at stores the last consumed web reset marker; newer markers clear session pointers.
+  async getIssueResetAt(issueUid: string): Promise<number> {
+    const row = await getDB().get<{ reset_at: number | null }>(
+      "SELECT reset_at FROM {{issues}} WHERE uid = ?",
+      [issueUid]
+    );
+    return row?.reset_at ?? 0;
+  }
+
+  async setIssueResetAt(issueUid: string, ms: number): Promise<void> {
+    await getDB().run("UPDATE {{issues}} SET reset_at = ? WHERE uid = ?", [ms, issueUid]);
+  }
+
+  async clearSessionPointers(issueUid: string): Promise<void> {
+    await getDB().run("UPDATE {{op_sessions}} SET opencode_session_id = NULL WHERE issue_id = ?", [issueUid]);
+  }
+
   async markDaemonStatus(daemonId: number, status: "active" | "drained" | "dead"): Promise<void> {
     await getDB().run(
       "UPDATE {{daemons}} SET status = ? WHERE id = ?",

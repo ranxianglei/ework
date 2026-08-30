@@ -524,6 +524,14 @@ async function runMigrations(db: AsyncDatabase): Promise<void> {
       : "owner_daemon_id BIGINT NULL"
   );
 
+  // issues.reset_at — last consumed web-side session-reset marker (ms epoch).
+  // Lets the issue-page 🔄 button force a fresh AI session on next trigger.
+  await ensureColumn(
+    tIssues,
+    "reset_at",
+    sqlite ? "reset_at INTEGER NOT NULL DEFAULT 0" : "reset_at BIGINT NOT NULL DEFAULT 0"
+  );
+
   // op_sessions runtime-state columns (previously in-memory Maps; now persisted
   // so a restarted daemon can recover the nudge/generation state).
   await ensureColumn(tSessions, "last_output_at", "last_output_at VARCHAR(40)");

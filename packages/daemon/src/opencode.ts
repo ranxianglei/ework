@@ -300,7 +300,7 @@ export interface EngineOptions {
   daemonId: number;
   takeover?: TakeoverStrategy;
   backend?: RuntimeBackend;
-  gateChecker?: (issue: Issue) => Promise<{ allowed: boolean; reason: string }>;
+  gateChecker?: (issue: Issue) => Promise<{ allowed: boolean; reason: string; resetMs?: number }>;
   replyBurst?: { max: number; windowMs: number };
 }
 
@@ -372,7 +372,7 @@ export class Engine {
   private readonly daemonId: number;
   private readonly takeover: TakeoverStrategy;
   private readonly backend: RuntimeBackend;
-  private gateChecker: (issue: Issue) => Promise<{ allowed: boolean; reason: string }>;
+  private gateChecker: (issue: Issue) => Promise<{ allowed: boolean; reason: string; resetMs?: number }>;
   private heartbeatTimer?: ReturnType<typeof setInterval>;
   private maxConcurrent: number;
   private maxConcurrentExplicit: boolean;
@@ -525,7 +525,18 @@ export class Engine {
     }
   }
 
-  private async webGateAllows(issue: Issue): Promise<{ allowed: boolean; reason: string }> {
+  // Consume-once: only a marker NEWER than issues.reset_at triggers the clear,
+  // so repeated triggers reuse the same fresh session until the next button press.
+  private async applySessionReset(session: OpSession, issue: Issue, resetMs: number): Promise<void> {
+    const last = await this.store.getIssueResetAt(issue.id);
+    if (resetMs <= last) return;
+    await this.store.clearSessionPointers(issue.id);
+    await this.store.setIssueResetAt(issue.id, resetMs);
+    session.opencodeSessionId = undefined;
+    log.info(`engine: session reset via web for ${issue.trackerScopeKey}#${issue.trackerIssueId} — pointers cleared, starting fresh session`);
+  }
+
+  private async webGateAllows(issue: Issue): Promise<{ allowed: boolean; reason: string; resetMs?: number }> {
     const parts = issue.trackerScopeKey.split("/");
     const owner = parts[0] ?? "";
     const repo = parts.slice(1).join("/");
@@ -534,10 +545,10 @@ export class Engine {
     try {
       const resp = await fetch(url, { signal: AbortSignal.timeout(5000), headers: { Authorization: `token ${this.cfg.gitea.token}` } });
       if (!resp.ok) return { allowed: false, reason: `web returned ${resp.status}` };
-      const data = await resp.json() as { dispatchOff?: boolean; aiStatus?: string };
+      const data = await resp.json() as { dispatchOff?: boolean; aiStatus?: string; sessionResetMs?: number | null };
       if (data.dispatchOff) return { allowed: false, reason: "dispatch off" };
       if (data.aiStatus === "halted" || data.aiStatus === "dispatch_off") return { allowed: false, reason: `ai_status=${data.aiStatus}` };
-      return { allowed: true, reason: "ok" };
+      return { allowed: true, reason: "ok", resetMs: Number(data.sessionResetMs) || 0 };
     } catch (err) {
       log.warn(`engine: web gate query failed for ${issue.trackerScopeKey}#${issue.trackerIssueId}: ${(err as Error).message} — fail-closed (skipping)`);
       return { allowed: false, reason: `web unreachable: ${(err as Error).message}` };
@@ -1345,6 +1356,9 @@ export class Engine {
 
   private async execProcess(k: string, session: OpSession, issue: Issue, msg: Message) {
     const gate = await this.gateChecker(issue);
+    if (gate.allowed && gate.resetMs && gate.resetMs > 0) {
+      await this.applySessionReset(session, issue, gate.resetMs);
+    }
     if (!gate.allowed) {
       log.info(`engine: execProcess blocked by web gate (${gate.reason}) for ${k}`);
       await this.store.updateMessageStatus(msg.id, "failed", `gate: ${gate.reason}`);
@@ -1458,7 +1472,10 @@ export class Engine {
 
       this.processes.set(k, handle);
       this.lastOutputAt.set(k, Date.now());
-      if (!this.startedAt.has(k)) this.startedAt.set(k, Date.now());
+      // Budget is strictly per-run: a replacement spawn must never inherit the
+      // previous run's start timestamp (observed: a fresh pid killed 30s after
+      // spawn because the 3h watchdog still held the superseded run's start).
+      this.startedAt.set(k, Date.now());
       this.currentPrompt.set(k, msg.content);
 
       await this.store.updateSession(session.id, { opencodePid: handle.pid });
@@ -1974,7 +1991,13 @@ export class Engine {
           log.warn(`engine: run exceeded max runtime (${hrs}h) on ${k}, stopping`);
           await tracker.createComment(this.sessionToRef(session, issue), `[system] ⏹ **${session.name}** run exceeded ${hrs}h — stopped. Reply again on the issue to continue.`).catch(() => { /* best-effort */ });
           this.nudgeRounds.set(k, Engine.MAX_NUDGE_ROUNDS);
-          this.forceStop(k);
+          await this.forceStop(k);
+          // forceStop clears daemon-side state but intentionally skips
+          // finishRun (stopping flag), so without this the web ai_status
+          // stays "processing" forever — the exact stuck state users see
+          // after a capped run. Capped runs may have delivered partial
+          // work, so "completed" (not "failed") is the honest terminal.
+          void tracker.updateStatus(this.sessionToRef(session, issue), "completed");
           continue;
         }
 
