@@ -379,6 +379,22 @@ export class Store {
     const db = getDB();
     const cutoff = new Date(Date.now() - leaseTtlMs).toISOString();
 
+    // Identity reuse first: a fast restart (previous heartbeat still fresh)
+    // must keep the SAME row/id — daemon_id is embedded in web session links,
+    // so a fresh insert per boot orphans every historical link.
+    const mine = await db.get<{ id: number }>(
+      "SELECT id FROM {{daemons}} WHERE display_name = ? AND internal_endpoint = ? LIMIT 1",
+      [displayName, endpoint]
+    );
+    if (mine) {
+      const now = new Date().toISOString();
+      const res = await db.run(
+        "UPDATE {{daemons}} SET last_heartbeat = ?, status = 'active', capacity = ? WHERE id = ?",
+        [now, capacity, mine.id]
+      );
+      if (res.changes === 1) return mine.id;
+    }
+
     const orphan = await db.get<{ id: number }>(
       "SELECT id FROM {{daemons}} WHERE last_heartbeat < ? ORDER BY last_heartbeat LIMIT 1",
       [cutoff]
