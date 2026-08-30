@@ -402,7 +402,7 @@ const REPO_AI_RE = /^\/([^/]+)\/([^/]+)\/settings\/ai$/;
 const REPO_LABELS_RE = /^\/([^/]+)\/([^/]+)\/settings\/labels$/;
 const REPO_LABEL_ADD_RE = /^\/([^/]+)\/([^/]+)\/settings\/labels\/add$/;
 const REPO_LABEL_ACTION_RE = /^\/([^/]+)\/([^/]+)\/settings\/labels\/(\d+)\/(update|archive|unarchive|delete)$/;
-const REPO_ISSUE_HALT_RE = /^\/([^/]+)\/([^/]+)\/issues\/(\d+)\/(halt|resume|dispatch-off|dispatch-on)$/;
+const REPO_ISSUE_HALT_RE = /^\/([^/]+)\/([^/]+)\/issues\/(\d+)\/(halt|resume|dispatch-off|dispatch-on|reset-session)$/;
 const REPO_ISSUE_MODEL_RE = /^\/([^/]+)\/([^/]+)\/issues\/(\d+)\/model$/;
 const REPO_ISSUE_RUNTIME_RE = /^\/([^/]+)\/([^/]+)\/issues\/(\d+)\/runtime$/;
 const REPO_ISSUE_STATUS_RE = /^\/([^/]+)\/([^/]+)\/issues\/(\d+)\/ai-status$/;
@@ -611,7 +611,8 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
       const projectOff = cfgKv[`dispatchOff:${owner}/${repo}`] === "1";
       const aiStatus = issue?.ai_status ?? "";
       const issueOff = aiStatus === "dispatch_off" || aiStatus === "halted";
-      return json({ dispatchOff: globalOff || projectOff || issueOff, aiStatus });
+      const sessionResetMs = Number(cfgKv[`sessionReset:${owner}/${repo}#${number}`]) || null;
+      return json({ dispatchOff: globalOff || projectOff || issueOff, aiStatus, sessionResetMs });
     }
     if (url.pathname === "/api/v1/wake-logins" && req.method === "GET") {
       const owner = url.searchParams.get("owner") ?? "";
@@ -1911,6 +1912,13 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
         const issue = await getIssueWithMeta(project.id, number);
         if (!issue) return json({ error: "issue not found" }, 404);
         const statusMap: Record<string, string> = { halt: "halted", resume: "", "dispatch-off": "dispatch_off", "dispatch-on": "" };
+      if (action === "reset-session") {
+        if (!(await canAdminProject(project.id, ctx.user))) {
+          return json({ error: "admin role required" }, 403);
+        }
+        await setConfig(`sessionReset:${owner}/${repo}#${number}`, String(Date.now()));
+        return json({ ok: true, reset: true });
+      }
         const newStatus = statusMap[action] ?? "";
         const oldStatus = issue.ai_status ?? "";
         await updateIssueAiStatus(issue.id, newStatus);

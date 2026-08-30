@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { join } from "node:path";
-import { createIssue, createProject, ensureUser, updateIssueAiStatus } from "../src/store";
+import { createIssue, createProject, ensureUser, getProject, updateIssueAiStatus } from "../src/store";
 import { initDB, setConfig } from "../src/db";
 
 // Regression test: /api/v1/dispatch-state used to be shadowed by the Gitea
@@ -22,8 +22,8 @@ async function login(): Promise<void> {
   cookie = setCookie.split(";")[0] ?? "";
 }
 
-function fetchAuth(url: string): Promise<Response> {
-  return fetch(url, { headers: { Cookie: cookie } });
+function fetchAuth(url: string, init?: RequestInit): Promise<Response> {
+  return fetch(url, { ...init, headers: { Cookie: cookie } });
 }
 const OWNER = "dog";
 const REPO = `dsreg${process.pid % 1000}`;
@@ -109,4 +109,30 @@ test("dispatch-state tolerates unknown project and missing params", async () => 
 
   const missing = await fetchAuth(`${BASE}/api/v1/dispatch-state?owner=a`);
   expect(missing.status).toBe(400);
+});
+
+test("reset-session button: sets marker, surfaces in dispatch-state, renders on page", async () => {
+  await ensureUser("dog");
+  const project = (await getProject(OWNER, REPO)) ?? (await createProject(OWNER, REPO, "reset-session"));
+  const issue = await createIssue(project.id, "t", "b", "dog");
+
+  const before = (await (await fetchAuth(
+    `${BASE}/api/v1/dispatch-state?owner=${OWNER}&repo=${REPO}&number=${issue.number}`,
+  )).json()) as { sessionResetMs: number | null };
+  expect(before.sessionResetMs).toBeNull();
+
+  const btn = await fetchAuth(`${BASE}/${OWNER}/${REPO}/issues/${issue.number}/reset-session`, { method: "POST" });
+  expect(btn.status).toBe(200);
+  expect(((await btn.json()) as { ok: boolean }).ok).toBe(true);
+
+  const after = (await (await fetchAuth(
+    `${BASE}/api/v1/dispatch-state?owner=${OWNER}&repo=${REPO}&number=${issue.number}`,
+  )).json()) as { sessionResetMs: number | null };
+  expect(after.sessionResetMs).not.toBeNull();
+  expect(after.sessionResetMs!).toBeGreaterThan(1_700_000_000_000);
+
+  const page = await fetchAuth(`${BASE}/${OWNER}/${REPO}/issues/${issue.number}`);
+  const html = await page.text();
+  expect(html).toContain(`issues/${issue.number}/reset-session`);
+  expect(html).toContain("🔄 重置会话");
 });

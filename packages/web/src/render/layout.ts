@@ -214,6 +214,9 @@ export function renderLayout(props: LayoutProps, inner: string, initialItems: st
         ? `<button type="button" class="action-btn dispatch-btn" data-action-href="${escapeAttr(repoIssuesHref)}/${props.issueNumber}/dispatch-on" title="允许自动接单">🔔 恢复接单</button>`
         : `<button type="button" class="action-btn dispatch-btn" data-action-href="${escapeAttr(repoIssuesHref)}/${props.issueNumber}/dispatch-off" data-action-confirm="设为不自动接单？" title="关闭此 issue 的自动接单">🔕 暂停接单</button>`
     : "";
+  const resetBtnHtml = showActions
+    ? `<button type="button" class="action-btn dispatch-btn" data-action-href="${escapeAttr(repoIssuesHref)}/${props.issueNumber}/reset-session" data-action-confirm="重置 AI 会话？下次触发将从全新会话开始（历史评论保留）" title="重置 AI 会话（下次触发开新会话）">🔄 重置会话</button>`
+    : "";
   const runtimeSelectHtml = props.runtimeSelect && showActions
     ? `<span class="model-select-wrap"><select class="model-select" id="issueRuntimeSelect" title="此 issue 的运行时（新会话生效）">
   <option value="" ${props.runtimeSelect.current === "" ? "selected" : ""}>默认运行时</option>
@@ -251,7 +254,7 @@ export function renderLayout(props: LayoutProps, inner: string, initialItems: st
   <div class="meta-status">
     <span class="state-badge ${stateClass}">${stateLabel}</span>
     ${aiBadgeHtml}
-    ${(haltBtnHtml || dispatchBtnHtml || (props.customActions ?? []).length) ? `<span class="action-group">${haltBtnHtml}${dispatchBtnHtml}${runtimeSelectHtml}${modelSelectHtml}${(props.customActions ?? []).map((a) => {
+    ${(haltBtnHtml || dispatchBtnHtml || (props.customActions ?? []).length) ? `<span class="action-group">${haltBtnHtml}${dispatchBtnHtml}${resetBtnHtml}${runtimeSelectHtml}${modelSelectHtml}${(props.customActions ?? []).map((a) => {
       const attrs = [`data-action-href="${escapeAttr(a.href)}"`];
       if (a.method && a.method !== "POST") attrs.push(`data-action-method="${escapeAttr(a.method)}"`);
       if (a.confirm) attrs.push(`data-action-confirm="${escapeAttr(a.confirm)}"`);
