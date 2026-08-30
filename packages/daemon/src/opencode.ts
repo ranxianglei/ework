@@ -422,6 +422,13 @@ export class Engine {
   private static MAX_INLINE_SIZE = 4000;
   private static MAX_NUDGE_ROUNDS = 1;
   private static MAX_EMPTY_RESPONSE_ROUNDS = 1;
+  // A queued (pending) message older than this is dead context — e.g. forwards
+  // left over from a webhook echo storm, or comments queued behind a session
+  // that ran for hours. Replaying them re-runs stale prompts and ping-pongs
+  // nudges ("reply → done → drain next stale → nudge → reply …"), observed on
+  // dog/tasks#3: 17:24 storm forwards replayed at 20:09–20:11. Expire instead
+  // of replay; explicit retryMessage bypasses this via { force: true }.
+  private static MAX_PENDING_AGE_MS = 30 * 60_000;
   private static MAX_STUCK_NUDGE_ROUNDS = 1;
   private static MAX_RUNTIME_MS = 3 * 60 * 60 * 1000;
   private static OBSERVER_INTERVAL_MS = 5 * 60 * 1000;
@@ -1717,7 +1724,24 @@ export class Engine {
     }
   }
 
-  private async dequeueOrIdle(k: string, session: OpSession, issue: Issue, msg: Message) {
+  private async dequeueOrIdle(k: string, session: OpSession, issue: Issue, msg: Message, opts: { force?: boolean } = {}) {
+    if (!opts.force) {
+      let next: Message | undefined = msg;
+      while (next) {
+        const age = Date.now() - next.createdAt.getTime();
+        if (age <= Engine.MAX_PENDING_AGE_MS) break;
+        log.warn(`engine: expiring stale pending msg ${next.id.slice(0, 8)} for ${k} (age ${Math.round(age / 60_000)}min > ${Math.round(Engine.MAX_PENDING_AGE_MS / 60_000)}min) — skipping replay`);
+        await this.store.updateMessageStatus(next.id, "failed", "expired: stale pending message not replayed");
+        next = await this.store.getNextPendingMessage(session.id);
+      }
+      if (!next) {
+        this.clearRuntimeState(k);
+        await this.store.updateSession(session.id, { state: "idle" });
+        void this.drainGlobalPending();
+        return;
+      }
+      msg = next;
+    }
     log.info(`engine: running dequeued msg ${msg.id.slice(0, 8)} for ${k}`);
     await this.store.updateMessageStatus(msg.id, "running");
     this.running.add(k);
@@ -2238,7 +2262,7 @@ export class Engine {
     await this.store.updateMessageStatus(messageId, "pending");
     const k = this.sessionKey(session, issue);
     if (!this.running.has(k)) {
-      await this.dequeueOrIdle(k, session, issue, msg);
+      await this.dequeueOrIdle(k, session, issue, msg, { force: true });
     }
     return true;
   }
