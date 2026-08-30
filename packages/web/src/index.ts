@@ -8,7 +8,7 @@ import { homedir } from "os";
 import { loadConfig, DB_OVERRIDABLE, parseOverride, resolveTtsBackend } from "./config";
 import type { Config } from "./config";
 import { setConfig, deleteConfig, getConfigAll, initDB, getDB } from "./db";
-import { getActiveDaemons, listAllDaemons, getSessionDaemonMap, resolveDaemonEndpoint, getRunningSessionsForProject, resolveSessionUid } from "./coordination";
+import { getActiveDaemons, listAllDaemons, getSessionDaemonMap, resolveDaemonEndpoint, getRunningSessionsForProject, resolveSessionUid, routerDaemons } from "./coordination";
 import { testMysqlConnection, migrateSqliteToMysql, writeMysqlEnv, migrateMysqlToSqlite, writeSqliteEnv, migrateDaemonSqliteToMysql, generateMysqlDDL } from "./db-admin";
 import type { MysqlTargetOpts } from "./db-admin";
 import { checkAuth, makeAuthCookieHeader, clearAuthCookieHeader, loginHTML, sanitizeNext, ensureBootstrapAdmin, ensureBootstrapSystem, isReservedSystemLogin } from "./auth";
@@ -758,6 +758,23 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     const limit = Math.min(5000, Math.max(1, Number(url.searchParams.get("limit")) || 30));
     const daemonEp = url.searchParams.get("daemon");
     const daemonIdParam = url.searchParams.get("daemon_id");
+    // daemon_id is only a hint: ids churn across daemon reinstalls and the
+    // {{d_*}} mirror tables exist only in split-DB mysql deployments, so a
+    // stale hint must fall back to scanning daemons that hold the session.
+    const tryAllDaemons = async (): Promise<Response | null> => {
+      if (!/^ses_[0-9A-Za-z]{8,}/.test(sid)) return null;
+      let registry: Array<{ endpoint?: string }> = [];
+      try { registry = await routerDaemons(); } catch { registry = []; }
+      for (const d of registry) {
+        if (!d.endpoint) continue;
+        try {
+          const c = new RemoteOpencodeClient(d.endpoint);
+          const { html: body } = await buildSessionView(c, sid, desc, cfg.collapseLines, limit, all);
+          return html(body);
+        } catch { /* daemon does not hold this session — try next */ }
+      }
+      return null;
+    };
     if (!daemonEp && daemonIdParam) {
       const id = Number(daemonIdParam);
       if (Number.isFinite(id) && id > 0) {
@@ -776,6 +793,8 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
           } catch (e) {
             const status = e instanceof OpencodeError ? e.status : 500;
             if (status === 404) {
+              const scanned = await tryAllDaemons();
+              if (scanned) return scanned;
               return html(errorPage(
                 "会话不在该 daemon 上",
                 `会话 ${sid} 在 daemon ${effectiveId} (${ep}) 上找不到 (HTTP ${status})。\n\n` +
@@ -786,6 +805,9 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
             }
             throw e;
           }
+        } else {
+          const scanned = await tryAllDaemons();
+          if (scanned) return scanned;
         }
       }
     }

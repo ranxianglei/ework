@@ -36,7 +36,7 @@ interface RouterDaemonRow {
 
 let routerCache: { at: number; rows: RouterDaemonRow[] } | null = null;
 
-async function routerDaemons(): Promise<RouterDaemonRow[]> {
+export async function routerDaemons(): Promise<RouterDaemonRow[]> {
   if (routerCache && Date.now() - routerCache.at < 15_000) return routerCache.rows;
   try {
     const cfg = await loadConfig();
