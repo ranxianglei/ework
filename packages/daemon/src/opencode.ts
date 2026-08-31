@@ -300,7 +300,7 @@ export interface EngineOptions {
   daemonId: number;
   takeover?: TakeoverStrategy;
   backend?: RuntimeBackend;
-  gateChecker?: (issue: Issue) => Promise<{ allowed: boolean; reason: string; resetMs?: number }>;
+  gateChecker?: (issue: Issue) => Promise<{ allowed: boolean; reason: string; resetMs?: number; concurrency?: number | null }>;
   replyBurst?: { max: number; windowMs: number };
 }
 
@@ -328,6 +328,15 @@ export function isAiGeneratedComment(body: string): boolean {
   if (t.startsWith("🏷")) return true;
   if (/^\[(?:system|bot)\]/i.test(t)) return true;
   return false;
+}
+
+export function upstreamAckSuffix(id?: number | null): string {
+  return id ? `\n<!-- upstream-comment: ${id} -->` : "";
+}
+
+export function parseUpstreamAck(body: string): number | null {
+  const m = body.match(/<!-- upstream-comment: (\d+) -->/);
+  return m ? Number(m[1]) : null;
 }
 
 // Wake policy shared by issue_opened and comment_created: blacklist wins,
@@ -384,7 +393,7 @@ export class Engine {
   private readonly daemonId: number;
   private readonly takeover: TakeoverStrategy;
   private readonly backend: RuntimeBackend;
-  private gateChecker: (issue: Issue) => Promise<{ allowed: boolean; reason: string; resetMs?: number }>;
+  private gateChecker: (issue: Issue) => Promise<{ allowed: boolean; reason: string; resetMs?: number; concurrency?: number | null }>;
   private heartbeatTimer?: ReturnType<typeof setInterval>;
   private maxConcurrent: number;
   private maxConcurrentExplicit: boolean;
@@ -401,7 +410,8 @@ export class Engine {
   private startedAt = new Map<string, number>();
   private progressCommentId = new Map<string, string>();
   private pickupCommentId = new Map<string, string>();
-  private forwardCommentId = new Map<string, string>();
+  private forwardCommentId = new Map<string, { id: string; upstreamId?: number | null }>();
+  private projectConcurrencyCache = new Map<string, { v: number; at: number }>();
 
   private nudgeRounds = new Map<string, number>();
   private emptyResponseRounds = new Map<string, number>();
@@ -556,7 +566,7 @@ export class Engine {
     log.info(`engine: session reset via web for ${issue.trackerScopeKey}#${issue.trackerIssueId} — pointers cleared, starting fresh session`);
   }
 
-  private async webGateAllows(issue: Issue): Promise<{ allowed: boolean; reason: string; resetMs?: number }> {
+  private async webGateAllows(issue: Issue): Promise<{ allowed: boolean; reason: string; resetMs?: number; concurrency?: number | null }> {
     const parts = issue.trackerScopeKey.split("/");
     const owner = parts[0] ?? "";
     const repo = parts.slice(1).join("/");
@@ -565,10 +575,10 @@ export class Engine {
     try {
       const resp = await fetch(url, { signal: AbortSignal.timeout(5000), headers: { Authorization: `token ${this.cfg.gitea.token}` } });
       if (!resp.ok) return { allowed: false, reason: `web returned ${resp.status}` };
-      const data = await resp.json() as { dispatchOff?: boolean; aiStatus?: string; sessionResetMs?: number | null };
-      if (data.dispatchOff) return { allowed: false, reason: "dispatch off" };
-      if (data.aiStatus === "halted" || data.aiStatus === "dispatch_off") return { allowed: false, reason: `ai_status=${data.aiStatus}` };
-      return { allowed: true, reason: "ok", resetMs: Number(data.sessionResetMs) || 0 };
+      const data = await resp.json() as { dispatchOff?: boolean; aiStatus?: string; sessionResetMs?: number | null; concurrency?: number | null };
+      if (data.dispatchOff) return { allowed: false, reason: "dispatch off", concurrency: data.concurrency ?? null };
+      if (data.aiStatus === "halted" || data.aiStatus === "dispatch_off") return { allowed: false, reason: `ai_status=${data.aiStatus}`, concurrency: data.concurrency ?? null };
+      return { allowed: true, reason: "ok", resetMs: Number(data.sessionResetMs) || 0, concurrency: data.concurrency ?? null };
     } catch (err) {
       log.warn(`engine: web gate query failed for ${issue.trackerScopeKey}#${issue.trackerIssueId}: ${(err as Error).message} — fail-closed (skipping)`);
       return { allowed: false, reason: `web unreachable: ${(err as Error).message}` };
@@ -1110,8 +1120,8 @@ export class Engine {
 
         // Immediate ack
         {
-          const c = await tracker.createComment(ref, `[system] 🏷 ${this.sessionRef(session)} ✓ Message forwarded to **${session.name}**${this.running.has(this.sessionKey(session, issue)) ? " (running)" : ""}.\n> workdir: ${this.workdirLink(workdir)}`);
-          if (!session.opencodeSessionId) this.forwardCommentId.set(this.sessionKey(session, issue), c.id);
+          const c = await tracker.createComment(ref, `[system] 🏷 ${this.sessionRef(session)} ✓ Message forwarded to **${session.name}**${this.running.has(this.sessionKey(session, issue)) ? " (running)" : ""}.\n> workdir: ${this.workdirLink(workdir)}${upstreamAckSuffix(comment.upstreamCommentId)}`);
+          if (!session.opencodeSessionId) this.forwardCommentId.set(this.sessionKey(session, issue), { id: c.id, upstreamId: comment.upstreamCommentId ?? null });
         }
 
         await this.enqueueOrRun(session, issue, prompt, comment.id, model);
@@ -1162,7 +1172,7 @@ export class Engine {
         comment.author, comment.authorKind, issueData.title, workdir, instructions,
         this.wakeWhitelistCache.get(scopeKey)?.logins ?? []
       );
-      await tracker.createComment(ref, `[system] 🏷 ${this.sessionRef(session)} ✓ Message forwarded to **${session.name}**${this.running.has(this.sessionKey(session, issue)) ? " (running)" : ""}.\n> workdir: ${this.workdirLink(workdir)}`);
+      await tracker.createComment(ref, `[system] 🏷 ${this.sessionRef(session)} ✓ Message forwarded to **${session.name}**${this.running.has(this.sessionKey(session, issue)) ? " (running)" : ""}.\n> workdir: ${this.workdirLink(workdir)}${upstreamAckSuffix(comment.upstreamCommentId)}`);
       await this.enqueueOrRun(session, issue, prompt, comment.id, model);
     }
     } finally {
@@ -1316,6 +1326,13 @@ export class Engine {
       return;
     }
 
+      const projKey = this.projectKeyFor(k);
+    const projCap = this.projectConcurrencyCache.get(projKey)?.v;
+    if (projCap != null && this.projectRunningCount(projKey) >= projCap) {
+      log.info(`engine: project concurrency limit reached for ${projKey} (${this.projectRunningCount(projKey)}/${projCap}), message ${msg.id.slice(0, 8)} queued`);
+      return;
+    }
+
     // Not running — execute directly
     await this.executeMessage(k, session, issue, msg);
   }
@@ -1383,6 +1400,13 @@ export class Engine {
 
   private async execProcess(k: string, session: OpSession, issue: Issue, msg: Message) {
     const gate = await this.gateChecker(issue);
+    const [projOwner, ...projRest] = issue.trackerScopeKey.split("/");
+    const projCacheKey = `${projOwner}/${projRest.join("/")}`;
+    if (typeof gate.concurrency === "number" && gate.concurrency > 0) {
+      this.projectConcurrencyCache.set(projCacheKey, { v: gate.concurrency, at: Date.now() });
+    } else {
+      this.projectConcurrencyCache.delete(projCacheKey);
+    }
     if (gate.allowed && gate.resetMs && gate.resetMs > 0) {
       await this.applySessionReset(session, issue, gate.resetMs);
     }
@@ -1480,11 +1504,11 @@ export class Engine {
                   .editComment(ref, pickupId, `[system] 🏷 ${this.sessionRef(session)} 🔄 **${session.name}** picked up this issue.\n> workdir: ${this.workdirLink(workdir)}`)
                   .catch((err) => log.error(`engine: failed to rewrite pickup comment for ${k}:`, (err as Error).message));
               }
-              const forwardId = this.forwardCommentId.get(k);
-              if (forwardId) {
+              const forward = this.forwardCommentId.get(k);
+              if (forward) {
                 this.forwardCommentId.delete(k);
-                const body = `[system] 🏷 ${this.sessionRef(session)} ✓ Message forwarded to **${session.name}**${this.running.has(k) ? " (running)" : ""}.\n> workdir: ${this.workdirLink(workdir)}`;
-                await tracker.editComment(ref, forwardId, body).catch(() => { /* cosmetic rewrite */ });
+                const body = `[system] 🏷 ${this.sessionRef(session)} ✓ Message forwarded to **${session.name}**${this.running.has(k) ? " (running)" : ""}.\n> workdir: ${this.workdirLink(workdir)}${upstreamAckSuffix(forward.upstreamId)}`;
+                await tracker.editComment(ref, forward.id, body).catch(() => { /* cosmetic rewrite */ });
               }
             }
           },
@@ -1725,6 +1749,20 @@ export class Engine {
     await this.dequeueOrIdle(k, session, issue, next);
   }
 
+  private projectKeyFor(k: string): string {
+    const body = k.split("#")[0] ?? "";
+    const colon = body.indexOf(":");
+    return colon === -1 ? body : body.slice(colon + 1);
+  }
+
+  private projectRunningCount(projKey: string): number {
+    let n = 0;
+    for (const rk of this.running.keys()) {
+      if (this.projectKeyFor(rk) === projKey) n++;
+    }
+    return n;
+  }
+
   private async drainGlobalPending(): Promise<void> {
     if (this.destroyed) return;
     const slotsAvailable = this.maxConcurrent - this.running.size;
@@ -1739,6 +1777,9 @@ export class Engine {
       if (!issue || issue.state === "closed") continue;
       const k = this.sessionKey(session, issue);
       if (this.running.has(k)) continue;
+    const projKey = this.projectKeyFor(k);
+      const projCap = this.projectConcurrencyCache.get(projKey)?.v;
+      if (projCap != null && this.projectRunningCount(projKey) >= projCap) continue;
       const won = await this.store.claimMessage(msg.id);
       if (!won) continue;
       log.info(`engine: drainGlobalPending picked up msg ${msg.id.slice(0, 8)} for ${k}`);

@@ -217,3 +217,57 @@ describe("concurrency: maxConcurrent limiting", () => {
     await waitFor(() => readCounter() === 4, 8000); // 2 initial + 2 nudges (MAX_NUDGE_ROUNDS=1)
   });
 });
+
+describe("concurrency: per-project limits", () => {
+  function projEvent(issueId: string, repo: string): TrackerEvent {
+    return {
+      type: "issue_opened",
+      ref: { trackerType: "gitea", scope: { owner: "dog", repo }, issueId },
+      issue: { title: `proj ${repo}`, body: "test body", state: "open", author: "tester" },
+    };
+  }
+
+  it("project cap=1 queues 2nd same-project message while another project runs free", async () => {
+    const store = new Store();
+    const cfg = makeConfig(4);
+    let gateCalls = 0;
+    const engine = await bootEngine("P1", store, cfg, 7104);
+    (engine as unknown as { gateChecker: (i: Issue) => Promise<{ allowed: boolean; reason: string; concurrency?: number | null }> }).gateChecker =
+      async () => ({ allowed: true, reason: "test", concurrency: gateCalls++ < 1 ? 1 : 1 });
+
+    // First message seeds the cache via execProcess, spawns (blocks 600ms)
+    await engine.handleEvent(projEvent("500", "alpha"));
+    await waitFor(() => readCounter() === 1, 3000);
+    expect(readCounter()).toBe(1);
+
+    // Second message SAME project → project cap 1 → queued, no spawn
+    await engine.handleEvent(projEvent("501", "alpha"));
+    await new Promise((r) => setTimeout(r, 300));
+    expect(readCounter()).toBe(1);
+
+    // Message in ANOTHER project (cache empty for it) → spawns freely
+    await engine.handleEvent(projEvent("600", "beta"));
+    await waitFor(() => readCounter() === 2, 3000);
+    expect(readCounter()).toBe(2);
+
+    // After alpha's first run finishes, drain picks up queued alpha msg
+    await waitFor(() => readCounter() === 3, 8000);
+    expect(readCounter()).toBe(3);
+  });
+
+  it("project cap cleared when gate returns null concurrency", async () => {
+    const store = new Store();
+    const cfg = makeConfig(4);
+    const engine = await bootEngine("P2", store, cfg, 7105);
+    let calls = 0;
+    (engine as unknown as { gateChecker: (i: Issue) => Promise<{ allowed: boolean; reason: string; concurrency?: number | null }> }).gateChecker =
+      async () => ({ allowed: true, reason: "test", concurrency: calls++ < 2 ? 1 : null });
+
+    await engine.handleEvent(projEvent("700", "gamma"));
+    await waitFor(() => readCounter() === 1, 3000);
+    // cap was 1 for the seeding run; next gate flips it off
+    await engine.handleEvent(projEvent("701", "gamma"));
+    await waitFor(() => readCounter() === 2, 3000);
+    expect(readCounter()).toBe(2);
+  });
+});

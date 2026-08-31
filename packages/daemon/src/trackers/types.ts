@@ -31,6 +31,8 @@ export interface TrackerEvent {
     body: string;
     author: string;
     authorKind?: string;
+    // Set by ework-web when this comment was synced from an upstream repo (GitHub); the daemon uses it to ack upstream readers via reaction.
+    upstreamCommentId?: number | null;
   };
   // Resolved "provider/model" string from ework-web (project override or
   // global default). Empty/undefined = no override; engine omits --model
@@ -53,6 +55,7 @@ export interface TrackerComment {
   body: string;
   author: string;
   authorKind?: string;
+  upstreamCommentId?: number | null;
   createdAt?: string; // ISO timestamp
 }
 

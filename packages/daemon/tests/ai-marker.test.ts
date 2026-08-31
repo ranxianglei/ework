@@ -3,7 +3,7 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { Store } from "../src/op";
-import { Engine, isAiGeneratedComment } from "../src/opencode";
+import { Engine, isAiGeneratedComment, upstreamAckSuffix, parseUpstreamAck } from "../src/opencode";
 import { initDB, getDB } from "../src/db";
 import { loadConfig, type Config } from "../src/config";
 import type {
@@ -143,6 +143,20 @@ describe("isAiGeneratedComment", () => {
     expect(isAiGeneratedComment("还是不行,再看看")).toBe(false);
     expect(isAiGeneratedComment("test [bot] not at start")).toBe(false);
     expect(isAiGeneratedComment("")).toBe(false);
+  });
+});
+
+describe("upstream ack marker", () => {
+  test("suffix carries the upstream comment id", () => {
+    expect(upstreamAckSuffix(12345)).toBe("\n<!-- upstream-comment: 12345 -->");
+    expect(upstreamAckSuffix(null)).toBe("");
+    expect(upstreamAckSuffix(undefined)).toBe("");
+  });
+
+  test("parseUpstreamAck round-trips and tolerates surrounding text", () => {
+    expect(parseUpstreamAck(`[system] 🏷 [ses_1](/sessions/ses_1) ✓ Message forwarded to **awork** (running).\n> workdir: /x/y${upstreamAckSuffix(987)}`)).toBe(987);
+    expect(parseUpstreamAck("[system] 🏷 plain ack without marker")).toBeNull();
+    expect(parseUpstreamAck("")).toBeNull();
   });
 });
 
