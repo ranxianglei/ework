@@ -393,6 +393,7 @@ const REPO_VISIBILITY_RE = /^\/([^/]+)\/([^/]+)\/settings\/visibility$/;
 const REPO_DISPATCH_RE = /^\/([^/]+)\/([^/]+)\/settings\/dispatch$/;
 
 const REPO_WAKE_LOGINS_RE = /^\/([^/]+)\/([^/]+)\/settings\/ai\/wake-logins$/;
+const REPO_CONCURRENCY_RE = /^\/([^/]+)\/([^/]+)\/settings\/ai\/concurrency$/;
 const REPO_HALT_ALL_RE = /^\/([^/]+)\/([^/]+)\/settings\/ai\/halt-all$/;
 const SETTINGS_DISPATCH_RE = /^\/settings\/dispatch$/;
 const REPO_UPSTREAMS_RE = /^\/([^/]+)\/([^/]+)\/settings\/upstreams$/;
@@ -612,7 +613,8 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
       const aiStatus = issue?.ai_status ?? "";
       const issueOff = aiStatus === "dispatch_off" || aiStatus === "halted";
       const sessionResetMs = Number(cfgKv[`sessionReset:${owner}/${repo}#${number}`]) || null;
-      return json({ dispatchOff: globalOff || projectOff || issueOff, aiStatus, sessionResetMs });
+      const concurrency = Number(cfgKv[`concurrency:${owner}/${repo}`]) || null;
+      return json({ dispatchOff: globalOff || projectOff || issueOff, aiStatus, sessionResetMs, concurrency });
     }
     if (url.pathname === "/api/v1/wake-logins" && req.method === "GET") {
       const owner = url.searchParams.get("owner") ?? "";
@@ -2173,7 +2175,30 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
       return Response.redirect(`${back}?ok=1&ok_msg=${encodeURIComponent(isOff ? "已开启自动接单" : "已关闭自动接单")}`, 303);
     }
 
+    const repoConcurrencyMatch = url.pathname.match(REPO_CONCURRENCY_RE);
     const repoWakeLoginsMatch = url.pathname.match(REPO_WAKE_LOGINS_RE);
+    if (repoConcurrencyMatch) {
+      const [, owner, repo] = repoConcurrencyMatch;
+      if (!(owner && repo)) return html(errorPage("bad path", ""), 400);
+      const project = await getProject(owner, repo);
+      if (!project) return html(errorPage("项目不存在", ""), 404);
+      const aiBack = `${url.origin}/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/settings/ai`;
+      if (!(await canAdminProject(project.id, ctx.user))) {
+        return Response.redirect(`${aiBack}?err=${encodeURIComponent("无权限")}`, 303);
+      }
+      const fd = await req.formData();
+      const raw = String(fd.get("limit") ?? "").trim();
+      const parsed = Number(raw);
+      const key = `concurrency:${owner}/${repo}`;
+      if (raw === "" || parsed === 0) {
+        await deleteConfig(key);
+      } else if (!Number.isInteger(parsed) || parsed < 1 || parsed > 100) {
+        return Response.redirect(`${aiBack}?err=${encodeURIComponent("并发上限需为 1-100 的整数（0 或留空表示不限制）")}`, 303);
+      } else {
+        await setConfig(key, String(parsed));
+      }
+      return Response.redirect(aiBack, 303);
+    }
     if (repoWakeLoginsMatch) {
       const [, owner, repo] = repoWakeLoginsMatch;
       if (!(owner && repo)) return html(errorPage("bad path", ""), 400);
@@ -2528,7 +2553,8 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     const running = await getRunningSessionsForProject(`${owner}/${repo}`);
     const processingCount = new Set(running.map((r) => r.issueNumber)).size;
     const wakeLoginsRaw = dispatchCfg[`wakeLogins:${owner}/${repo}`] ?? "";
-    return html(buildProjectAiPage(project, dispatchOff, globalDispatchOff, processingCount, wakeLoginsRaw).html);
+    const concurrencyLimit = dispatchCfg[`concurrency:${owner}/${repo}`] ?? "";
+    return html(buildProjectAiPage(project, dispatchOff, globalDispatchOff, processingCount, wakeLoginsRaw, concurrencyLimit).html);
   }
 
   const upstreamsPage = url.pathname.match(REPO_UPSTREAMS_RE);

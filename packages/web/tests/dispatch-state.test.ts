@@ -111,6 +111,36 @@ test("dispatch-state tolerates unknown project and missing params", async () => 
   expect(missing.status).toBe(400);
 });
 
+test("per-project concurrency limit: set via settings route, surfaced in dispatch-state", async () => {
+  await ensureUser("dog");
+  const project = (await getProject(OWNER, REPO)) ?? (await createProject(OWNER, REPO, "concurrency"));
+  const issue = await createIssue(project.id, "t", "b", "dog");
+  const q = `owner=${OWNER}&repo=${REPO}&number=${issue.number}`;
+
+  const before = (await (await fetchAuth(`${BASE}/api/v1/dispatch-state?${q}`)).json()) as { concurrency: number | null };
+  expect(before.concurrency).toBeNull();
+
+  const set = await fetchAuth(`${BASE}/${OWNER}/${REPO}/settings/ai/concurrency`, {
+    method: "POST",
+    body: new URLSearchParams({ limit: "10" }),
+    redirect: "manual",
+  });
+  expect(set.status).toBe(303);
+
+  const during = (await (await fetchAuth(`${BASE}/api/v1/dispatch-state?${q}`)).json()) as { concurrency: number | null };
+  expect(during.concurrency).toBe(10);
+
+  const clear = await fetchAuth(`${BASE}/${OWNER}/${REPO}/settings/ai/concurrency`, {
+    method: "POST",
+    body: new URLSearchParams({ limit: "" }),
+    redirect: "manual",
+  });
+  expect(clear.status).toBe(303);
+
+  const after = (await (await fetchAuth(`${BASE}/api/v1/dispatch-state?${q}`)).json()) as { concurrency: number | null };
+  expect(after.concurrency).toBeNull();
+});
+
 test("reset-session button: sets marker, surfaces in dispatch-state, renders on page", async () => {
   await ensureUser("dog");
   const project = (await getProject(OWNER, REPO)) ?? (await createProject(OWNER, REPO, "reset-session"));
