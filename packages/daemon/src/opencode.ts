@@ -2239,6 +2239,7 @@ export class Engine {
 
     // Group by session and re-run earliest pending
     const bySession = new Map<string, Message[]>();
+    let reservedRecoverSlots = 0;
     for (const msg of stuck) {
       const arr = bySession.get(msg.sessionId) ?? [];
       arr.push(msg);
@@ -2289,12 +2290,17 @@ export class Engine {
         continue;
       }
 
-      if (this.running.size >= this.maxConcurrent) {
-        log.info(`engine: recover — deferring msg ${first.id.slice(0, 8)} for ${k} (concurrency ${this.running.size}/${this.maxConcurrent}), stays pending`);
+      if (this.running.size + reservedRecoverSlots >= this.maxConcurrent) {
+        log.info(`engine: recover — deferring msg ${first.id.slice(0, 8)} for ${k} (concurrency ${this.running.size}+${reservedRecoverSlots}/${this.maxConcurrent}), stays pending`);
         continue;
       }
-      log.info(`engine: recovering msg ${first.id.slice(0, 8)} for ${k}`);
-      await this.dequeueOrIdle(k, session, issue, first);
+      reservedRecoverSlots++;
+      try {
+        log.info(`engine: recovering msg ${first.id.slice(0, 8)} for ${k}`);
+        await this.dequeueOrIdle(k, session, issue, first);
+      } finally {
+        reservedRecoverSlots--;
+      }
     }
   }
 
