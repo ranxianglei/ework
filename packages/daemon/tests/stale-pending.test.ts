@@ -65,15 +65,15 @@ function cfgOf(): Config {
   };
 }
 
-async function bootEngine(): Promise<{ engine: Engine; store: Store }> {
+async function bootEngine(gate?: () => Promise<{ allowed: boolean; reason: string; unreachable?: boolean }>): Promise<{ engine: Engine; store: Store; daemonId: number }> {
   const store = new Store();
   const daemonId = await store.registerDaemon("host-stale", "127.0.0.1:0", 4, 60_000);
   const engine = new Engine(cfgOf(), store, trackerRegistry, {
     daemonId,
-    gateChecker: async () => ({ allowed: true, reason: "test", resetMs: 0 }),
+    gateChecker: gate ?? (async () => ({ allowed: true, reason: "test", resetMs: 0 })),
   });
   liveEngines.push(engine);
-  return { engine, store };
+  return { engine, store, daemonId };
 }
 
 const REF: TrackerRef = {
@@ -199,5 +199,42 @@ describe("stale pending expiry", () => {
       const row = await store.getMessage(msg.id);
       if (row?.status !== "running") throw new Error(`status=${row?.status}`);
     });
+  });
+});
+
+describe("boot-race tolerance (web unreachable at recover)", () => {
+  test("unreachable gate keeps queued messages pending for later retry", async () => {
+    const { engine, store, daemonId } = await bootEngine(async () => ({
+      allowed: false,
+      reason: "web unreachable: Unable to connect",
+      unreachable: true,
+    }));
+    const issue = await store.findOrCreateIssue(REF, "ranxianglei/billion-context", "t");
+    await store.claimIssue(issue.id, daemonId);
+    const session = await store.createSession(issue.id, "ework-daemon");
+    const msg = await store.createMessage(session.id, "queued during simultaneous restart");
+
+    await (engine as unknown as { recover: () => Promise<void> }).recover();
+
+    const row = await store.getMessage(msg.id);
+    expect(row?.status).toBe("pending");
+    expect(row?.error).toBeFalsy();
+  });
+
+  test("policy deny still discards queued messages", async () => {
+    const { engine, store, daemonId } = await bootEngine(async () => ({
+      allowed: false,
+      reason: "dispatch off",
+    }));
+    const issue = await store.findOrCreateIssue(REF, "ranxianglei/billion-context", "t");
+    await store.claimIssue(issue.id, daemonId);
+    const session = await store.createSession(issue.id, "ework-daemon");
+    const msg = await store.createMessage(session.id, "queued behind a halted issue");
+
+    await (engine as unknown as { recover: () => Promise<void> }).recover();
+
+    const row = await store.getMessage(msg.id);
+    expect(row?.status).toBe("failed");
+    expect(row?.error).toContain("web gate: dispatch off");
   });
 });

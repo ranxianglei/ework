@@ -1,5 +1,5 @@
 import { beforeAll, beforeEach, afterEach, describe, test, expect } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "fs";
+import { mkdtempSync, rmSync, writeFileSync, chmodSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { Store } from "../src/op";
@@ -105,6 +105,7 @@ function commentEvent(body: string): TrackerEvent {
 
 beforeAll(async () => {
   writeFileSync(FAKE_BIN, "#!/bin/sh\nsleep 0.3\nexit 0\n");
+  chmodSync(FAKE_BIN, 0o755);
   await initDB();
 });
 

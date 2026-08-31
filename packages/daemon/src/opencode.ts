@@ -393,7 +393,7 @@ export class Engine {
   private readonly daemonId: number;
   private readonly takeover: TakeoverStrategy;
   private readonly backend: RuntimeBackend;
-  private gateChecker: (issue: Issue) => Promise<{ allowed: boolean; reason: string; resetMs?: number; concurrency?: number | null }>;
+  private gateChecker: (issue: Issue) => Promise<{ allowed: boolean; reason: string; resetMs?: number; concurrency?: number | null; unreachable?: boolean }>;
   private heartbeatTimer?: ReturnType<typeof setInterval>;
   private maxConcurrent: number;
   private maxConcurrentExplicit: boolean;
@@ -566,7 +566,7 @@ export class Engine {
     log.info(`engine: session reset via web for ${issue.trackerScopeKey}#${issue.trackerIssueId} — pointers cleared, starting fresh session`);
   }
 
-  private async webGateAllows(issue: Issue): Promise<{ allowed: boolean; reason: string; resetMs?: number; concurrency?: number | null }> {
+  private async webGateAllows(issue: Issue): Promise<{ allowed: boolean; reason: string; resetMs?: number; concurrency?: number | null; unreachable?: boolean }> {
     const parts = issue.trackerScopeKey.split("/");
     const owner = parts[0] ?? "";
     const repo = parts.slice(1).join("/");
@@ -581,7 +581,7 @@ export class Engine {
       return { allowed: true, reason: "ok", resetMs: Number(data.sessionResetMs) || 0, concurrency: data.concurrency ?? null };
     } catch (err) {
       log.warn(`engine: web gate query failed for ${issue.trackerScopeKey}#${issue.trackerIssueId}: ${(err as Error).message} — fail-closed (skipping)`);
-      return { allowed: false, reason: `web unreachable: ${(err as Error).message}` };
+      return { allowed: false, reason: `web unreachable: ${(err as Error).message}`, unreachable: true };
     }
   }
 
@@ -1980,17 +1980,30 @@ export class Engine {
       return;
     }
 
+    let webReachable = false;
     for (const issue of ownedIssues) {
       try {
     const gate = await this.gateChecker(issue);
         if (!gate.allowed) {
+          if (gate.unreachable) { webReachable = false; break; }
           log.info(`engine: observer — web gate blocked ${issue.trackerScopeKey}#${issue.trackerIssueId} (${gate.reason})`);
           continue;
         }
+        webReachable = true;
         await this.observeIssue(issue);
       } catch (err) {
         log.error(`engine: observer error for ${issue.trackerScopeKey}#${issue.trackerIssueId}:`, (err as Error).message);
       }
+    }
+
+    if (webReachable && this.running.size < this.maxConcurrent) {
+      try {
+        const stranded = await this.store.getGlobalPendingMessages(1);
+        if (stranded.length > 0) {
+          log.info(`engine: observer — found stranded pending messages, draining`);
+          void this.drainGlobalPending();
+        }
+      } catch { /* transient store error — next cycle retries */ }
     }
   }
 
@@ -2240,6 +2253,10 @@ export class Engine {
 
       const gate = await this.gateChecker(issue);
       if (!gate.allowed) {
+        if (gate.unreachable) {
+          log.warn(`engine: recover — web unreachable for ${issue.trackerScopeKey}#${issue.trackerIssueId}, keeping queued messages for retry`);
+          continue;
+        }
         log.info(`engine: recover — web gate blocked ${issue.trackerScopeKey}#${issue.trackerIssueId} (${gate.reason}), discarding queued (pending) messages`);
         for (const m of msgs) {
           if (m.status === "pending") {
