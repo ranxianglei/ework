@@ -2167,7 +2167,7 @@ export class Engine {
 
   // ─── Recovery ───
 
-  private async recover() {
+  async recover() {
     // Release stale owners first so we can adopt orphaned issues that just
     // became available (this daemon is fresh; any dead daemon's slots are now
     // reclaimable).
@@ -2285,10 +2285,14 @@ export class Engine {
         log.info(`engine: recovered msg ${first.id.slice(0, 8)} for ${k} — bot reply detected, marking done`);
         await this.store.updateMessageStatus(first.id, "done");
         const next = await this.store.getNextPendingMessage(session.id);
-        if (next) { await this.dequeueOrIdle(k, session, issue, next); }
+        if (next && this.running.size < this.maxConcurrent) { await this.dequeueOrIdle(k, session, issue, next); }
         continue;
       }
 
+      if (this.running.size >= this.maxConcurrent) {
+        log.info(`engine: recover — deferring msg ${first.id.slice(0, 8)} for ${k} (concurrency ${this.running.size}/${this.maxConcurrent}), stays pending`);
+        continue;
+      }
       log.info(`engine: recovering msg ${first.id.slice(0, 8)} for ${k}`);
       await this.dequeueOrIdle(k, session, issue, first);
     }

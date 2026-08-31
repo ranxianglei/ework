@@ -25,7 +25,7 @@ import type {
 // so the engine's running.size stays > 0 while we dispatch a 2nd message.
 
 const FAKE_BIN = join(tmpdir(), "fake-opencode-concurrency.sh");
-const BLOCK_MS = 600;
+const BLOCK_MS = 1500;
 const LEASE_TTL_MS = 500;
 const HEARTBEAT_MS = 100;
 
@@ -307,5 +307,27 @@ describe("concurrency: retryMessage respects cap", () => {
       await new Promise((res) => setTimeout(res, 100));
     }
     expect(finalStatus).not.toBe("pending");
+  });
+});
+
+describe("concurrency: recover respects cap", () => {
+  it("boot recovery spawns at most maxConcurrent, rest stay pending", async () => {
+    const store = new Store();
+    const cfg = makeConfig(1);
+    const engine = await bootEngine("V", store, cfg, 7105);
+
+    await engine.handleEvent(openedEvent("400", "issue V1"));
+    await engine.handleEvent(openedEvent("401", "issue V2"));
+    await engine.handleEvent(openedEvent("402", "issue V3"));
+    await waitFor(() => readCounter() === 1, 3000);
+    expect(readCounter()).toBe(1);
+
+    const db = getDB();
+    await db.run("UPDATE {{messages}} SET status = 'running' WHERE status = 'pending'");
+    await engine.recover();
+
+    const statuses = await db.all<{ status: string; c: number }>("SELECT status, COUNT(*) AS c FROM {{messages}} GROUP BY status");
+    const pendingLeft = statuses.find((r) => r.status === "pending")?.c ?? 0;
+    expect(pendingLeft).toBe(2);
   });
 });
