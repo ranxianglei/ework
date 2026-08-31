@@ -2342,7 +2342,11 @@ export class Engine {
     await this.store.updateMessageStatus(messageId, "pending");
     const k = this.sessionKey(session, issue);
     if (!this.running.has(k)) {
-      await this.dequeueOrIdle(k, session, issue, msg, { force: true });
+      if (this.running.size >= this.maxConcurrent) {
+        log.info(`engine: retry queued for ${k} (concurrency ${this.running.size}/${this.maxConcurrent})`);
+      } else {
+        await this.dequeueOrIdle(k, session, issue, msg, { force: true });
+      }
     }
     return true;
   }

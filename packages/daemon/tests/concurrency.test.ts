@@ -271,3 +271,41 @@ describe("concurrency: per-project limits", () => {
     expect(readCounter()).toBe(2);
   });
 });
+
+describe("concurrency: retryMessage respects cap", () => {
+  it("force retry while full leaves message pending (no cap bypass)", async () => {
+    const store = new Store();
+    const cfg = makeConfig(1);
+    const engine = await bootEngine("R", store, cfg, 7103);
+
+    await engine.handleEvent(openedEvent("300", "issue R1"));
+    await waitFor(() => readCounter() === 1, 3000);
+    expect(readCounter()).toBe(1);
+
+    await engine.handleEvent(openedEvent("301", "issue R2"));
+    await new Promise((r) => setTimeout(r, 200));
+    expect(readCounter()).toBe(1);
+
+    const db = getDB();
+    const row = await db.get<{ uid: string }>("SELECT uid FROM {{messages}} WHERE status = 'pending' LIMIT 1");
+    const pendingId = row?.uid;
+    expect(pendingId).toBeString();
+
+    await db.run("UPDATE {{messages}} SET status = 'failed', error = 'force stopped' WHERE uid = ?", [pendingId]);
+    const retried = await engine.retryMessage(pendingId!);
+    expect(retried).toBe(true);
+
+    const after = await db.get<{ status: string }>("SELECT status FROM {{messages}} WHERE uid = ?", [pendingId]);
+    expect(after?.status).toBe("pending");
+
+    let finalStatus = "pending";
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline) {
+      const r = await db.get<{ status: string }>("SELECT status FROM {{messages}} WHERE uid = ?", [pendingId]);
+      finalStatus = r?.status ?? "pending";
+      if (finalStatus !== "pending") break;
+      await new Promise((res) => setTimeout(res, 100));
+    }
+    expect(finalStatus).not.toBe("pending");
+  });
+});
