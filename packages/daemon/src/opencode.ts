@@ -2287,6 +2287,7 @@ export class Engine {
         await this.store.updateMessageStatus(first.id, "done");
         const next = await this.store.getNextPendingMessage(session.id);
         if (next && this.running.size < this.maxConcurrent) { await this.dequeueOrIdle(k, session, issue, next); }
+        else if (!next) { void tracker.updateStatus(ref, ""); }
         continue;
       }
 
