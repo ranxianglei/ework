@@ -1,15 +1,18 @@
-import type { Config } from "./config";
+import { isGithubTarget, type Config } from "./config";
 import {
   getIssueMap,
   recordIssueMap,
   getCommentMap,
   recordCommentMap,
+  hasReacted,
+  markReacted,
   logEvent,
   type IssueMapRow,
 } from "./db";
 import {
   createIssue,
   addComment,
+  addReaction,
   patchIssueState,
   getRepo,
   GiteaApiError,
@@ -127,6 +130,11 @@ const IP_PATTERNS: Array<[RegExp, string]> = [
   [/\b(?:192\.168|10)\.\d{1,3}\.\d{1,3}\b/g, "[internal-ip]"],
   [/\b172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}\b/g, "[internal-ip]"],
 ];
+
+export function parseUpstreamAck(body: string): number | null {
+  const m = body.match(/<!-- upstream-comment: (\d+) -->/);
+  return m ? Number(m[1]) : null;
+}
 
 export function scrubInternalRefs(text: string, cfg: Config): string {
   const hostPatterns: Array<[RegExp, string]> = (cfg.WORK_SCRUB_HOSTS || "")
@@ -312,6 +320,35 @@ export async function handleCommentEvent(
   // [system] plumbing (forward notices, acks) points at local-only session
   // links and carries no value for upstream readers — never mirror these.
   if (ev.comment.body.startsWith("[system]") || ev.comment.body.startsWith("[SYSTEM ")) {
+    // Side-effect inside a skip path: forward-notices with an upstream marker get a rocket reaction on the upstream comment (instant GitHub ack), then the plumbing comment is dropped.
+    const upstreamId = parseUpstreamAck(ev.comment.body);
+    if (upstreamId && isGithubTarget(cfg) && !hasReacted(ev.comment.id)) {
+      try {
+        await addReaction(cfg, { owner: ev.projectOwner, repo: ev.projectName }, upstreamId, "rocket");
+        markReacted(ev.comment.id, upstreamId, "rocket");
+        logEvent({
+          event: "issue_comment",
+          action: "created",
+          ework_project: projectKey,
+          ework_issue: ev.issue.number,
+          ework_comment: ev.comment.id,
+          gitea_target: giteaTarget,
+          outcome: OUTCOME_MIRRORED,
+          detail: `reaction:rocket → upstream comment ${upstreamId}`,
+        });
+      } catch (err) {
+        logEvent({
+          event: "issue_comment",
+          action: "created",
+          ework_project: projectKey,
+          ework_issue: ev.issue.number,
+          ework_comment: ev.comment.id,
+          gitea_target: giteaTarget,
+          outcome: OUTCOME_ERROR,
+          detail: `reaction failed on upstream comment ${upstreamId}: ${(err as Error).message}`,
+        });
+      }
+    }
     logEvent({
       event: "issue_comment",
       action: "created",

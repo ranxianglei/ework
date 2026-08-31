@@ -1,6 +1,6 @@
 {
   "name": "ework-mirror",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "description": "One-way mirror from ework to Gitea (webhook-driven, Gitea-compat auth as awork user)",
   "type": "module",
   "main": "src/index.ts",

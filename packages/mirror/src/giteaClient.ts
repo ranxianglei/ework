@@ -123,6 +123,23 @@ export async function addComment(
   );
 }
 
+export async function addReaction(
+  cfg: Config,
+  target: GiteaRepo,
+  upstreamCommentId: number,
+  content: "+1" | "heart" | "rocket" | "eyes" = "+1"
+): Promise<void> {
+  await giteaFetch<unknown>(
+    cfg,
+    `${apiPrefix(cfg)}/repos/${encodeURIComponent(target.owner)}/${encodeURIComponent(target.repo)}/issues/comments/${upstreamCommentId}/reactions`,
+    {
+      method: "POST",
+      body: JSON.stringify({ content }),
+      headers: { Accept: "application/vnd.github+json" },
+    }
+  );
+}
+
 export async function patchIssueState(
   cfg: Config,
   target: GiteaRepo,

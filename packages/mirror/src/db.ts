@@ -37,6 +37,13 @@ export function initDB(path: string): void {
       created_at        TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS reacted_upstream (
+      ework_comment_id  INTEGER PRIMARY KEY,
+      upstream_comment_id INTEGER NOT NULL,
+      reaction          TEXT NOT NULL,
+      created_at        TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS event_log (
       id                INTEGER PRIMARY KEY AUTOINCREMENT,
       received_at       TEXT NOT NULL,
@@ -149,6 +156,17 @@ export interface EventLogEntry {
   gitea_target?: string | null;
   outcome: string;
   detail?: string | null;
+}
+
+export function hasReacted(eworkCommentId: number): boolean {
+  return !!db.query("SELECT 1 FROM reacted_upstream WHERE ework_comment_id = ?").get(eworkCommentId);
+}
+
+export function markReacted(eworkCommentId: number, upstreamCommentId: number, reaction: string): void {
+  db.run(
+    "INSERT OR IGNORE INTO reacted_upstream (ework_comment_id, upstream_comment_id, reaction, created_at) VALUES (?, ?, ?, ?)",
+    [eworkCommentId, upstreamCommentId, reaction, new Date().toISOString()]
+  );
 }
 
 export function logEvent(entry: EventLogEntry): void {
