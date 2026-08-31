@@ -124,11 +124,14 @@ function issueBadge(
 }
 
 // Outbound hygiene: nothing that identifies this deployment's network may
-// reach the public upstream — RFC1918 addresses are always redacted, plus
+// reach the public upstream — RFC1918/ULA addresses are always redacted, plus
 // any hostnames listed in WORK_SCRUB_HOSTS.
 const IP_PATTERNS: Array<[RegExp, string]> = [
-  [/\b(?:192\.168|10)\.\d{1,3}\.\d{1,3}\b/g, "[internal-ip]"],
+  [/\b10\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/g, "[internal-ip]"],
+  [/\b192\.168\.\d{1,3}\.\d{1,3}\b/g, "[internal-ip]"],
   [/\b172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}\b/g, "[internal-ip]"],
+  [/\b(?:f[cd][0-9a-f]{2}):(?:[0-9a-f]{1,4}:){2,7}(?:[0-9a-f]{1,4}|[0-9a-f]{0,4}:[0-9a-f]{1,4})\b/gi, "[internal-ip6]"],
+  [/\bfe80(?::[0-9a-f]{0,4})+\b/gi, "[internal-ip6]"],
 ];
 
 export function parseUpstreamAck(body: string): number | null {
