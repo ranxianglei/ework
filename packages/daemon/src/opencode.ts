@@ -1699,10 +1699,15 @@ export class Engine {
         return nowMs - created < RECENT_BOT_REPLY_THRESHOLD_MS;
       });
       log.info(`engine: [bot] reply found for ${k} after prompt (comment ${matched?.id ?? "?"} createdAt ${matched?.createdAt ?? "?"}), marking done`);
-      if (matched && !usedModel) {
-        const fromSession = await this.backendFor(k, session.opencodeSessionId).lastSessionModel(session.opencodeSessionId).catch(() => ({ model: "" }));
-        if (fromSession.model) {
-          void tracker.setCommentModel(ref, matched.id, fromSession.model).catch(() => { /* display-only */ });
+      if (matched) {
+        // Prefer the model we spawned with (issue override or pool pick); the
+        // backend query is only a fallback when we didn't control the spawn.
+        let tagModel = usedModel;
+        if (!tagModel) {
+          tagModel = (await this.backendFor(k, session.opencodeSessionId).lastSessionModel(session.opencodeSessionId).catch(() => ({ model: "" }))).model;
+        }
+        if (tagModel) {
+          void tracker.setCommentModel(ref, matched.id, tagModel).catch(() => { /* display-only */ });
         }
       }
       this.nudgeRounds.delete(k);
