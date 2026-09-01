@@ -33,6 +33,7 @@ interface PayloadComment {
   user?: PayloadUser;
   created_at?: string;
   upstream_comment_id?: number | null;
+  model?: string | null;
 }
 
 export interface ParsedIssueEvent {

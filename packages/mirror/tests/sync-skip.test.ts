@@ -64,7 +64,8 @@ describe("agent provenance badge", () => {
     const { agentBadgeText } = await import("../src/mirror");
     const f = agentBadgeText("vllm-qwen/qwen3.8-27b");
     expect(f).toContain("🤖 ework agent");
-    expect(f).toContain("vllm-qwen/qwen3.8-27b");
+    expect(f).toContain("qwen3.8-27b");
+    expect(f).not.toContain("vllm-qwen/");
     expect(f.startsWith("> ")).toBe(true);
     expect(f.endsWith("\n\n")).toBe(true);
   });

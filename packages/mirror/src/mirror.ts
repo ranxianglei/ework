@@ -109,9 +109,13 @@ export function agentLogins(cfg: Config): string[] {
 // Visible provenance badge: upstream readers see agent output relayed under
 // the human account's name — it LEADS the body so the speaker is known
 // before reading. Model comes from the webhook payload's resolved override.
+export function shortModelName(model: string): string {
+  return model.split("/").filter(Boolean).pop() ?? model;
+}
+
 export function agentBadgeText(model?: string): string {
   const m = (model || "").trim();
-  return m ? `> 🤖 ework agent · ${m}\n\n` : `> 🤖 ework agent\n\n`;
+  return m ? `> 🤖 ework agent · ${shortModelName(m)}\n\n` : `> 🤖 ework agent\n\n`;
 }
 
 function issueBadge(
@@ -441,7 +445,7 @@ export async function handleCommentEvent(
 
   try {
     const agentBadge = agentLogins(cfg).includes(ev.comment.user?.login ?? "")
-      ? agentBadgeText(ev.model)
+      ? agentBadgeText(ev.comment.model || ev.model)
       : "";
     const created = await addComment(
       cfg,
