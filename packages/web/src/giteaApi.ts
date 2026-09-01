@@ -349,6 +349,11 @@ export async function handleGiteaApi(
       const body = (await readJson(req).catch(() => ({}))) as { model?: unknown };
       const model = typeof body.model === "string" ? body.model.trim() : "";
       await updateCommentModel(cid, model);
+      const tagged = await getComment(cid);
+      if (tagged && model) {
+        const taggedIssue = await getIssueById(tagged.issue_id);
+        if (taggedIssue) void emitCommentEvent(project.id, taggedIssue.id, cid, origin, "edited");
+      }
       return { status: 200, body: { ok: true, model } };
     } catch (e) {
       return giteaError(500, e instanceof Error ? e.message : String(e));

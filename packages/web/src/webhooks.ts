@@ -329,7 +329,7 @@ interface IssueEventPayload {
 
 interface CommentEventPayload {
   event_id?: string;
-  action: "created";
+  action: "created" | "edited";
   issue: PayloadIssue;
   comment: PayloadComment;
   repository: PayloadRepository;
@@ -487,9 +487,10 @@ function buildCommentPayload(
   origin: string,
   model?: string,
   labels: PayloadLabel[] = [],
+  action: "created" | "edited" = "created",
 ): CommentEventPayload {
   return {
-    action: "created",
+    action,
     issue: buildIssue(issue, project, commentCount, origin, model, labels),
     comment: buildComment(issue, comment, project, origin),
     repository: buildRepository(project, origin, model, issue.runtime || undefined),
@@ -710,7 +711,8 @@ export async function emitCommentEvent(
   projectId: number,
   issueId: number,
   commentId: number,
-  origin: string
+  origin: string,
+  action: "created" | "edited" = "created"
 ): Promise<void> {
   try {
     const project = await getProjectById(projectId);
@@ -726,7 +728,7 @@ export async function emitCommentEvent(
     const globalDefault = (await loadConfig()).defaultModel;
     const model = resolveModel(project.model, globalDefault, issue.model);
     const labels = await toPayloadLabels(issueId);
-    const payload = buildCommentPayload(issue, comment, project, commentCount, origin, model, labels);
+    const payload = buildCommentPayload(issue, comment, project, commentCount, origin, model, labels, action);
     (payload as CommentEventPayload).event_id = randomUUID();
     if (authorUser) {
       payload.sender = buildUserFromRow(authorUser, origin);
