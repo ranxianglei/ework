@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { isImportedComment, isImportedIssue, scrubInternalRefs } from "../src/mirror";
+import { isImportedComment, isImportedIssue, scrubInternalRefs, agentBadgeText } from "../src/mirror";
 
 const base = { issue: { number: 5, upstream_issue_number: null as number | null }, comment: undefined as { body?: string } | undefined };
 
@@ -119,5 +119,17 @@ describe("close-state upstream fallback", () => {
       { owner: "ranxianglei", repo: "billion-context" }
     );
     expect(row).toBeNull();
+  });
+});
+
+describe("agentBadgeText", () => {
+  test("renders short model name after the agent marker", () => {
+    const badge = agentBadgeText("vllm-flash//mnt/8t/models/qwen3.8-flash-next-w4a16-p294");
+    expect(badge).toBe("> 🤖 ework agent · qwen3.8-flash-next-w4a16-p294\n\n");
+  });
+
+  test("falls back to bare badge without a model", () => {
+    expect(agentBadgeText(undefined)).toBe("> 🤖 ework agent\n\n");
+    expect(agentBadgeText("  ")).toBe("> 🤖 ework agent\n\n");
   });
 });

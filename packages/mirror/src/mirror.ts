@@ -12,6 +12,7 @@ import {
 import {
   createIssue,
   addComment,
+  editComment,
   addReaction,
   patchIssueState,
   getRepo,
@@ -302,6 +303,49 @@ export async function handleIssueEvent(
   }
 }
 
+async function handleCommentModelTag(
+  cfg: Config,
+  ev: ParsedCommentEvent,
+  projectKey: string,
+  giteaTarget: string
+): Promise<void> {
+  // The daemon tags a bot reply's model shortly after it was created; the
+  // writeback badge was already posted without it. Rewrite the mirrored
+  // comment's badge so upstream readers see which model produced the reply.
+  const model = ev.comment.model?.trim() ?? "";
+  if (!model) return;
+  const mapped = getCommentMap(ev.comment.id);
+  if (!mapped) return;
+  const repo = await ensureGiteaRepo(cfg, ev.projectOwner, ev.projectName);
+  if (!repo) return;
+  const badge = agentBadgeText(model);
+  const body = badge + scrubInternalRefs(ev.comment.body, cfg) + MIRROR_MARKER;
+  try {
+    await editComment(cfg, repo, mapped.gitea_comment_id, body);
+    logEvent({
+      event: "issue_comment",
+      action: "edited",
+      ework_project: projectKey,
+      ework_issue: ev.issue.number,
+      ework_comment: ev.comment.id,
+      gitea_target: giteaTarget,
+      outcome: OUTCOME_MIRRORED,
+      detail: `badge model ${shortModelName(model)} → gitea comment ${mapped.gitea_comment_id}`,
+    });
+  } catch (err) {
+    logEvent({
+      event: "issue_comment",
+      action: "edited",
+      ework_project: projectKey,
+      ework_issue: ev.issue.number,
+      ework_comment: ev.comment.id,
+      gitea_target: giteaTarget,
+      outcome: OUTCOME_ERROR,
+      detail: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
 export async function handleCommentEvent(
   cfg: Config,
   eworkOrigin: string,
@@ -309,6 +353,11 @@ export async function handleCommentEvent(
 ): Promise<void> {
   const projectKey = `${ev.projectOwner}/${ev.projectName}`;
   const giteaTarget = `${ev.projectOwner}/${ev.projectName}`;
+
+  if (ev.action === "edited") {
+    await handleCommentModelTag(cfg, ev, projectKey, giteaTarget);
+    return;
+  }
 
   if (isSelfEmitter(ev.senderLogin, cfg)) {
     logEvent({

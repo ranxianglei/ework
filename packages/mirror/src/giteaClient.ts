@@ -107,6 +107,22 @@ export async function createIssue(
   );
 }
 
+export async function editComment(
+  cfg: Config,
+  target: GiteaRepo,
+  commentId: number,
+  body: string
+): Promise<GiteaCommentCreateResponse> {
+  return giteaFetch<GiteaCommentCreateResponse>(
+    cfg,
+    `${apiPrefix(cfg)}/repos/${encodeURIComponent(target.owner)}/${encodeURIComponent(target.repo)}/issues/comments/${commentId}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({ body }),
+    }
+  );
+}
+
 export async function addComment(
   cfg: Config,
   target: GiteaRepo,

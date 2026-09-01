@@ -48,7 +48,7 @@ export interface ParsedIssueEvent {
 
 export interface ParsedCommentEvent {
   kind: "issue_comment";
-  action: "created";
+  action: "created" | "edited";
   projectOwner: string;
   projectName: string;
   issue: PayloadIssue;
@@ -109,7 +109,7 @@ export function parseEvent(
     };
   }
 
-  if (action !== "created") {
+  if (action !== "created" && action !== "edited") {
     throw new ParseError(`unsupported issue_comment action: ${action}`);
   }
   const comment = payload.comment as PayloadComment | undefined;
@@ -118,7 +118,7 @@ export function parseEvent(
   }
   return {
     kind: "issue_comment",
-    action: "created",
+    action,
     projectOwner: ownerLogin,
     projectName: repo.name,
     issue,
