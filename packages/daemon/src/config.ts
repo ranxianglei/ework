@@ -217,6 +217,8 @@ export function loadConfig(): Config {
       baseWorkdir: process.env.OPENCODE_BASE_WORKDIR,
       dbPath: process.env.OPENCODE_DB_PATH ?? `${process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share")}/opencode/opencode.db`,
       defaultModel: process.env.WORK_DEFAULT_MODEL ?? "",
+      modelPool: (process.env.WORK_MODEL_POOL ?? "").split(",").map((s) => s.trim()).filter(Boolean),
+      modelCooldownMs: Math.max(1, Number(process.env.WORK_MODEL_COOLDOWN_MIN ?? 15)) * 60_000,
     },
     pi: {
       binary: process.env.WORK_PI_BINARY ?? "pi",
