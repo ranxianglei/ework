@@ -321,6 +321,13 @@ export class Store {
     return rows.map(rowToMessage);
   }
 
+  async bumpMessageAttempts(id: string): Promise<void> {
+    await getDB().run("UPDATE {{messages}} SET attempts = attempts + 1, updated_at = ? WHERE uid = ?", [
+      new Date().toISOString(),
+      id,
+    ]);
+  }
+
   async updateMessageStatus(id: string, status: Message["status"], error?: string): Promise<void> {
     const row = await getDB().get<MessageRow>("SELECT * FROM {{messages}} WHERE uid = ?", [id]);
     const attempts = row ? row.attempts + (status === "failed" ? 1 : 0) : 0;

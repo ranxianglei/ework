@@ -406,6 +406,7 @@ export class Engine {
   private processingComments = new Set<string>();
   private currentMessage = new Map<string, string>();
   private currentModel = new Map<string, string | undefined>();
+  private modelCircuits = new Map<string, number>();
   private lastOutputAt = new Map<string, number>();
   private startedAt = new Map<string, number>();
   private progressCommentId = new Map<string, string>();
@@ -1398,6 +1399,57 @@ export class Engine {
 
   // ─── Process Manager ───
 
+  /**
+   * Model pool selection: random pick among healthy candidates. A model that
+   * produced an empty response is circuit-opened for modelCooldownMs so the
+   * next spawn falls back to the remaining pool (defaultModel is the anchor).
+   */
+  private resolveSpawnModel(override?: string): string {
+    const fallback = this.cfg.opencode.defaultModel;
+    if (override) return override;
+    const pool = this.cfg.opencode.modelPool.length ? this.cfg.opencode.modelPool : fallback ? [fallback] : [];
+    const now = Date.now();
+    const healthy = pool.filter((m) => (this.modelCircuits.get(m) ?? 0) <= now);
+    const candidates = healthy.length ? healthy : fallback ? [fallback] : [];
+    const pick = candidates.length ? candidates[Math.floor(Math.random() * candidates.length)] ?? "" : "";
+    if (this.cfg.opencode.modelPool.length > 1) {
+      log.info(`engine: model pool picked ${pick || "(none)"} (${healthy.length}/${pool.length} healthy)`);
+    }
+    return pick;
+  }
+
+  /**
+   * Circuit-breaker for the model pool: a pool member that produced no output
+   * is opened for modelCooldownMs and this very message is requeued on the
+   * fallback (single automatic attempt, guarded by attempts < 1).
+   */
+  private async applyModelFallback(
+    k: string,
+    session: OpSession,
+    issue: Issue,
+    msgId: string,
+    usedModel: string,
+    attempts: number,
+    tracker: IssueTracker,
+    ref: TrackerRef
+  ): Promise<boolean> {
+    if (this.cfg.opencode.modelPool.length <= 1) return false;
+    if (!usedModel || usedModel === this.cfg.opencode.defaultModel) return false;
+    if (attempts >= 1) return false;
+    this.modelCircuits.set(usedModel, Date.now() + this.cfg.opencode.modelCooldownMs);
+    this.emptyResponseRounds.delete(k);
+    this.nudgeRounds.delete(k);
+    await this.store.bumpMessageAttempts(msgId);
+    await this.store.updateMessageStatus(msgId, "pending");
+    log.warn(
+      `engine: model ${usedModel} returned empty — circuit open ${Math.round(this.cfg.opencode.modelCooldownMs / 60000)}min, requeueing msg ${msgId.slice(0, 8)} on fallback`
+    );
+    await tracker.createComment(ref, `[system] 🏷 ${this.sessionRef(session)} ⚡ 模型 ${usedModel.split("/").pop()} 无响应，已自动切换备用模型重试。`).catch(() => {});
+    const requeued = await this.store.getMessage(msgId);
+    if (requeued) { await this.dequeueOrIdle(k, session, issue, requeued); }
+    return true;
+  }
+
   private async execProcess(k: string, session: OpSession, issue: Issue, msg: Message) {
     const gate = await this.gateChecker(issue);
     const [projOwner, ...projRest] = issue.trackerScopeKey.split("/");
@@ -1449,7 +1501,8 @@ export class Engine {
     }
 
     const backend = this.backendFor(k, resumeSessionId);
-    const model = msg.model || (backend instanceof PiBackend && this.cfg.pi ? this.cfg.pi.defaultModel : this.cfg.opencode.defaultModel);
+    const model = this.resolveSpawnModel(msg.model || undefined) ||
+      (backend instanceof PiBackend && this.cfg.pi ? this.cfg.pi.defaultModel : this.cfg.opencode.defaultModel);
     this.currentModel.set(k, model);
 
     if (msg.sourceCommentId) {
@@ -1577,6 +1630,8 @@ export class Engine {
     const started = this.startedAt.get(k);
     this.startedAt.delete(k);
     const usedModel = this.currentModel.get(k) ?? "";
+    const curMsgId = this.currentMessage.get(k);
+    const curAttempts = curMsgId ? (await this.store.getMessage(curMsgId))?.attempts ?? 0 : 0;
     this.currentMessage.delete(k);
     this.currentModel.delete(k);
 
@@ -1658,6 +1713,13 @@ export class Engine {
       const sessionOutput = await this.backendFor(k, session.opencodeSessionId).getSessionOutputTokens(session.opencodeSessionId);
       const emptyRound = this.emptyResponseRounds.get(k) ?? 0;
 
+      const usedForPool = usedModel || this.currentModel.get(k) || "";
+      if (
+        !sessionOutput.hasOutput && curMsgId && usedForPool &&
+        await this.applyModelFallback(k, session, issue, curMsgId, usedForPool, curAttempts, tracker, ref)
+      ) {
+        return;
+      }
       if (!sessionOutput.hasOutput && emptyRound < Engine.MAX_EMPTY_RESPONSE_ROUNDS) {
         log.warn(`engine: empty model response for ${k} (0 tokens, round ${emptyRound + 1}/${Engine.MAX_EMPTY_RESPONSE_ROUNDS}), retrying`);
         this.emptyResponseRounds.set(k, emptyRound + 1);

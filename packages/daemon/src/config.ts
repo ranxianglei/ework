@@ -39,6 +39,8 @@ export const configSchema = z.object({
       `${process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share")}/opencode/opencode.db`
     ),
     defaultModel: z.string().default(""),
+    modelPool: z.array(z.string()).default([]),
+    modelCooldownMs: z.number().int().default(15 * 60_000),
   }),
   pi: z.object({
     binary: z.string().default("pi"),
@@ -161,6 +163,8 @@ export function loadConfig(): Config {
         baseWorkdir: process.env.OPENCODE_BASE_WORKDIR ?? TEST_DEFAULTS.opencode.baseWorkdir,
         dbPath: process.env.OPENCODE_DB_PATH ?? `${process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share")}/opencode/opencode.db`,
         defaultModel: process.env.WORK_DEFAULT_MODEL ?? TEST_DEFAULTS.opencode.defaultModel,
+        modelPool: (process.env.WORK_MODEL_POOL ?? "").split(",").map((s) => s.trim()).filter(Boolean),
+        modelCooldownMs: Math.max(1, Number(process.env.WORK_MODEL_COOLDOWN_MIN ?? 15)) * 60_000,
       },
       pi: {
         binary: process.env.WORK_PI_BINARY ?? "pi",
