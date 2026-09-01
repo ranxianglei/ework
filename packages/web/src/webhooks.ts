@@ -307,6 +307,9 @@ interface PayloadComment {
   updated_at: string;
   user: PayloadUser;
   author_kind?: string;
+  /** Model that produced this comment (daemon writes it per-reply); mirrors
+   * surface it in the agent badge so upstream readers see which model ran. */
+  model?: string | null;
   /** Set when this comment was imported from an upstream tracker — receivers
    * must skip echoing it back (defense beyond the body marker). */
   upstream_comment_id?: number | null;
@@ -471,6 +474,7 @@ function buildComment(
     created_at: comment.created_at,
     updated_at: comment.updated_at,
     upstream_comment_id: comment.upstream_comment_id ?? null,
+    model: comment.model ?? null,
     user: buildUser(comment.author, origin),
   };
 }
