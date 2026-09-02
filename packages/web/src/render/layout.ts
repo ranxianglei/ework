@@ -246,7 +246,7 @@ export function renderLayout(props: LayoutProps, inner: string, initialItems: st
   <span style="opacity:.5">/</span>
   <a href="${escapeAttr(repoIssuesHref)}" style="color:var(--header-text)">${escapeHtml(props.repoPath)}</a>
   <span class="num">#${props.issueNumber}</span>
-  ${props.upstreamUrl ? `<a href="${escapeAttr(props.upstreamUrl)}" target="_blank" rel="noopener" title="upstream" style="color:var(--header-text);text-decoration:none;font-size:.85em">↗</a>` : ""}
+  ${props.upstreamUrl ? `<a href="${escapeAttr(props.upstreamUrl)}" target="_blank" rel="noopener" title="跳转到上游项目" style="color:var(--header-text);text-decoration:none;font-size:.85em">↗</a>` : ""}
 </header>
 <div class="meta-bar">
   <h1>${escapeHtml(props.issueTitle)}</h1>
@@ -264,7 +264,7 @@ export function renderLayout(props: LayoutProps, inner: string, initialItems: st
     }).join("")}</span>` : ""}
     ${(labelsHtml || labelPickerBtn) ? `<span class="label-group">${labelsHtml}${labelPickerBtn}</span>` : ""}
     <span class="count" id="count">…</span>
-    ${props.upstreamWebUrl ? `<a class="upstream-link" href="${escapeAttr(props.upstreamWebUrl)}" target="_blank" rel="noopener noreferrer" title="跳转到上游仓库">🔗 查看上游</a>` : ""}
+    ${props.upstreamWebUrl ? `<a class="upstream-link" href="${escapeAttr(props.upstreamWebUrl)}" target="_blank" rel="noopener noreferrer" title="跳转到上游 issue">🔗 查看上游</a>` : ""}
   </div>
 </div>
 ${props.descriptionHtml.trim() ? `<div class="desc-wrap">

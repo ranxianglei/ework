@@ -21,7 +21,6 @@ import {
   type ProjectRow,
 } from "../store";
 import { getConfigAll } from "../db";
-import { webUrlFromClone } from "./projectUpstreams";
 
 export const PAGE_SIZE = 30;
 
@@ -134,10 +133,14 @@ export async function buildIssueThread(
   const payload = payloadFromComments(issue, displayViews, currentPage, hasOlder, cfg.commentSort);
   const descriptionHtml = renderMarkdown(issue.body, "", issuePath);
   const descriptionCollapsed = issue.body.length > 1200;
+  // 🔗 查看上游 points at the mapped upstream ISSUE (falling back to the
+  // repo root when this issue has no upstream mapping). The header ↗ is the
+  // project-level jump (see upstreamUrl below).
   const upstreamWebUrl = (() => {
-    const clone = getDefaultUpstreamUrl(project);
-    if (!clone) return null;
-    return webUrlFromClone(clone);
+    const base = upstreamRefBase(project);
+    if (!base) return null;
+    if (issue.upstream_issue_number) return `${base}/issues/${issue.upstream_issue_number}`;
+    return base;
   })();
   const labels = await listLabelsForIssue(issue.id);
   const viewerUser = viewerLogin ? await getUserByLogin(viewerLogin) : null;
@@ -192,9 +195,7 @@ export async function buildIssueThread(
     {
       title: `${issue.title} · ${owner}/${repo}#${number}`,
       issueTitle: issue.title,
-      upstreamUrl: issue.upstream_issue_number && upstreamRefBase(project)
-        ? `${upstreamRefBase(project)}/issues/${issue.upstream_issue_number}`
-        : undefined,
+      upstreamUrl: upstreamRefBase(project) ?? undefined,
       repoPath: `${owner}/${repo}`,
       issueNumber: number,
       state: issue.state,
