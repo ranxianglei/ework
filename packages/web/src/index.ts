@@ -43,6 +43,7 @@ import {
   updateIssueModel,
   updateIssueRuntime,
   listIssues,
+  listCommentsForIssue,
   createAttachment,
   getAttachment,
   verifyUserPassword,
@@ -624,6 +625,65 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
       const logins = (cfgKv[`wakeLogins:${owner}/${repo}`] ?? "")
         .split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
       return json({ logins });
+    }
+
+    // Issues JSON API — read side for the ework-issue CLI (pull/open).
+    if (url.pathname === "/api/v1/issues" && req.method === "GET") {
+      const owner = url.searchParams.get("owner") ?? "";
+      const repo = url.searchParams.get("repo") ?? "";
+      if (!owner || !repo) return json({ error: "owner, repo required" }, 400);
+      const project = await getProject(owner, repo);
+      if (!project) return json({ error: "project not found" }, 404);
+      const sp = url.searchParams.get("state");
+      const state = sp === "open" || sp === "closed" ? sp : "all";
+      const rows = await listIssues(project.id, { state, limit: 200 });
+      return json({
+        project: { owner, name: repo },
+        issues: rows.map((i) => ({
+          number: i.number,
+          title: i.title,
+          state: i.state,
+          author: i.author,
+          ai_status: i.ai_status ?? "",
+          model: i.model ?? "",
+          comment_count: i.comment_count,
+          created_at: i.created_at,
+          updated_at: i.updated_at,
+        })),
+      });
+    }
+    const apiIssueDetail = url.pathname.match(/^\/api\/v1\/issues\/(\d+)$/);
+    if (apiIssueDetail && req.method === "GET") {
+      const owner = url.searchParams.get("owner") ?? "";
+      const repo = url.searchParams.get("repo") ?? "";
+      if (!owner || !repo) return json({ error: "owner, repo required" }, 400);
+      const project = await getProject(owner, repo);
+      if (!project) return json({ error: "project not found" }, 404);
+      const issue = await getIssueWithMeta(project.id, Number(apiIssueDetail[1]));
+      if (!issue) return json({ error: "issue not found" }, 404);
+      const comments = await listCommentsForIssue(issue.id);
+      return json({
+        issue: {
+          number: issue.number,
+          title: issue.title,
+          body: issue.body,
+          state: issue.state,
+          author: issue.author,
+          ai_status: issue.ai_status ?? "",
+          model: issue.model ?? "",
+          created_at: issue.created_at,
+          updated_at: issue.updated_at,
+        },
+        comments: comments.map((c) => ({
+          id: c.id,
+          author: c.author,
+          author_kind: c.author_kind ?? "",
+          model: c.model ?? "",
+          upstream_comment_id: c.upstream_comment_id ?? null,
+          created_at: c.created_at,
+          body: c.body,
+        })),
+      });
     }
     const evStatus = url.pathname.match(/^\/api\/v1\/repos\/([^/]+)\/([^/]+)\/issues\/(\d+)\/status$/);
     if (evStatus && req.method === "POST") {
