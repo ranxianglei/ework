@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { mkdirSync, writeFileSync, unlinkSync, readdirSync, existsSync, readFileSync } from "fs";
-import { join, resolve, isAbsolute } from "path";
+import { join, dirname, resolve, isAbsolute } from "path";
 import { homedir } from "os";
 import { log } from "./logger";
 import type { Config } from "./config";
@@ -178,6 +178,64 @@ export async function opencodeSessionExists(dbPath: string, sessionId: string): 
 export class RecloneStrategy implements TakeoverStrategy {
   constructor(private cfg: Config) {}
 
+  private async runGit(args: string[], env?: Record<string, string>, timeoutMs = 10 * 60_000): Promise<number> {
+    const credHelper = process.env.WORK_GIT_CREDENTIAL_HELPER;
+    const cmd = ["git"];
+    if (credHelper) cmd.push("-c", `credential.helper=${credHelper}`);
+    cmd.push(...args);
+    // ssh without these can sleep forever: no TCP keepalive on a blackholed
+    // connection, and host-key/passphrase prompts block a headless daemon.
+    const sshCmd = process.env.WORK_GIT_SSH_COMMAND
+      ?? "ssh -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o BatchMode=yes";
+    try {
+      const proc = Bun.spawn({
+        cmd, stdout: "ignore", stderr: "pipe",
+        env: { ...process.env, ...env, GIT_SSH_COMMAND: sshCmd },
+      });
+      const killTimer = setTimeout(() => { try { proc.kill("SIGKILL"); } catch { /* already dead */ } }, timeoutMs);
+      const [exitCode] = await Promise.all([proc.exited, new Response(proc.stderr).arrayBuffer()]);
+      clearTimeout(killTimer);
+      return exitCode ?? -1;
+    } catch {
+      return -1;
+    }
+  }
+
+  /**
+   * Shared-object worktree acquisition: one bare clone per tracker repo
+   * (`<base>/<owner>--<repo>/.refs.git`) + `git worktree add` per issue dir.
+   * 228 full clones of billion-context once ate 16GB; worktrees share the
+   * object store so each issue costs only a checkout, not a second history.
+   * Returns false on any failure so the caller can fall back to a full clone.
+   */
+  private async tryWorktree(
+    dir: string, sharedDir: string, branch: string, url: string, env?: Record<string, string>,
+  ): Promise<boolean> {
+    try {
+      if (!existsSync(join(sharedDir, "HEAD"))) {
+        mkdirSync(dirname(sharedDir), { recursive: true });
+        if (await this.runGit(["clone", "--bare", url, sharedDir], env) !== 0) return false;
+        // bare clones copy refs into refs/heads/* but add no `origin` remote
+        await this.runGit(["--git-dir", sharedDir, "remote", "add", "origin", url], env);
+      } else {
+        await this.runGit(["--git-dir", sharedDir, "remote", "set-url", "origin", url], env);
+        // best-effort refresh; races between concurrent worktree adds are
+        // ref-lock protected by git itself and a stale tip is still correct
+        // for issue work (agents pull/commit on top).
+        await this.runGit(["--git-dir", sharedDir, "fetch", "--prune", "origin", "+refs/heads/*:refs/heads/*"], env, 5 * 60_000);
+      }
+      const headRef = readFileSync(join(sharedDir, "HEAD"), "utf8").trim();
+      const m = headRef.match(/^ref: refs\/heads\/(.+)$/);
+      const startBranch = m?.[1];
+      if (!startBranch) return false;
+      if (await this.runGit(["--git-dir", sharedDir, "worktree", "add", "-B", branch, dir, startBranch], env) !== 0) return false;
+      log.info(`acquireWorkdir: worktree ${branch} → ${dir} (shared objects at ${sharedDir})`);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   async acquireWorkdir(session: OpSession, issue: Issue, cloneUrl?: string, env?: Record<string, string>): Promise<string> {
     if (session.workdir) {
       let dir = session.workdir;
@@ -200,6 +258,15 @@ export class RecloneStrategy implements TakeoverStrategy {
       const entries = readdirSync(dir);
       if (entries.length === 0) {
         const url = cloneUrl ?? `${this.cfg.gitea.url.replace(/\/$/, "")}/${owner}/${repo}.git`;
+        if (this.cfg.opencode.cloneMode === "worktree") {
+          const sharedDir = join(this.cfg.opencode.baseWorkdir, `${owner}--${repo}`, ".refs.git");
+          const branch = `wt-${issue.trackerIssueId}-${session.name}`.replace(/[^\w.-]/g, "-");
+          if (await this.tryWorktree(dir, sharedDir, branch, url, env)) {
+            if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+            return dir;
+          }
+          log.warn(`acquireWorkdir: worktree mode failed for ${url}; falling back to full clone`);
+        }
         const credHelper = process.env.WORK_GIT_CREDENTIAL_HELPER;
         const gitArgs = ["git"];
         if (credHelper) gitArgs.push("-c", `credential.helper=${credHelper}`);

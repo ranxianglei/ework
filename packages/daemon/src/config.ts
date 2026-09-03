@@ -32,6 +32,7 @@ export const configSchema = z.object({
   }),
   opencode: z.object({
     binary: z.string().default("opencode"),
+    cloneMode: z.enum(["worktree", "clone"]).default("worktree"),
     baseWorkdir: z.string().default(
       `${process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share")}/ework-aio/opencode-workdir`
     ),
@@ -100,7 +101,7 @@ const TEST_DEFAULTS = {
   gitea: { url: "http://localhost:9999", token: "test-token", webhookSecret: "" },
   bot: { username: "ework-daemon-test", token: "test-bot-token" },
   daemon: { port: 3111, host: "0.0.0.0", endpoint: "" },
-  opencode: { binary: "opencode", baseWorkdir: join(tmpdir(), "ework-daemon-test"), defaultModel: "" },
+  opencode: { binary: "opencode", baseWorkdir: join(tmpdir(), "ework-daemon-test"), defaultModel: "", cloneMode: "worktree" },
   work: { capacity: 4, heartbeatMs: 10_000, leaseTtlMs: 60_000 },
   db: { path: join(process.cwd(), "test", "ework-daemon-test.db") },
 };
@@ -161,6 +162,7 @@ export function loadConfig(): Config {
       opencode: {
         binary: process.env.OPENCODE_BINARY ?? TEST_DEFAULTS.opencode.binary,
         baseWorkdir: process.env.OPENCODE_BASE_WORKDIR ?? TEST_DEFAULTS.opencode.baseWorkdir,
+        cloneMode: process.env.WORK_CLONE_MODE === "clone" ? "clone" : TEST_DEFAULTS.opencode.cloneMode,
         dbPath: process.env.OPENCODE_DB_PATH ?? `${process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share")}/opencode/opencode.db`,
         defaultModel: process.env.WORK_DEFAULT_MODEL ?? TEST_DEFAULTS.opencode.defaultModel,
         modelPool: (process.env.WORK_MODEL_POOL ?? "").split(",").map((s) => s.trim()).filter(Boolean),
@@ -215,6 +217,7 @@ export function loadConfig(): Config {
     opencode: {
       binary: process.env.OPENCODE_BINARY ?? "opencode",
       baseWorkdir: process.env.OPENCODE_BASE_WORKDIR,
+        cloneMode: process.env.WORK_CLONE_MODE === "clone" ? "clone" : "worktree",
       dbPath: process.env.OPENCODE_DB_PATH ?? `${process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share")}/opencode/opencode.db`,
       defaultModel: process.env.WORK_DEFAULT_MODEL ?? "",
       modelPool: (process.env.WORK_MODEL_POOL ?? "").split(",").map((s) => s.trim()).filter(Boolean),
