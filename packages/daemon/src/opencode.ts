@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { mkdirSync, writeFileSync, unlinkSync, readdirSync, existsSync, readFileSync } from "fs";
+import { mkdirSync, writeFileSync, unlinkSync, rmdirSync, readdirSync, existsSync, readFileSync } from "fs";
 import { join, dirname, resolve, isAbsolute } from "path";
 import { homedir } from "os";
 import { log } from "./logger";
@@ -211,6 +211,16 @@ export class RecloneStrategy implements TakeoverStrategy {
   private async tryWorktree(
     dir: string, sharedDir: string, branch: string, url: string, env?: Record<string, string>,
   ): Promise<boolean> {
+    // serialize bare-store bootstrap per repo: concurrent spawns racing the
+    // first creation each attempt a bare clone and the losers fall back to
+    // full clones (observed live: bc#400 vs bc#475, 2026-09-03).
+    const lockDir = `${sharedDir}.lock`;
+    const deadline = Date.now() + 90_000;
+    while (true) {
+      try { mkdirSync(lockDir, { recursive: true }); break; } catch { /* exists */ }
+      if (Date.now() > deadline) return false;
+      await new Promise((r) => setTimeout(r, 500));
+    }
     try {
       if (!existsSync(join(sharedDir, "HEAD"))) {
         mkdirSync(dirname(sharedDir), { recursive: true });
@@ -233,6 +243,8 @@ export class RecloneStrategy implements TakeoverStrategy {
       return true;
     } catch {
       return false;
+    } finally {
+      try { rmdirSync(lockDir); } catch { /* not held */ }
     }
   }
 
