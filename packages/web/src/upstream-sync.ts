@@ -139,6 +139,7 @@ export class UpstreamSync {
         updatedAt: gi.updated_at,
         state: gi.state === "closed" ? "closed" : "open",
         upstreamIssueNumber: gi.number,
+        number: gi.number,
       }
     );
     // PRs the sandbox agent opens itself carry the ework-agent-pr marker;

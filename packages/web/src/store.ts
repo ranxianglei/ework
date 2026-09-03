@@ -451,6 +451,9 @@ export async function listAllIssues(opts: ListIssuesOpts = {}): Promise<IssueWit
 }
 
 export interface CreateIssueOpts {
+  /** Preferred local number (upstream imports keep local==upstream). Falls
+   *  back to autoincrement when the number is taken. */
+  number?: number;
   createdAt?: string;
   updatedAt?: string;
   state?: "open" | "closed";
@@ -484,9 +487,15 @@ export async function createIssue(
   const state: "open" | "closed" = opts.state ?? "open";
   const closedAt = state === "closed" ? isoOr(opts.closedAt ?? undefined, updatedAt) : null;
   return await getDB().transaction(async () => {
-    const next = (await getDB().get<{ n: number }>(
-      "SELECT COALESCE(MAX(number), 0) + 1 AS n FROM {{issues}} WHERE project_id = ?", [projectId]
-    ))!;
+    const want = opts.number && opts.number > 0 ? opts.number : null;
+    const taken = want
+      ? await getDB().get<{ id: number }>("SELECT id FROM {{issues}} WHERE project_id = ? AND number = ?", [projectId, want])
+      : undefined;
+    const next = want && !taken
+      ? { n: want }
+      : (await getDB().get<{ n: number }>(
+          "SELECT COALESCE(MAX(number), 0) + 1 AS n FROM {{issues}} WHERE project_id = ?", [projectId]
+        ))!;
     const info = await getDB().run(
       "INSERT INTO {{issues}} (project_id, number, title, body, state, author, created_at, updated_at, closed_at, model, runtime, upstream_issue_number) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       [projectId, next.n, title, body, state, author, createdAt, updatedAt, closedAt, opts.model ?? "", opts.runtime ?? "", opts.upstreamIssueNumber ?? null]

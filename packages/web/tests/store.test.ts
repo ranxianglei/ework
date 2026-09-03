@@ -405,3 +405,27 @@ describe("canReadProject", () => {
     expect(await canWriteProject(p.id, { login: "ro", is_admin: 0 })).toBe(false);
   });
 });
+
+describe("createIssue: number preservation (upstream imports)", () => {
+  // 2026-09-03 incident: bulk import in descending upstream order paired
+  // against ascending local autoincrement produced palindrome mappings
+  // (local 399↔GH 400, local 401-407 reversed). Imports must carry the
+  // upstream number when free.
+  test("honors requested number when free", async () => {
+    const p = await createProject("np-a", "free");
+    const a = await createIssue(p.id, "first", "b", "dog");
+    expect(a.number).toBe(1);
+    const imported = await createIssue(p.id, "gap import", "b", "dog", { number: 5, upstreamIssueNumber: 5 });
+    expect(imported.number).toBe(5);
+    const after = await createIssue(p.id, "next auto", "b", "dog");
+    expect(after.number).toBe(6);
+  });
+
+  test("falls back to autoincrement when number taken", async () => {
+    const p = await createProject("np-b", "taken");
+    await createIssue(p.id, "one", "b", "dog");
+    await createIssue(p.id, "two", "b", "dog");
+    const imported = await createIssue(p.id, "clash", "b", "dog", { number: 1, upstreamIssueNumber: 1 });
+    expect(imported.number).toBe(3);
+  });
+});
