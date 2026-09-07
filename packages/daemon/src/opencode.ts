@@ -1124,7 +1124,7 @@ export class Engine {
       this.handleLargeContent(workdir, issueData.body, "issue-body.txt"),
       issueData.author, workdir, instructions
     );
-    await this.enqueueOrRun(session, issue, prompt, undefined, model);
+    await this.enqueueOrRun(session, issue, prompt, tracker, ref, undefined, model);
   }
 
   private async handleCommented(
@@ -1204,7 +1204,7 @@ export class Engine {
           if (!session.opencodeSessionId) this.forwardCommentId.set(this.sessionKey(session, issue), { id: c.id, upstreamId: comment.upstreamCommentId ?? null });
         }
 
-        await this.enqueueOrRun(session, issue, prompt, comment.id, model);
+        await this.enqueueOrRun(session, issue, prompt, tracker, ref, comment.id, model);
       } else {
         // Create new session
         session = await this.store.createSession(issue.id, mentionName);
@@ -1224,7 +1224,7 @@ export class Engine {
           this.handleLargeContent(workdir, issueData.body, "issue-body.txt"),
           issueData.author, workdir, instructions
         );
-        await this.enqueueOrRun(session, issue, prompt, comment.id, model);
+        await this.enqueueOrRun(session, issue, prompt, tracker, ref, comment.id, model);
       }
     } else {
       // No valid @mention → forward to the most recently active session only.
@@ -1253,7 +1253,7 @@ export class Engine {
         this.wakeWhitelistCache.get(scopeKey)?.logins ?? []
       );
       await tracker.createComment(ref, `[system] 🏷 ${this.sessionRef(session)} ✓ Message forwarded to **${session.name}**${this.running.has(this.sessionKey(session, issue)) ? " (running)" : ""}.\n> workdir: ${this.workdirLink(workdir)}${upstreamAckSuffix(comment.upstreamCommentId)}`);
-      await this.enqueueOrRun(session, issue, prompt, comment.id, model);
+      await this.enqueueOrRun(session, issue, prompt, tracker, ref, comment.id, model);
     }
     } finally {
       if (comment.id) this.processingComments.delete(comment.id);
@@ -1386,7 +1386,7 @@ export class Engine {
 
   // ─── Preemptive Scheduler ───
 
-  private async enqueueOrRun(session: OpSession, issue: Issue, prompt: string, sourceCommentId?: string, model?: string) {
+  private async enqueueOrRun(session: OpSession, issue: Issue, prompt: string, tracker: IssueTracker, ref: TrackerRef, sourceCommentId?: string, model?: string) {
     const k = this.sessionKey(session, issue);
 
     this.stuckNudgeRounds.delete(k);
@@ -1403,6 +1403,7 @@ export class Engine {
 
     if (this.running.size >= this.maxConcurrent) {
       log.info(`engine: concurrency limit reached (${this.running.size}/${this.maxConcurrent}), message ${msg.id.slice(0, 8)} queued for ${k}`);
+      void tracker.updateStatus(ref, "queued");
       return;
     }
 
@@ -1410,6 +1411,7 @@ export class Engine {
     const projCap = this.projectConcurrencyCache.get(projKey)?.v;
     if (projCap != null && this.projectRunningCount(projKey) >= projCap) {
       log.info(`engine: project concurrency limit reached for ${projKey} (${this.projectRunningCount(projKey)}/${projCap}), message ${msg.id.slice(0, 8)} queued`);
+      void tracker.updateStatus(ref, "queued");
       return;
     }
 
