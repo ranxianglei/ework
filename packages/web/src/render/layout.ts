@@ -189,6 +189,7 @@ export function renderLayout(props: LayoutProps, inner: string, initialItems: st
     const s = props.aiStatus ?? "";
     const map: Record<string, { cls: string; label: string }> = {
       processing: { cls: "ai-processing", label: "🔄 AI 处理中" },
+      queued: { cls: "ai-queued", label: "⏳ 排队中" },
       completed: { cls: "ai-completed", label: "✅ AI 已完成" },
       failed: { cls: "ai-failed", label: "⚠️ AI 失败" },
       halted: { cls: "ai-halted", label: "⏹ 已停止" },
@@ -312,6 +313,7 @@ export function aiStatusBadge(status: string | undefined): string {
   if (!s) return "";
   const map: Record<string, string> = {
     processing: '<span class="ai-status-list" style="color:var(--accent)">⚙️ 处理中</span>',
+    queued: '<span class="ai-status-list" style="color:var(--accent)">⏳ 排队中</span>',
     halted: '<span class="ai-status-list" style="color:#bf8700">⏹️ 已停止</span>',
     dispatch_off: '<span class="ai-status-list" style="color:#6f7781">🔕 不接单</span>',
     completed: '<span class="ai-status-list" style="color:var(--green)">✓ 已完成</span>',

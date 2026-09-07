@@ -412,7 +412,7 @@ describe("createIssue: number preservation (upstream imports)", () => {
   // (local 399↔GH 400, local 401-407 reversed). Imports must carry the
   // upstream number when free.
   test("honors requested number when free", async () => {
-    const p = await createProject("np-a", "free");
+    const p = await createProject("np-a", "free", "");
     const a = await createIssue(p.id, "first", "b", "dog");
     expect(a.number).toBe(1);
     const imported = await createIssue(p.id, "gap import", "b", "dog", { number: 5, upstreamIssueNumber: 5 });
@@ -422,7 +422,7 @@ describe("createIssue: number preservation (upstream imports)", () => {
   });
 
   test("falls back to autoincrement when number taken", async () => {
-    const p = await createProject("np-b", "taken");
+    const p = await createProject("np-b", "taken", "");
     await createIssue(p.id, "one", "b", "dog");
     await createIssue(p.id, "two", "b", "dog");
     const imported = await createIssue(p.id, "clash", "b", "dog", { number: 1, upstreamIssueNumber: 1 });
