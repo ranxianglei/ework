@@ -1914,7 +1914,24 @@ export class Engine {
   private async drainGlobalPending(): Promise<void> {
     if (this.destroyed) return;
     const slotsAvailable = this.maxConcurrent - this.running.size;
-    if (slotsAvailable <= 0) return;
+    if (slotsAvailable <= 0) {
+      // Nothing can run — surface waiting work as ⏳ queued so the web does
+      // not render these issues as idle while their messages sit behind the cap.
+      try {
+        const waiting = await this.store.getGlobalPendingMessages(5);
+        for (const msg of waiting) {
+          const session = await this.store.getSession(msg.sessionId);
+          if (!session) continue;
+          const issue = await this.store.getIssue(session.issueId);
+          if (!issue || issue.state === "closed") continue;
+          const parts = issue.trackerScopeKey.split("/");
+          if (parts.length < 2) continue;
+          const ref = { trackerType: issue.trackerType, scope: { owner: parts[0]!, repo: parts[1]! }, issueId: String(issue.trackerIssueId) };
+          void this.getTracker(issue.trackerType).updateStatus(ref, "queued");
+        }
+      } catch { /* transient store error — next cycle retries */ }
+      return;
+    }
     const pending = await this.store.getGlobalPendingMessages(slotsAvailable);
     for (const msg of pending) {
       if (this.destroyed) return;
