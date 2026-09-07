@@ -2144,7 +2144,11 @@ export class Engine {
       }
     }
 
-    if (webReachable && this.running.size < this.maxConcurrent) {
+    // Drain even when no issue is currently observed (observedIssues is empty
+    // right after a restart, which used to strand kept-pending messages until a
+    // webhook arrived). Safe: drainGlobalPending re-checks the web gate per
+    // message and fail-closes while the web is unreachable.
+    if (this.running.size < this.maxConcurrent) {
       try {
         const stranded = await this.store.getGlobalPendingMessages(1);
         if (stranded.length > 0) {
