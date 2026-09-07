@@ -116,7 +116,9 @@ export function shortModelName(model: string): string {
 
 export function agentBadgeText(model?: string): string {
   const m = (model || "").trim();
-  return m ? `> 🤖 ework agent · ${shortModelName(m)}\n\n` : `> 🤖 ework agent\n\n`;
+  return m
+    ? `> 🤖 Powered by [ework](https://github.com/ranxianglei/ework-aio) · ${shortModelName(m)}\n\n`
+    : `> 🤖 Powered by [ework](https://github.com/ranxianglei/ework-aio)\n\n`;
 }
 
 function issueBadge(

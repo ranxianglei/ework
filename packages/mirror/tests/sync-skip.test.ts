@@ -63,7 +63,7 @@ describe("agent provenance badge", () => {
   test("badge leads with model when provided", async () => {
     const { agentBadgeText } = await import("../src/mirror");
     const f = agentBadgeText("vllm-qwen/qwen3.8-27b");
-    expect(f).toContain("🤖 ework agent");
+    expect(f).toContain("🤖 Powered by [ework]");
     expect(f).toContain("qwen3.8-27b");
     expect(f).not.toContain("vllm-qwen/");
     expect(f.startsWith("> ")).toBe(true);
@@ -72,8 +72,8 @@ describe("agent provenance badge", () => {
 
   test("footer degrades gracefully without model", async () => {
     const { agentBadgeText } = await import("../src/mirror");
-    expect(agentBadgeText(undefined)).toBe("> 🤖 ework agent\n\n");
-    expect(agentBadgeText("")).toBe("> 🤖 ework agent\n\n");
+    expect(agentBadgeText(undefined)).toBe("> 🤖 Powered by [ework](https://github.com/ranxianglei/ework-aio)\n\n");
+    expect(agentBadgeText("")).toBe("> 🤖 Powered by [ework](https://github.com/ranxianglei/ework-aio)\n\n");
   });
 
   test("parseEvent surfaces payload model and comment author", async () => {
@@ -125,11 +125,11 @@ describe("close-state upstream fallback", () => {
 describe("agentBadgeText", () => {
   test("renders short model name after the agent marker", () => {
     const badge = agentBadgeText("vllm-flash//mnt/8t/models/qwen3.8-flash-next-w4a16-p294");
-    expect(badge).toBe("> 🤖 ework agent · qwen3.8-flash-next-w4a16-p294\n\n");
+    expect(badge).toBe("> 🤖 Powered by [ework](https://github.com/ranxianglei/ework-aio) · qwen3.8-flash-next-w4a16-p294\n\n");
   });
 
   test("falls back to bare badge without a model", () => {
-    expect(agentBadgeText(undefined)).toBe("> 🤖 ework agent\n\n");
-    expect(agentBadgeText("  ")).toBe("> 🤖 ework agent\n\n");
+    expect(agentBadgeText(undefined)).toBe("> 🤖 Powered by [ework](https://github.com/ranxianglei/ework-aio)\n\n");
+    expect(agentBadgeText("  ")).toBe("> 🤖 Powered by [ework](https://github.com/ranxianglei/ework-aio)\n\n");
   });
 });
