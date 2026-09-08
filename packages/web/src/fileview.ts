@@ -1,5 +1,5 @@
 import { realpathSync, statSync, readFileSync, openSync, readSync, closeSync, readdirSync } from "fs";
-import { isAbsolute, relative, join, dirname } from "path";
+import { isAbsolute, relative, join, dirname, resolve } from "path";
 import hljs from "highlight.js";
 import { THEME_CSS, escapeHtml, escapeAttr } from "./render/layout";
 import { renderMarkdown } from "./render/markdown";
@@ -472,6 +472,20 @@ function buildDownloadView(cfg: Config, rp: string): { html: string } {
   return { html };
 }
 
+export // Repo-relative refs (figures/x.png) in /file-rendered markdown 404 against /file;
+// rewritten targets re-pass the allowlist+denylist gate at request time.
+const REL_REF_RE = /(\s(?:src|href)=")([^"]+)(")/g;
+const SKIP_REF_RE = /^(?:[a-z][a-z0-9+.-]*:|\/|#)/i;
+
+export function rewriteRelativeRefs(html: string, dir: string): string {
+  return html.replace(REL_REF_RE, (full: string, pre: string, ref: string, post: string) => {
+    if (SKIP_REF_RE.test(ref)) return full;
+    const abs = resolve(dir, ref);
+    const q = encodeURIComponent(abs);
+    return pre + (pre.includes("src") ? `/file/raw?path=${q}` : `/file?path=${q}`) + post;
+  });
+}
+
 export function buildFileView(
   cfg: Config,
   rawPath: string,
@@ -505,8 +519,9 @@ export function buildFileView(
   const lang = extToLang(rawPath);
   const shownBytes = chunk.rows.reduce((s, r) => s + r.t.length + 1, 0);
   const fullText = chunk.rows.map((r) => r.t).join("\n");
+  const dir = dirname(rawPath);
   const body = mdRender
-    ? `<div class="md-render">${renderMarkdown(fullText, "")}</div>`
+    ? `<div class="md-render">${rewriteRelativeRefs(renderMarkdown(fullText, dir), dir)}</div>`
     : lang && shownBytes <= 100000
       ? renderHighlighted(chunk, lang)
       : `<pre><code>${chunk.rows.map((r) => lineRow(r.t, r.n)).join("")}</code></pre>`;
