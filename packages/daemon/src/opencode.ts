@@ -1962,7 +1962,13 @@ export class Engine {
         if (age <= Engine.MAX_PENDING_AGE_MS) break;
         log.warn(`engine: expiring stale pending msg ${next.id.slice(0, 8)} for ${k} (age ${Math.round(age / 60_000)}min > ${Math.round(Engine.MAX_PENDING_AGE_MS / 60_000)}min) — skipping replay`);
         await this.store.updateMessageStatus(next.id, "failed", "expired: stale pending message not replayed");
-        next = await this.store.getNextPendingMessage(session.id);
+        const follow = await this.store.getNextPendingMessage(session.id);
+        const scopeParts = issue.trackerScopeKey.split("/");
+        if (scopeParts.length === 2) {
+          const ref = { trackerType: issue.trackerType, scope: { owner: scopeParts[0]!, repo: scopeParts[1]! }, issueId: String(issue.trackerIssueId) };
+          void this.getTracker(issue.trackerType).updateStatus(ref, follow ? "queued" : "failed");
+        }
+        next = follow;
       }
       if (!next) {
         this.clearRuntimeState(k);
