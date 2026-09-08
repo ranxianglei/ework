@@ -507,6 +507,7 @@ export class Engine {
   private generation = new Map<string, number>();
 
   private observedIssues = new Set<string>();
+  private badgeWrites = new Map<string, string>();
   private observerTimer?: ReturnType<typeof setInterval>;
 
   private groupConfigs = new Map<string, GroupConfig>();
@@ -2173,14 +2174,29 @@ export class Engine {
     // right after a restart, which used to strand kept-pending messages until a
     // webhook arrived). Safe: drainGlobalPending re-checks the web gate per
     // message and fail-closes while the web is unreachable.
-    if (this.running.size < this.maxConcurrent) {
-      try {
-        const stranded = await this.store.getGlobalPendingMessages(1);
-        if (stranded.length > 0) {
-          log.info(`engine: observer — found stranded pending messages, draining`);
-          void this.drainGlobalPending();
-        }
-      } catch { /* transient store error — next cycle retries */ }
+    // Badge reconcile: the badge is written by many racing paths (enqueue,
+    // drain, finish, expire). Converge it to live truth each cycle:
+    // processing ⇐ running proc, queued ⇐ pending msgs, else clear.
+    if (webReachable) {
+      for (const issue of ownedIssues) {
+        try {
+          const scopeParts = issue.trackerScopeKey.split("/");
+          if (scopeParts.length !== 2) continue;
+          const issuePrefix = `${issue.trackerType}:${issue.trackerScopeKey}#${issue.trackerIssueId}@`;
+          const isRunning = [...this.running.keys()].some((rk) => rk.startsWith(issuePrefix));
+          const sessions = await this.store.getSessionsForIssue(issue.id).catch(() => []);
+          const desired = isRunning
+            ? "processing"
+            : (await Promise.all(sessions.map((s) => this.store.getNextPendingMessage(s.id).catch(() => undefined)))).some(Boolean)
+              ? "queued"
+              : "";
+          const prev = this.badgeWrites.get(issue.id);
+          if (prev === desired) continue;
+          this.badgeWrites.set(issue.id, desired);
+          const ref = { trackerType: issue.trackerType, scope: { owner: scopeParts[0]!, repo: scopeParts[1]! }, issueId: String(issue.trackerIssueId) };
+          void this.getTracker(issue.trackerType).updateStatus(ref, desired);
+        } catch { /* badge convergence is best-effort */ }
+      }
     }
   }
 
