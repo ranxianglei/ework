@@ -2145,10 +2145,11 @@ export class Engine {
       log.error("engine: releaseDeadOwners failed:", (err as Error).message);
     }
 
+    let allOwned: Awaited<ReturnType<Store["listOwnedIssues"]>> = [];
     let ownedIssues;
     try {
-      ownedIssues = (await this.store.listOwnedIssues(this.daemonId))
-        .filter((i) => this.observedIssues.has(i.id));
+      allOwned = await this.store.listOwnedIssues(this.daemonId);
+      ownedIssues = allOwned.filter((i) => this.observedIssues.has(i.id));
     } catch (err) {
       log.error("engine: listOwnedIssues failed:", (err as Error).message);
       return;
@@ -2170,15 +2171,24 @@ export class Engine {
       }
     }
 
-    // Drain even when no issue is currently observed (observedIssues is empty
-    // right after a restart, which used to strand kept-pending messages until a
-    // webhook arrived). Safe: drainGlobalPending re-checks the web gate per
-    // message and fail-closes while the web is unreachable.
+    // Both blocks below run over ALL owned issues, not just observed ones:
+    // observedIssues is empty until a webhook arrives, which after a restart
+    // used to strand kept-pending messages and stale badges indefinitely.
+    if (webReachable) {
+      try {
+        const pending = await this.store.getGlobalPendingMessages(1);
+        if (pending.length > 0 && this.running.size < this.maxConcurrent) {
+          log.info("engine: observer — found stranded pending messages, draining");
+          void this.drainGlobalPending();
+        }
+      } catch { /* transient store error — next cycle retries */ }
+    }
+
     // Badge reconcile: the badge is written by many racing paths (enqueue,
     // drain, finish, expire). Converge it to live truth each cycle:
     // processing ⇐ running proc, queued ⇐ pending msgs, else clear.
     if (webReachable) {
-      for (const issue of ownedIssues) {
+      for (const issue of allOwned) {
         try {
           const scopeParts = issue.trackerScopeKey.split("/");
           if (scopeParts.length !== 2) continue;
@@ -2419,8 +2429,8 @@ export class Engine {
 
     // Recover stuck messages scoped to this daemon's issues.
     const stuck = await this.store.getOwnedPendingOrRunningMessages(this.daemonId);
-    if (stuck.length === 0) return;
 
+    if (stuck.length > 0) {
     log.info(`engine: recovering ${stuck.length} stuck messages`);
 
     // Reset running messages to pending
@@ -2495,6 +2505,7 @@ export class Engine {
       } finally {
         reservedRecoverSlots--;
       }
+    }
     }
 
     // Converge orphaned web statuses: a hard daemon death (host reboot, OOM,

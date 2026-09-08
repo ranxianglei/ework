@@ -245,7 +245,8 @@ describe("boot-race tolerance (web unreachable at recover)", () => {
 test("recover clears orphaned web status for idle owned issues", async () => {
   const { engine, store, daemonId } = await bootEngine();
   const issue = await store.findOrCreateIssue(REF, "ranxianglei/billion-context", "t");
-  await store.createSession(issue.id, "ework-daemon"); // idle session, no messages
+  const session = await store.createSession(issue.id, "ework-daemon"); // idle session, no messages
+  await store.updateSession(session.id, { lastOutputAt: Date.now() });
   await store.claimIssue(issue.id, daemonId);
   await engine.recover();
   expect(tracker.statuses.filter((x) => x === "").length).toBeGreaterThanOrEqual(1);
