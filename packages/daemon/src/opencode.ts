@@ -2472,6 +2472,28 @@ export class Engine {
         reservedRecoverSlots--;
       }
     }
+
+    // Converge orphaned web statuses: a hard daemon death (host reboot, OOM,
+    // poweroff) can leave ai_status=processing on the web with no live work
+    // behind it — the badge then lies forever. Anything real is either running
+    // above or requeued as pending above; every other owned issue must read
+    // idle on the web.
+    try {
+      const owned = await this.store.listOwnedIssues(this.daemonId);
+      const busyMessages = await this.store.getOwnedPendingOrRunningMessages(this.daemonId);
+      const busyIssueIds = new Set(busyMessages.map((m) => String(m.sessionId)));
+      for (const issue of owned) {
+        const parts = issue.trackerScopeKey.split("/");
+        if (parts.length < 2) continue;
+        const sessions = await this.store.getSessionsForIssue(issue.id);
+        const busy = sessions.some((sess) => sess.state === "running" || busyIssueIds.has(String(sess.id)));
+        if (busy) continue;
+        const ref = { trackerType: issue.trackerType, scope: { owner: parts[0]!, repo: parts[1]! }, issueId: String(issue.trackerIssueId) };
+        try {
+          await this.getTracker(issue.trackerType).updateStatus(ref, "");
+        } catch { /* web unreachable — badge stays stale until next boot */ }
+      }
+    } catch { /* transient store error — reconcile is best-effort */ }
   }
 
   private async cleanupGlobalOrphans(): Promise<void> {

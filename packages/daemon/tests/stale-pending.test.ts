@@ -42,7 +42,10 @@ class RecordingTracker implements IssueTracker {
   async deleteComment(): Promise<void> {}
   async listComments(): Promise<TrackerComment[]> { return []; }
   async closeIssue(): Promise<void> {}
-  async updateStatus(): Promise<void> {}
+  statuses: string[] = [];
+  async updateStatus(_ref: unknown, status: string): Promise<void> {
+    this.statuses.push(status);
+  }
   async setCommentModel(): Promise<void> {}
   async setReaction(): Promise<void> {}
   getTrackerInstructions(): TrackerInstructions { return { clone: "git clone fake", issueRef: "fake/ref" }; }
@@ -237,4 +240,13 @@ describe("boot-race tolerance (web unreachable at recover)", () => {
     expect(row?.status).toBe("failed");
     expect(row?.error).toContain("web gate: dispatch off");
   });
+});
+
+test("recover clears orphaned web status for idle owned issues", async () => {
+  const { engine, store, daemonId } = await bootEngine();
+  const issue = await store.findOrCreateIssue(REF, "ranxianglei/billion-context", "t");
+  await store.createSession(issue.id, "ework-daemon"); // idle session, no messages
+  await store.claimIssue(issue.id, daemonId);
+  await engine.recover();
+  expect(tracker.statuses.filter((x) => x === "").length).toBeGreaterThanOrEqual(1);
 });
