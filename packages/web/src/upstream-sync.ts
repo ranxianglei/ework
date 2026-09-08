@@ -11,6 +11,7 @@ import {
   ensureUser,
   postComment,
   editIssue,
+  updateIssueAiStatus,
   updateUpstreamSyncState,
   listEnabledUpstreamSyncs,
 } from "./store";
@@ -155,6 +156,10 @@ export class UpstreamSync {
     const target: "open" | "closed" = gi.state === "closed" ? "closed" : "open";
     if (existing.state === target) return false;
     await editIssue(existing.id, { state: target });
+    // stale AI badges on closed rows read as noise on the issue list
+    if (target === "closed" && existing.ai_status && existing.ai_status !== "completed") {
+      await updateIssueAiStatus(existing.id, "");
+    }
     if (emit) {
       void emitIssueEvent(this.project.id, existing.id, target === "closed" ? "closed" : "reopened", this.origin);
     }
