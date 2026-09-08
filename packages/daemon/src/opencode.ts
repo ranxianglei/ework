@@ -1794,7 +1794,8 @@ export class Engine {
       this.nudgeRounds.delete(k);
       this.emptyResponseRounds.delete(k);
       await this.persistRuntimeState(session.id);
-      void tracker.updateStatus(ref, "");
+      const stillWaiting = await this.store.getNextPendingMessage(session.id).catch(() => undefined);
+      void tracker.updateStatus(ref, stillWaiting ? "queued" : "");
     } else {
       const sessionOutput = await this.backendFor(k, session.opencodeSessionId).getSessionOutputTokens(session.opencodeSessionId);
       const emptyRound = this.emptyResponseRounds.get(k) ?? 0;
@@ -1924,6 +1925,7 @@ export class Engine {
           if (!session) continue;
           const issue = await this.store.getIssue(session.issueId);
           if (!issue || issue.state === "closed") continue;
+          if (this.running.has(this.sessionKey(session, issue))) continue;
           const parts = issue.trackerScopeKey.split("/");
           if (parts.length < 2) continue;
           const ref = { trackerType: issue.trackerType, scope: { owner: parts[0]!, repo: parts[1]! }, issueId: String(issue.trackerIssueId) };
