@@ -472,17 +472,29 @@ function buildDownloadView(cfg: Config, rp: string): { html: string } {
   return { html };
 }
 
-export // Repo-relative refs (figures/x.png) in /file-rendered markdown 404 against /file;
-// rewritten targets re-pass the allowlist+denylist gate at request time.
-const REL_REF_RE = /(\s(?:src|href)=")([^"]+)(")/g;
+export // Repo-relative refs (figures/x.png) in /file-rendered markdown 404 against /file
+// (and DOMPurify strips relative src entirely); rewriting at markdown-source level
+// yields rooted /file URLs that survive sanitization and re-pass the gate at request time.
+const MD_REF_RE = /(\]\()([^)\s]+)([)\s])/g;
 const SKIP_REF_RE = /^(?:[a-z][a-z0-9+.-]*:|\/|#)/i;
 
-export function rewriteRelativeRefs(html: string, dir: string): string {
-  return html.replace(REL_REF_RE, (full: string, pre: string, ref: string, post: string) => {
-    if (SKIP_REF_RE.test(ref)) return full;
+export function rewriteRelativeMdRefs(md: string, dir: string): string {
+  let out = "";
+  let last = 0;
+  for (const m of md.matchAll(/^(```|~~~)[^\n]*\n[\s\S]*?^\1[^\n]*$/gm)) {
+    out += rewriteRefs(md.slice(last, m.index!), dir) + m[0];
+    last = m.index! + m[0].length;
+  }
+  return out + rewriteRefs(md.slice(last), dir);
+}
+
+function rewriteRefs(text: string, dir: string): string {
+  return text.replace(MD_REF_RE, (full: string, pre: string, ref: string, post: string) => {
+    if (SKIP_REF_RE.test(ref) || ref.startsWith("/file")) return full;
     const abs = resolve(dir, ref);
-    const q = encodeURIComponent(abs);
-    return pre + (pre.includes("src") ? `/file/raw?path=${q}` : `/file?path=${q}`) + post;
+    const media = /\.(?:png|jpe?g|gif|webp|bmp|svg|mp3|mp4|webm|ogg|wav|pdf)$/i.test(abs);
+    const url = `${media ? "/file/raw" : "/file"}?path=${encodeURIComponent(abs)}`;
+    return `${pre}${url}${post}`;
   });
 }
 
@@ -521,7 +533,7 @@ export function buildFileView(
   const fullText = chunk.rows.map((r) => r.t).join("\n");
   const dir = dirname(rawPath);
   const body = mdRender
-    ? `<div class="md-render">${rewriteRelativeRefs(renderMarkdown(fullText, dir), dir)}</div>`
+    ? `<div class="md-render">${renderMarkdown(rewriteRelativeMdRefs(fullText, dir), dir)}</div>`
     : lang && shownBytes <= 100000
       ? renderHighlighted(chunk, lang)
       : `<pre><code>${chunk.rows.map((r) => lineRow(r.t, r.n)).join("")}</code></pre>`;
