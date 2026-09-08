@@ -528,6 +528,14 @@ export async function updateIssueAiStatus(issueId: number, status: string): Prom
   await getDB().run("UPDATE {{issues}} SET ai_status = ? WHERE id = ?", [status, issueId]);
 }
 
+export async function getIssueAiStatusByNumber(owner: string, repo: string, number: number): Promise<string> {
+  const row = await getDB().get<{ ai_status: string }>(
+    "SELECT i.ai_status FROM {{issues}} i JOIN {{projects}} p ON i.project_id = p.id WHERE p.owner = ? AND p.name = ? AND i.number = ?",
+    [owner, repo, number],
+  );
+  return row?.ai_status ?? "";
+}
+
 export async function getIssueAiStatus(issueId: number): Promise<string> {
   const row = await getDB().get<{ ai_status: string }>("SELECT ai_status FROM {{issues}} WHERE id = ?", [issueId]);
   return row?.ai_status ?? "";

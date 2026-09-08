@@ -82,6 +82,7 @@ import {
   getUpstreamSync,
   type ProjectRole,
   type UserRow,
+  getIssueAiStatusByNumber,
 } from "./store";
 import { startUpstreamSyncPoller } from "./upstream-sync";
 import {
@@ -2515,7 +2516,7 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
       }
       const since = url.searchParams.get("since") ?? new Date(0).toISOString();
       const views = await fetchIssueSince(owner, repo, number, since);
-      return json({ comments: views });
+      return json({ comments: views, aiStatus: await getIssueAiStatusByNumber(owner, repo, number) });
     } catch (e) {
       return json({ error: errMsg(e) }, e instanceof StoreError ? e.status : 500);
     }

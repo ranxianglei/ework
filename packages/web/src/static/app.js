@@ -562,10 +562,29 @@
   }
 
   let pollTimer = null;
+  const BADGES = {
+    "": ["ai-idle", "💤 空闲"],
+    processing: ["ai-processing", "🔄 AI 处理中"],
+    queued: ["ai-queued", "⏳ 排队中"],
+    completed: ["ai-completed", "✅ AI 已完成"],
+    failed: ["ai-failed", "⚠️ AI 失败"],
+    halted: ["ai-halted", "⏹ 已停止"],
+    dispatch_off: ["ai-dispatch-off", "🔕 不接单中"],
+  };
+  function syncBadge(status) {
+    const el = document.getElementById("aiStatusBadge");
+    if (!el || status === undefined || status === null) return;
+    if (el.dataset.status === status) return;
+    const m = BADGES[status] || BADGES[""];
+    el.dataset.status = status;
+    el.className = "ai-badge " + m[0];
+    el.textContent = m[1];
+  }
   async function poll() {
     try {
       const data = await api("since", { since: state.sinceISO });
       if (!data || data.error) return;
+      syncBadge(data.aiStatus);
       const views = data.comments || [];
       if (!views.length) return;
       mergeFront(views, true);
