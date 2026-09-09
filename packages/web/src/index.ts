@@ -395,6 +395,7 @@ const REPO_VISIBILITY_RE = /^\/([^/]+)\/([^/]+)\/settings\/visibility$/;
 const REPO_DISPATCH_RE = /^\/([^/]+)\/([^/]+)\/settings\/dispatch$/;
 
 const REPO_WAKE_LOGINS_RE = /^\/([^/]+)\/([^/]+)\/settings\/ai\/wake-logins$/;
+const REPO_COMMUNITY_WAKE_RE = /^\/([^/]+)\/([^/]+)\/settings\/ai\/community-wake$/;
 const REPO_CONCURRENCY_RE = /^\/([^/]+)\/([^/]+)\/settings\/ai\/concurrency$/;
 const REPO_HALT_ALL_RE = /^\/([^/]+)\/([^/]+)\/settings\/ai\/halt-all$/;
 const SETTINGS_DISPATCH_RE = /^\/settings\/dispatch$/;
@@ -625,7 +626,25 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
       const cfgKv = await getConfigAll();
       const logins = (cfgKv[`wakeLogins:${owner}/${repo}`] ?? "")
         .split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
-      return json({ logins });
+      const communityWake = cfgKv[`communityWake:${owner}/${repo}`] === "1";
+      return json({ logins, communityWake });
+    }
+    // Machine route: daemons admit new wake logins (thread-trust contagion —
+    // a whitelisted participant engaging an external author endorses them).
+    if (url.pathname === "/api/v1/wake-logins" && req.method === "POST") {
+      const body = await req.json().catch(() => ({})) as { owner?: string; repo?: string; add?: string };
+      const owner = (body.owner ?? "").trim();
+      const repo = (body.repo ?? "").trim();
+      const add = (body.add ?? "").trim();
+      if (!owner || !repo || !add) return json({ error: "owner, repo, add required" }, 400);
+      if (!/^[\w.-]+$/.test(add)) return json({ error: "invalid login" }, 400);
+      const key = `wakeLogins:${owner}/${repo}`;
+      const current = (await getConfigAll())[key] ?? "";
+      const logins = current.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
+      if (logins.some((l) => l.toLowerCase() === add.toLowerCase())) return json({ ok: true, logins });
+      logins.push(add);
+      await setConfig(key, logins.join(","));
+      return json({ ok: true, logins });
     }
 
     // Issues JSON API — read side for the ework-issue CLI (pull/open).
@@ -2260,6 +2279,22 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
       }
       return Response.redirect(aiBack, 303);
     }
+    const repoCommunityWakeMatch = url.pathname.match(REPO_COMMUNITY_WAKE_RE);
+    if (repoCommunityWakeMatch) {
+      const [, owner, repo] = repoCommunityWakeMatch;
+      if (!(owner && repo)) return html(errorPage("bad path", ""), 400);
+      const project = await getProject(owner, repo);
+      if (!project) return html(errorPage("项目不存在", ""), 404);
+      const aiBack = `${url.origin}/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/settings/ai`;
+      if (!(await canAdminProject(project.id, ctx.user))) {
+        return Response.redirect(`${aiBack}?err=${encodeURIComponent("无权限")}`, 303);
+      }
+      const fd = await req.formData();
+      const on = String(fd.get("enabled") ?? "") === "1";
+      const key = `communityWake:${owner}/${repo}`;
+      if (on) await setConfig(key, "1"); else await deleteConfig(key);
+      return Response.redirect(aiBack, 303);
+    }
     if (repoWakeLoginsMatch) {
       const [, owner, repo] = repoWakeLoginsMatch;
       if (!(owner && repo)) return html(errorPage("bad path", ""), 400);
@@ -2614,8 +2649,9 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     const running = await getRunningSessionsForProject(`${owner}/${repo}`);
     const processingCount = new Set(running.map((r) => r.issueNumber)).size;
     const wakeLoginsRaw = dispatchCfg[`wakeLogins:${owner}/${repo}`] ?? "";
+      const communityWake = dispatchCfg[`communityWake:${owner}/${repo}`] === "1";
     const concurrencyLimit = dispatchCfg[`concurrency:${owner}/${repo}`] ?? "";
-    return html(buildProjectAiPage(project, dispatchOff, globalDispatchOff, processingCount, wakeLoginsRaw, concurrencyLimit).html);
+    return html(buildProjectAiPage(project, dispatchOff, globalDispatchOff, processingCount, wakeLoginsRaw, concurrencyLimit, communityWake).html);
   }
 
   const upstreamsPage = url.pathname.match(REPO_UPSTREAMS_RE);

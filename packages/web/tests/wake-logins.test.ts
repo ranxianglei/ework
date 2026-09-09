@@ -206,3 +206,50 @@ test("submitter ＋白名单 form posts and the button disappears once whitelist
   expect(html).toContain('由 <strong>Rika-xie</strong> 提交');
   expect(html).not.toContain(`name="add" value="Rika-xie"`);
 });
+
+test("machine POST /api/v1/wake-logins admits and dedups; communityWake flag round-trips", async () => {
+  const REPO2 = `cw${process.pid % 1000}`;
+  await createProject(OWNER, REPO2, "community wake");
+
+  const post = await fetch(`${BASE}/api/v1/wake-logins`, {
+    method: "POST",
+    headers: { Cookie: cookie, "content-type": "application/json" },
+    body: JSON.stringify({ owner: OWNER, repo: REPO2, add: "NewContributor" }),
+  });
+  expect(post.status).toBe(200);
+  expect(((await post.json()) as { logins: string[] }).logins).toEqual(["NewContributor"]);
+
+  const dupe = await fetch(`${BASE}/api/v1/wake-logins`, {
+    method: "POST",
+    headers: { Cookie: cookie, "content-type": "application/json" },
+    body: JSON.stringify({ owner: OWNER, repo: REPO2, add: "newcontributor" }),
+  });
+  expect(((await dupe.json()) as { logins: string[] }).logins).toEqual(["NewContributor"]);
+
+  const bad = await fetch(`${BASE}/api/v1/wake-logins`, {
+    method: "POST",
+    headers: { Cookie: cookie, "content-type": "application/json" },
+    body: JSON.stringify({ owner: OWNER, repo: REPO2, add: "not a login!" }),
+  });
+  expect(bad.status).toBe(400);
+
+  const get0 = await fetch(`${BASE}/api/v1/wake-logins?owner=${OWNER}&repo=${REPO2}`, {
+    headers: { Cookie: cookie },
+  });
+  expect(((await get0.json()) as { communityWake: boolean }).communityWake).toBe(false);
+
+  const toggle = await fetch(`${BASE}/${OWNER}/${REPO2}/settings/ai/community-wake`, {
+    method: "POST",
+    headers: { Cookie: cookie },
+    body: new URLSearchParams({ enabled: "1" }),
+    redirect: "manual",
+  });
+  expect(toggle.status).toBe(303);
+
+  const get1 = await fetch(`${BASE}/api/v1/wake-logins?owner=${OWNER}&repo=${REPO2}`, {
+    headers: { Cookie: cookie },
+  });
+  const data = await get1.json() as { logins: string[]; communityWake: boolean };
+  expect(data.communityWake).toBe(true);
+  expect(data.logins).toEqual(["NewContributor"]);
+});

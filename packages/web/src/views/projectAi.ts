@@ -9,6 +9,7 @@ export function buildProjectAiPage(
   processingCount: number,
   wakeLoginsRaw = "",
   concurrencyLimit = "",
+  communityWake = false,
 ): { html: string } {
   const aiBase = `/${encodeURIComponent(project.owner)}/${encodeURIComponent(project.name)}/settings/ai`;
   const dispatchAction = `/${encodeURIComponent(project.owner)}/${encodeURIComponent(project.name)}/settings/dispatch`;
@@ -29,6 +30,17 @@ ${hint}
 <button type="submit" class="${dispatchOff ? "primary" : "secondary"}" ${disabled ? "disabled" : ""}>${dispatchOff ? "🔔 开启自动接单" : "🔕 关闭自动接单"}</button>
 </form>`;
   })();
+
+  const communityCard = `<form class="card" method="POST" action="${escapeAttr(`${aiBase}/community-wake`)}">
+<h2>🌍 社区模式</h2>
+<div class="hint">开启后，<b>issue 的作者</b>可自动唤醒自己的 issue（提交后续评论即派单），受每日配额限制；其他人的评论仍走白名单。白名单成员在别人的 issue 下回复时，该 issue 作者会被自动加入白名单。</div>
+<div class="status-line">
+  <span class="status-dot ${communityWake ? "on" : "off"}"></span>
+  <span class="status-text">${communityWake ? "🌍 社区模式开启" : "⭕ 关闭（仅白名单）"}</span>
+</div>
+<input type="hidden" name="enabled" value="${communityWake ? "0" : "1"}">
+<button type="submit" class="${communityWake ? "secondary" : "primary"}">${communityWake ? "⭕ 关闭社区模式" : "🌍 开启社区模式"}</button>
+</form>`;
 
   const wakeList = wakeLoginsRaw.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
   const wakeCard = `<form class="card" method="POST" action="${escapeAttr(`${aiBase}/wake-logins`)}">
@@ -95,6 +107,7 @@ ${projectSettingsTabsHTML(project.owner, project.name, "ai")}
 <p class="hint">两个独立控制：<b>🔔 自动接单</b>控制是否自动派新单（不影响运行中）；<b>⏹️ 停止</b>杀死当前所有运行中AI会话（不影响接单状态）。模型选择请去 <a href="${escapeAttr(`/${encodeURIComponent(project.owner)}/${encodeURIComponent(project.name)}/settings/model`)}">⚙️ 模型</a> 标签页。</p>
 ${dispatchCard}
 ${wakeCard}
+${communityCard}
 ${concurrencyCard}
 ${haltCard}
 
