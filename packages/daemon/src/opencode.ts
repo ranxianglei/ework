@@ -435,6 +435,18 @@ export function wakePolicySkips(
   return null;
 }
 
+// Community-wake daily quota: prune stamps older than a day, admit while the
+// retained count stays under the limit. Pure for testability.
+export function externalWakeAllotment(
+  stamps: number[],
+  now: number,
+  limit: number,
+): { allowed: boolean; kept: number[] } {
+  const kept = stamps.filter((t) => now - t < 86_400_000);
+  const allowed = kept.length < limit;
+  return { allowed, kept: allowed ? [...kept, now] : kept };
+}
+
 // Reply-burst circuit breaker state: prune timestamps to the sliding window,
 // trip when the retained count reaches max. Pure for testability.
 export function replyBurstState(
@@ -521,7 +533,8 @@ export class Engine {
   private envInitialized = new Set<string>();
   private replyBurstCfg?: { max: number; windowMs: number };
   private replyStamps = new Map<string, number[]>();
-  private wakeWhitelistCache = new Map<string, { at: number; logins: string[] }>();
+  private wakeWhitelistCache = new Map<string, { at: number; logins: string[]; communityWake: boolean }>();
+  private externalWakeStamps = new Map<string, number[]>();
 
   private static MAX_INLINE_SIZE = 4000;
   private static MAX_NUDGE_ROUNDS = 1;
@@ -614,25 +627,48 @@ export class Engine {
   // external GitHub users). Cached 60s; on fetch failure a stale cache is
   // still honored (it was a prior web decision) but an empty first fetch
   // fails closed.
-  private async projectWakeLogins(scopeKey: string): Promise<string[]> {
+  private async projectWakeConfig(scopeKey: string): Promise<{ logins: string[]; communityWake: boolean }> {
     const hit = this.wakeWhitelistCache.get(scopeKey);
-    if (hit && Date.now() - hit.at < 60_000) return hit.logins;
+    if (hit && Date.now() - hit.at < 60_000) return { logins: hit.logins, communityWake: hit.communityWake };
     const parts = scopeKey.split("/");
     const owner = parts[0] ?? "";
     const repo = parts.slice(1).join("/");
-    if (!owner || !repo) return [];
+    if (!owner || !repo) return { logins: [], communityWake: false };
     const url = `${this.cfg.gitea.url}/api/v1/wake-logins?owner=${encodeURIComponent(owner)}&repo=${encodeURIComponent(repo)}`;
     try {
       const resp = await fetch(url, { signal: AbortSignal.timeout(5000), headers: { Authorization: `token ${this.cfg.gitea.token}` } });
       if (!resp.ok) throw new Error(`web returned ${resp.status}`);
-      const data = await resp.json() as { logins?: string[] };
+      const data = await resp.json() as { logins?: string[]; communityWake?: boolean };
       const logins = (Array.isArray(data.logins) ? data.logins : [])
         .map((s) => String(s).trim()).filter(Boolean);
-      this.wakeWhitelistCache.set(scopeKey, { at: Date.now(), logins });
-      return logins;
+      const communityWake = data.communityWake === true;
+      this.wakeWhitelistCache.set(scopeKey, { at: Date.now(), logins, communityWake });
+      return { logins, communityWake };
     } catch (err) {
       log.warn(`engine: wake whitelist query failed for ${scopeKey}: ${(err as Error).message}${hit ? " — using stale cache" : " — fail-closed"}`);
-      return hit?.logins ?? [];
+      return hit ? { logins: hit.logins, communityWake: hit.communityWake } : { logins: [], communityWake: false };
+    }
+  }
+
+  private async admitWakeLogin(scopeKey: string, login: string): Promise<void> {
+    const parts = scopeKey.split("/");
+    const owner = parts[0] ?? "";
+    const repo = parts.slice(1).join("/");
+    if (!owner || !repo) return;
+    const url = `${this.cfg.gitea.url}/api/v1/wake-logins`;
+    try {
+      const resp = await fetch(url, {
+        method: "POST",
+        signal: AbortSignal.timeout(5000),
+        headers: { Authorization: `token ${this.cfg.gitea.token}`, "content-type": "application/json" },
+        body: JSON.stringify({ owner, repo, add: login }),
+      });
+      if (!resp.ok) throw new Error(`web returned ${resp.status}`);
+      const hit = this.wakeWhitelistCache.get(scopeKey);
+      if (hit) this.wakeWhitelistCache.set(scopeKey, { ...hit, logins: [...hit.logins, login] });
+      log.info(`engine: thread-trust — admitted ${login} to wake whitelist for ${scopeKey}`);
+    } catch (err) {
+      log.warn(`engine: wake whitelist admission failed for ${scopeKey}: ${(err as Error).message}`);
     }
   }
 
@@ -987,21 +1023,43 @@ export class Engine {
     const wakeKind = event.type === "comment_created" ? event.comment?.authorKind ?? "human" : "human";
     if (wakeAuthor) {
       let skip = wakePolicySkips(this.cfg.daemon, wakeAuthor, wakeKind);
+      let whitelisted = false;
       if (skip && skip.includes("not in wakeLogins")) {
         // GitHub logins are case-insensitive; match the project whitelist that
         // way, then inject the exact author string for the exact-match check.
-        const extra = (await this.projectWakeLogins(scopeKey))
-          .filter((l) => l.toLowerCase() === wakeAuthor.toLowerCase());
+        const cfg = await this.projectWakeConfig(scopeKey);
+        const extra = cfg.logins.filter((l) => l.toLowerCase() === wakeAuthor.toLowerCase());
         if (extra.length > 0) {
           skip = wakePolicySkips(this.cfg.daemon, wakeAuthor, wakeKind, [wakeAuthor]);
           if (!skip) {
+            whitelisted = true;
             log.info(`engine: author ${wakeAuthor} is in project wake whitelist — allowing ${event.type} for ${ref.trackerType}:${scopeKey}#${ref.issueId}`);
+          }
+        }
+        // Community-wake: on repos opted in, the issue author drives their own
+        // issue (open + follow-ups), bounded by a per-author daily quota.
+        if (skip && cfg.communityWake && event.issue?.author === wakeAuthor) {
+          const { allowed, kept } = externalWakeAllotment(this.externalWakeStamps.get(wakeAuthor) ?? [], Date.now(), this.cfg.daemon.externalWakeLimit);
+          this.externalWakeStamps.set(wakeAuthor, kept);
+          if (allowed) {
+            skip = null;
+            log.info(`engine: own-issue trust — ${wakeAuthor} drives their issue on ${ref.trackerType}:${scopeKey}#${ref.issueId} (quota ${kept.length}/${this.cfg.daemon.externalWakeLimit})`);
+          } else {
+            log.warn(`engine: community-wake quota exhausted for ${wakeAuthor} — skipping ${event.type}`);
           }
         }
       }
       if (skip) {
         log.info(`engine: ${skip} — skipping ${event.type} for ${ref.trackerType}:${scopeKey}#${ref.issueId}`);
         return;
+      }
+      // Thread-trust contagion: a whitelisted participant engaging someone
+      // else's issue implicitly endorses that author — admit them.
+      if (whitelisted && event.type === "comment_created" && event.issue?.author && event.issue.author !== wakeAuthor) {
+        const cfg = await this.projectWakeConfig(scopeKey);
+        const known = cfg.logins.some((l) => l.toLowerCase() === event.issue!.author!.toLowerCase())
+          || this.cfg.daemon.wakeLogins.some((l) => l.toLowerCase() === event.issue!.author!.toLowerCase());
+        if (!known) void this.admitWakeLogin(scopeKey, event.issue.author);
       }
     }
 

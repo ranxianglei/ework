@@ -29,6 +29,7 @@ export const configSchema = z.object({
     wakeKinds: z.array(z.string()).default(["human"]),
     wakeLogins: z.array(z.string()).default([]),
     noWakeLogins: z.array(z.string()).default([]),
+    externalWakeLimit: z.coerce.number().default(5),
   }),
   opencode: z.object({
     binary: z.string().default("opencode"),
@@ -158,6 +159,7 @@ export function loadConfig(): Config {
         wakeKinds: (process.env.WORK_WAKE_KINDS ?? "human").split(",").map((s) => s.trim()).filter(Boolean),
         wakeLogins: (process.env.WORK_WAKE_LOGINS ?? "").split(",").map((s) => s.trim()).filter(Boolean),
         noWakeLogins: (process.env.WORK_NO_WAKE_LOGINS ?? "").split(",").map((s) => s.trim()).filter(Boolean),
+        externalWakeLimit: Number(process.env.WORK_EXTERNAL_WAKE_LIMIT ?? 5),
       },
       opencode: {
         binary: process.env.OPENCODE_BINARY ?? TEST_DEFAULTS.opencode.binary,
@@ -213,6 +215,7 @@ export function loadConfig(): Config {
       wakeKinds: (process.env.WORK_WAKE_KINDS ?? "human").split(",").map((s) => s.trim()).filter(Boolean),
       wakeLogins: (process.env.WORK_WAKE_LOGINS ?? "").split(",").map((s) => s.trim()).filter(Boolean),
       noWakeLogins: (process.env.WORK_NO_WAKE_LOGINS ?? "").split(",").map((s) => s.trim()).filter(Boolean),
+      externalWakeLimit: Number(process.env.WORK_EXTERNAL_WAKE_LIMIT ?? 5),
     },
     opencode: {
       binary: process.env.OPENCODE_BINARY ?? "opencode",

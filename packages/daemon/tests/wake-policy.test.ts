@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { wakePolicySkips } from "../src/opencode";
+import { wakePolicySkips, externalWakeAllotment } from "../src/opencode";
 
 const cfg = (over: Partial<Parameters<typeof wakePolicySkips>[0]> = {}) => ({
   nonWakingAuthors: [] as string[],
@@ -77,5 +77,31 @@ describe("buildForwardPrompt trust marker", () => {
     self.cfg = { daemon: { wakeLogins: [], noWakeLogins: ["evil-bot"], nonWakingAuthors: [] } };
     const p = Engine.prototype.buildForwardPrompt.call(self, "fwd", "do x", "evil-bot", "human", "T", "/w", { issueRef: "o/r#1" }) as string;
     expect(p).toContain("unverified");
+  });
+});
+
+describe("externalWakeAllotment", () => {
+  const day = 86_400_000;
+  test("admits fresh authors and grows the retained window", () => {
+    const r1 = externalWakeAllotment([], 1_000, 2);
+    expect(r1.allowed).toBe(true);
+    expect(r1.kept.length).toBe(1);
+    const r2 = externalWakeAllotment(r1.kept, 2_000, 2);
+    expect(r2.allowed).toBe(true);
+    expect(r2.kept.length).toBe(2);
+  });
+
+  test("blocks at the limit without appending", () => {
+    const stamps = [1_000, 2_000];
+    const r = externalWakeAllotment(stamps, 3_000, 2);
+    expect(r.allowed).toBe(false);
+    expect(r.kept.length).toBe(2);
+  });
+
+  test("expires day-old stamps so the quota resets daily", () => {
+    const stamps = [1_000, 2_000];
+    const r = externalWakeAllotment(stamps, 1_000 + day + 5_000, 2);
+    expect(r.allowed).toBe(true);
+    expect(r.kept.length).toBe(1);
   });
 });
