@@ -2328,6 +2328,14 @@ export class Engine {
             );
 
             this.forceStop(k);
+
+            // A stuck hang is the dead-provider signature: open the circuit so
+            // the pool stops picking it, and leave the nudge unpinned so the
+            // re-spawn re-picks from healthy models instead of re-pinning the
+            // one that just hung (dsh#133 flash-zombie family).
+            const stuckModel = this.currentModel.get(k);
+            if (stuckModel) this.modelCircuits.set(stuckModel, Date.now() + this.cfg.opencode.modelCooldownMs);
+            this.currentModel.delete(k);
             this.stuckNudgeRounds.set(k, stuckNudgeRound + 1);
 
             const instructions = tracker.getTrackerInstructions(ref);
