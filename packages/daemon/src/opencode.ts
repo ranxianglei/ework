@@ -1533,6 +1533,17 @@ export class Engine {
   }
 
   private async execProcess(k: string, session: OpSession, issue: Issue, msg: Message) {
+    // Orphan guard: the session row may have been removed (GC/recovery) while this
+    // spawn was queued — spawning against it creates an unmanaged process no
+    // watchdog ever reaps (the dsh#133 orphan family).
+    const liveSession = await this.store.getSession(session.id);
+    if (!liveSession) {
+      log.warn(`engine: execProcess aborted for ${k} — session ${session.id} no longer exists, marking message failed`);
+      await this.store.updateMessageStatus(msg.id, "failed", "session deleted before spawn");
+      await this.clearRuntimeState(k);
+      this.running.delete(k);
+      return;
+    }
     const gate = await this.gateChecker(issue);
     const [projOwner, ...projRest] = issue.trackerScopeKey.split("/");
     const projCacheKey = `${projOwner}/${projRest.join("/")}`;
