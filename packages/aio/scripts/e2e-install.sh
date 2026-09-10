@@ -802,7 +802,12 @@ DAEMON2_BIN="$(npm root -g)/ework-aio/node_modules/ework-daemon/bin/ework-daemon
 
 mkdir -p "$DAEMON2_DIR"
 cp "$DATA_DIR/ework-daemon/.env" "$DAEMON2_DIR/.env"
+# Identity contract: registerDaemon matches on (display_name, internal_endpoint).
+# Same container => same hostname, so the endpoint is the ONLY distinguishing
+# field. Rewriting just the port would leave daemon B adopting daemon A's
+# registration row (same daemonId) and both spawning (double-dispatch).
 sed -i "s/^DAEMON_PORT=.*/DAEMON_PORT=$DAEMON2_PORT/" "$DAEMON2_DIR/.env"
+sed -i "s/^DAEMON_ENDPOINT=.*/DAEMON_ENDPOINT=127.0.0.1:$DAEMON2_PORT/" "$DAEMON2_DIR/.env"
 echo "WORK_DAEMON_LEASE_TTL_MS=15000" >> "$DAEMON2_DIR/.env"
 
 info "starting daemon B on port $DAEMON2_PORT (short TTL=15s for failover test)"
