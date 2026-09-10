@@ -5,9 +5,9 @@
     "": {
       "name": "ework-aio",
       "dependencies": {
-        "ework-daemon": "^0.4.1",
-        "ework-router": "^0.1.5",
-        "ework-web": "^0.10.15",
+        "ework-daemon": "^0.4.95",
+        "ework-router": "^0.1.9",
+        "ework-web": "^0.10.124",
         "opencode-ework": "^0.1.0",
         "zod": "^3.23.0",
       },
@@ -94,11 +94,11 @@
 
     "entities": ["entities@8.0.0", "", {}, ""],
 
-    "ework-daemon": ["ework-daemon@0.4.4", "", { "dependencies": { "mysql2": "^3.23.1", "zod": "^4.4.3" }, "peerDependencies": { "typescript": "^5" }, "bin": { "ework-daemon": "src/cli.ts", "ework-daemon-server": "bin/ework-daemon-server.js" } }, "sha512-RY/4vMxT2DAYgc5cT42bp3DpomltvvKwy7rcOiXVzLtoxDd1GlnJtbAwGJCq1JP7PKQNn8XcqUhLc9T224kD2Q=="],
+    "ework-daemon": ["ework-daemon@0.4.95", "", { "dependencies": { "mysql2": "^3.23.1", "zod": "^4.4.3" }, "peerDependencies": { "typescript": "^5" }, "bin": { "ework-daemon": "src/cli.ts", "ework-daemon-server": "bin/ework-daemon-server.js" } }, "sha512-gOmWX9hf/xy/Q8mfgX2QUw2fUHoGDeSzKHR4TBRoNpWCknytFnB4i3bDWL/WpebpK8/pE2hU4YF6/j17JWnTww=="],
 
-    "ework-router": ["ework-router@0.1.5", "", { "dependencies": { "mysql2": "^3.11.0", "zod": "^4.4.3" }, "bin": "bin/ework-router.js" }, "sha512-LRoN630z9IQvFe81tRE0mvXAfHDRnIHK1OLU7dtkPESaRXNc+QKlLuAOnu+rXPe0w5usutpzE6u0omb7plnLuQ=="],
+    "ework-router": ["ework-router@0.1.11", "", { "dependencies": { "mysql2": "^3.11.0", "zod": "^4.4.3" }, "bin": { "ework-router": "bin/ework-router.js" } }, "sha512-POXpJY2CShnre6aRnr9r3epZY4MCO0hHIiy0lYlgioq699yJPlg/yeBfGdeKNTFprhxC1FbC+FE+Sj6dhfjaCg=="],
 
-    "ework-web": ["ework-web@0.10.15", "", { "dependencies": { "@types/dompurify": "^3.2.0", "dompurify": "^3.4.11", "highlight.js": "^11.10.0", "jsdom": "^29.1.1", "marked": "^15.0.0", "marked-highlight": "^2.2.0", "mysql2": "^3.23.1", "zod": "^3.23.8" }, "bin": "bin/ework-web.js" }, "sha512-WpRyy9epI/W4pm/0Grg8Z8SlB8uRxXFFQLsa8Ki9wTgA4FdrtGyi4/GcfwpcQwOP1GwXBq8tSPlLhF7Jc9+DVA=="],
+    "ework-web": ["ework-web@0.10.124", "", { "dependencies": { "@types/dompurify": "^3.2.0", "dompurify": "^3.4.11", "highlight.js": "^11.10.0", "jsdom": "^29.1.1", "marked": "^15.0.0", "marked-highlight": "^2.2.0", "mysql2": "^3.23.1", "zod": "^3.23.8" }, "bin": { "ework-web": "bin/ework-web.js" } }, "sha512-UUgj2fIQ7V20WXsCHv6iI1epXuO7EHv+Q+IKHmLMNrnw1imFAwDX6TjId2PhMvt7aMG3R7POwjj0jD80hynyjw=="],
 
     "fast-check": ["fast-check@4.9.0", "", { "dependencies": { "pure-rand": "^8.0.0" } }, ""],
 
@@ -216,6 +216,6 @@
 
     "ework-daemon/zod": ["zod@4.4.3", "", {}, ""],
 
-    "ework-router/zod": ["zod@4.4.3", "", {}, "sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ=="],
+    "ework-router/zod": ["zod@4.4.3", "", {}, ""],
   }
 }
