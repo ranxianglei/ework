@@ -270,7 +270,7 @@ describe.skipIf(!process.env.WORK_MIGRATE_TEST)("db-admin: sqlite→mysql round-
       expect(issue0?.title).toBe("Migration test issue");
 
       const [configRaw] = await pool.query(
-        "SELECT `key`, value FROM config WHERE `key` = ?",
+        "SELECT akey, value FROM config WHERE akey = ?",
         ["test.key"]
       );
       const config = configRaw as { key: string; value: string }[];

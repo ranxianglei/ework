@@ -80,6 +80,7 @@ CREATE TABLE IF NOT EXISTS {{comments}} (
   CONSTRAINT {{fk_comments_issue}} FOREIGN KEY (issue_id) REFERENCES {{issues}}(id) ON DELETE CASCADE,
   CONSTRAINT {{fk_comments_author}} FOREIGN KEY (author)  REFERENCES {{users}}(login),
   model VARCHAR(128) NOT NULL DEFAULT ''
+  ,runtime VARCHAR(32) NOT NULL DEFAULT ''
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE INDEX comments_issue_created ON {{comments}} (issue_id, created_at);
 CREATE INDEX comments_author ON {{comments}} (author);
