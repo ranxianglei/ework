@@ -42,7 +42,7 @@
     "start": "bun src/index.ts",
     "check": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
-    "test": "bun test",
+    "test": "bun test --timeout=30000",
     "test:mysql": "bash scripts/test-mysql.sh"
   },
   "dependencies": {

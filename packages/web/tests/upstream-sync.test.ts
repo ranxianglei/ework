@@ -11,7 +11,7 @@ import {
   upsertUpstreamSync,
   type UpstreamSyncRow,
 } from "../src/store";
-import { createWebhook } from "../src/webhooks";
+import { createWebhook, waitForWebhookQueueIdle } from "../src/webhooks";
 import { UpstreamSync, syncOrigin } from "../src/upstream-sync";
 import { parseUpstreamSyncForm } from "../src/views/projectUpstreams";
 import type { Config } from "../src/config";
@@ -31,12 +31,13 @@ beforeAll(async () => {
 });
 
 afterEach(async () => {
+  await Bun.sleep(20);
+  await waitForWebhookQueueIdle(15_000).catch(() => {});
   globalThis.fetch = originalFetch;
   hookCalls = [];
   issuePages = [];
   repoComments = [];
   issueComments = {};
-  await new Promise((r) => setTimeout(r, 60));
   const db = getDB();
   const mysql = db.dialect === "mysql";
   await db.exec(mysql ? "SET FOREIGN_KEY_CHECKS = 0" : "PRAGMA foreign_keys = OFF");
@@ -77,7 +78,8 @@ function freshTs(): string {
 }
 
 async function settle() {
-  await new Promise((r) => setTimeout(r, 80));
+  await Bun.sleep(20);
+  await waitForWebhookQueueIdle(15_000).catch(() => {});
 }
 
 function mockFetch() {

@@ -105,6 +105,15 @@ function releaseDeliverySlot(): void {
   if (next) next();
 }
 
+/** Await webhook delivery quiescence (tests/ops); throws after timeoutMs. */
+export async function waitForWebhookQueueIdle(timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (inFlightDeliveries > 0 || deliveryQueue.length > 0) {
+    if (Date.now() >= deadline) throw new Error("waitForWebhookQueueIdle: timeout");
+    await Bun.sleep(10);
+  }
+}
+
 function now(): string {
   return new Date().toISOString();
 }
