@@ -12,7 +12,11 @@ export class TranslateError extends Error {
 const SYSTEM_PROMPT =
   "Translate the following English text to Simplified Chinese. Preserve ALL markdown formatting (bullet lists with - or *, **bold**, `code`, # headings). Output ONLY the translation, nothing else.";
 const MAX_CHARS = 16_000;
-const TIMEOUT_MS = 60_000;
+// Per-request ceiling (covers connect + queue + prefill + generation for one
+// chunk). The shared self-hosted server also serves agent traffic; time-to-
+// first-token can reach minutes when long-context prefills are queued ahead,
+// so this must tolerate far more than an interactive RTT.
+const TIMEOUT_MS = 180_000;
 
 // OpenAI-compatible chat-completion shapes (vLLM serves /v1/chat/completions).
 interface ChatChoice {
