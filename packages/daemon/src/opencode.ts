@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync, unlinkSync, rmdirSync, readdirSync, existsSyn
 import { join, dirname, resolve, isAbsolute } from "path";
 import { homedir } from "os";
 import { log } from "./logger";
+import { listBusyOpencodeWorkdirs, purgeStaleNodeModules } from "./workdir-gc";
 import type { Config } from "./config";
 import type { Store } from "./op";
 import type { IssueTracker, TrackerRef, TrackerEvent, TrackerComment, Issue, OpSession, Message } from "./trackers/types";
@@ -519,6 +520,7 @@ export class Engine {
   private generation = new Map<string, number>();
 
   private observedIssues = new Set<string>();
+  private lastWorkdirGcAt = 0;
   private badgeWrites = new Map<string, string>();
   private observerTimer?: ReturnType<typeof setInterval>;
 
@@ -2212,6 +2214,18 @@ export class Engine {
       await this.store.releaseDeadOwners(this.cfg.work.leaseTtlMs);
     } catch (err) {
       log.error("engine: releaseDeadOwners failed:", (err as Error).message);
+    }
+
+    const gcTtlMs = this.cfg.opencode.nodeModulesTtlDays * 24 * 60 * 60 * 1000;
+    if (gcTtlMs > 0 && Date.now() - this.lastWorkdirGcAt > 24 * 60 * 60 * 1000) {
+      this.lastWorkdirGcAt = Date.now();
+      try {
+        const busy = await listBusyOpencodeWorkdirs();
+        const removed = await purgeStaleNodeModules(this.cfg.opencode.baseWorkdir, gcTtlMs, busy);
+        if (removed > 0) log.info(`workdir-gc: removed ${removed} node_modules dir(s) older than ${this.cfg.opencode.nodeModulesTtlDays}d`);
+      } catch (err) {
+        log.warn("workdir-gc failed:", (err as Error).message);
+      }
     }
 
     let allOwned: Awaited<ReturnType<Store["listOwnedIssues"]>> = [];
