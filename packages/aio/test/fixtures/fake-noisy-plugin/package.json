@@ -1,0 +1,13 @@
+{
+  "name": "fake-noisy-plugin",
+  "version": "1.0.0",
+  "description": "Test fixture: simulates omo-stable's stdout pollution by emitting console.log from inside the opencode plugin server() function. NOT A REAL PLUGIN — fixture for e2e-browser.sh only.",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": {
+      "import": "./index.js",
+      "default": "./index.js"
+    }
+  }
+}

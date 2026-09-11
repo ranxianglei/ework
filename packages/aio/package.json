@@ -1,0 +1,59 @@
+{
+  "name": "ework-aio",
+  "version": "0.5.73",
+  "description": "All-in-one installer for ework (issue tracker) + ework-daemon (AI bridge) + opencode-ework (plugin). One command: npm i -g ework-aio && ework-aio install.",
+  "type": "module",
+  "license": "MIT",
+  "author": "contributors",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ranxianglei/ework-aio.git"
+  },
+  "homepage": "https://github.com/ranxianglei/ework-aio",
+  "bugs": {
+    "url": "https://github.com/ranxianglei/ework-aio/issues"
+  },
+  "keywords": [
+    "ework",
+    "opencode",
+    "issue-tracker",
+    "ai-agent",
+    "installer",
+    "self-hosted"
+  ],
+  "bin": {
+    "ework-aio": "./bin/ework-aio"
+  },
+  "files": [
+    "bin",
+    "scripts",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "bun": ">=1.1.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "start": "bun bin/ework-aio",
+    "check": "tsc --noEmit",
+    "test": "bun test",
+    "test:e2e": "bash scripts/e2e-install.sh",
+    "test:regression": "bash scripts/regression.sh",
+    "postinstall": "echo '\\n  ework-aio installed. Run \\033[1mework-aio install\\033[0m to set up services.\\n  Help: ework-aio --help\\n'"
+  },
+  "dependencies": {
+    "ework-daemon": "^0.4.96",
+    "ework-router": "^0.1.9",
+    "ework-web": "^0.10.129",
+    "opencode-ework": "^0.1.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.4.0"
+  }
+}

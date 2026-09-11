@@ -1,0 +1,1 @@
+ework-daemon ALL=(root) NOPASSWD: /bin/cat /root/ework-gh-pat

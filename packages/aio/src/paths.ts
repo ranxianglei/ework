@@ -1,0 +1,141 @@
+// Path resolution for ework-aio. All file system paths used by install
+// flow through here so tests can override via env vars.
+//
+// Hierarchy:
+//   DATA_DIR (default: $XDG_DATA_HOME/ework-aio or ~/.local/share/ework-aio)
+//   ├── ework-web/                  (web service data)
+//   │   ├── .env                    (web env file)
+//   │   ├── ework.db                (web SQLite DB)
+//   │   └── attachments/            (uploaded files)
+//   ├── ework-daemon/               (daemon service data)
+//   │   ├── .env                    (daemon env file)
+//   │   └── ework-daemon.db         (daemon SQLite DB)
+//   ├── run/                        (PID files + logs for PID-file mode)
+//   │   ├── web.{pid,log}
+//   │   └── daemon.{pid,log}
+//   ├── bot-token                   (persisted bot PAT)
+//   └── opencode-workdir/           (opencode working directory base)
+
+import path from "node:path";
+import os from "node:os";
+import { existsSync } from "node:fs";
+
+export interface PathConfig {
+  dataDir: string;
+  webDataDir: string;
+  daemonDataDir: string;
+  routerDataDir: string;
+  webEnvFile: string;
+  daemonEnvFile: string;
+  routerEnvFile: string;
+  runDir: string;
+  botTokenFile: string;
+  opencodeWorkdir: string;
+  opencodeConfigFile: string;
+  webDbPath: string;
+  daemonDbPath: string;
+  webAttachmentRoot: string;
+  webPidFile: string;
+  daemonPidFile: string;
+  routerPidFile: string;
+  webLogFile: string;
+  daemonLogFile: string;
+  routerLogFile: string;
+  webUnitFile: string | null;
+  daemonUnitFile: string | null;
+  routerUnitFile: string | null;
+}
+
+export interface ResolvePathsOptions {
+  dataDir?: string;            // override via --data-dir
+  configHome?: string;         // override XDG_CONFIG_HOME for tests
+  scope: "user" | "system";    // systemd scope (affects unit file location)
+  useSystemd: boolean;         // if false, webUnitFile/daemonUnitFile are null
+}
+
+export function resolvePaths(opts: ResolvePathsOptions): PathConfig {
+  const home = os.homedir();
+  const xdgDataHome = process.env.XDG_DATA_HOME || path.join(home, ".local", "share");
+  // opts.configHome takes precedence over XDG_CONFIG_HOME so tests can
+  // pin a config dir without polluting or reading the user's real
+  // ~/.config. The previous precedence (env || opts || default) meant
+  // a developer with XDG_CONFIG_HOME set couldn't override it from tests,
+  // and test runs would leak into the real config dir.
+  const xdgConfigHome = opts.configHome
+    || process.env.XDG_CONFIG_HOME
+    || path.join(home, ".config");
+
+  const dataDir = opts.dataDir || path.join(xdgDataHome, "ework-aio");
+  const webDataDir = path.join(dataDir, "ework-web");
+  const daemonDataDir = path.join(dataDir, "ework-daemon");
+  const routerDataDir = path.join(dataDir, "ework-router");
+  const runDir = path.join(dataDir, "run");
+
+  // Unit file location depends on scope and whether systemd is opted-in
+  let unitDir: string | null = null;
+  if (opts.useSystemd) {
+    unitDir = opts.scope === "system"
+      ? "/etc/systemd/system"
+      : path.join(xdgConfigHome, "systemd", "user");
+  }
+
+  return {
+    dataDir,
+    webDataDir,
+    daemonDataDir,
+    routerDataDir,
+    webEnvFile: path.join(webDataDir, ".env"),
+    daemonEnvFile: path.join(daemonDataDir, ".env"),
+    routerEnvFile: path.join(routerDataDir, ".env"),
+    runDir,
+    botTokenFile: path.join(dataDir, "bot-token"),
+    opencodeWorkdir: path.join(dataDir, "opencode-workdir"),
+    opencodeConfigFile: path.join(xdgConfigHome, "opencode", "opencode.json"),
+    webDbPath: path.join(webDataDir, "ework.db"),
+    daemonDbPath: path.join(daemonDataDir, "ework-daemon.db"),
+    webAttachmentRoot: path.join(webDataDir, "attachments"),
+    webPidFile: path.join(runDir, "web.pid"),
+    daemonPidFile: path.join(runDir, "daemon.pid"),
+    routerPidFile: path.join(runDir, "router.pid"),
+    webLogFile: path.join(runDir, "web.log"),
+    daemonLogFile: path.join(runDir, "daemon.log"),
+    routerLogFile: path.join(runDir, "router.log"),
+    webUnitFile: unitDir ? path.join(unitDir, "ework-web.service") : null,
+    daemonUnitFile: unitDir ? path.join(unitDir, "ework-daemon.service") : null,
+    routerUnitFile: unitDir ? path.join(unitDir, "ework-router.service") : null,
+  };
+}
+
+export interface DaemonInstance {
+  num: number;
+  dataDir: string;
+  envFile: string;
+  pidFile: string;
+  logFile: string;
+}
+
+export function daemonInstancePaths(dataDir: string, runDir: string): DaemonInstance[] {
+  const instances: DaemonInstance[] = [];
+  const primaryDir = path.join(dataDir, "ework-daemon");
+  if (existsSync(primaryDir)) {
+    instances.push({
+      num: 1,
+      dataDir: primaryDir,
+      envFile: path.join(primaryDir, ".env"),
+      pidFile: path.join(runDir, "daemon.pid"),
+      logFile: path.join(runDir, "daemon.log"),
+    });
+  }
+  for (let i = 2; i <= 100; i++) {
+    const dir = path.join(dataDir, `ework-daemon-${i}`);
+    if (!existsSync(dir)) break;
+    instances.push({
+      num: i,
+      dataDir: dir,
+      envFile: path.join(dir, ".env"),
+      pidFile: path.join(runDir, `daemon-${i}.pid`),
+      logFile: path.join(runDir, `daemon-${i}.log`),
+    });
+  }
+  return instances;
+}
