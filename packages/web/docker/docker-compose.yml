@@ -1,0 +1,25 @@
+services:
+  ework-aio:
+    build:
+      # Context = parent dir so both ework/ and ework-daemon/ are COPY-able.
+      context: ..
+      dockerfile: ework/docker/Dockerfile
+    image: ework-aio:latest
+    container_name: ework-aio
+    restart: unless-stopped
+    ports:
+      - "3002:3002"   # ework web UI + Gitea-compat API
+      - "3101:3101"   # ework-daemon webhook receiver
+    env_file:
+      - .env.docker
+    volumes:
+      - aio-data:/data                                            # DBs + opencode workdir
+      - ${HOME}/.config/opencode:/root/.config/opencode:ro        # opencode config (API keys etc.)
+    # Isolation: limited privileges, no host PID/network namespace sharing.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+volumes:
+  aio-data:

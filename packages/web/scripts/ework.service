@@ -1,0 +1,21 @@
+[Unit]
+Description=ework — standalone multi-project issue tracker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ework
+Group=ework
+WorkingDirectory=/var/lib/ework
+ExecStart=/usr/bin/env bun run src/index.ts
+Restart=on-failure
+RestartSec=5
+EnvironmentFile=/var/lib/ework/.env
+Environment="PATH=/usr/local/bin:/usr/bin:/bin"
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ework
+
+[Install]
+WantedBy=multi-user.target

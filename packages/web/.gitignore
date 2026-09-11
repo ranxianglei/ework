@@ -1,0 +1,31 @@
+# dependencies
+node_modules/
+
+# runtime data
+.env
+*.local
+data/
+.cache/
+
+# build artifacts
+dist/
+build/
+
+# logs
+*.log
+
+# editor / OS
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*~
+
+# ework runtime (systemd runs from ~/.local/share/ework/, not here)
+
+# webhook test artifacts (scripts/webhook-test.sh)
+webhook-received.jsonl
+
+# docker all-in-one build artifacts
+docker/build-context/
+docker/.env.docker
