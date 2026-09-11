@@ -319,11 +319,27 @@
     });
   }
 
+  // Raw markdown beats innerText as translation source: the rendered DOM has
+  // lost fences/emphasis/list markers, so translating it flattens formatting.
+  async function rawSource(btn, root) {
+    const item = btn.closest(".item");
+    if (item && item.dataset.id) {
+      const r = await fetch("/api/raw?comment=" + encodeURIComponent(item.dataset.id));
+      if (r.ok) return ((await r.json())?.body ?? "").trim();
+    }
+    const m = location.pathname.match(/^\/([^/]+)\/([^/]+)\/issues\/(\d+)/);
+    if (m) {
+      const r = await fetch("/api/raw?issue=" + encodeURIComponent(m[1] + "/" + m[2] + "/" + m[3]));
+      if (r.ok) return ((await r.json())?.body ?? "").trim();
+    }
+    return root.innerText.trim();
+  }
+
   async function doTranslate(btn) {
     const root = actionRoot(btn);
     if (!root) return;
     if (btn.dataset.tr === "1") { btn.dataset.tr = "0"; btn.textContent = "翻译"; root.innerHTML = btn.dataset.orig; return; }
-    const text = root.innerText.trim();
+    const text = await rawSource(btn, root);
     if (!text) return;
     if (!btn.dataset.orig) btn.dataset.orig = root.innerHTML;
     btn.textContent = "⏳";

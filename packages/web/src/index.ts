@@ -83,6 +83,8 @@ import {
   type ProjectRole,
   type UserRow,
   getIssueAiStatusByNumber,
+  getIssue,
+  getComment,
 } from "./store";
 import { startUpstreamSyncPoller } from "./upstream-sync";
 import {
@@ -989,6 +991,24 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     }
   }
 
+  if (req.method === "GET" && url.pathname === "/api/raw") {
+    const commentId = Number(url.searchParams.get("comment") ?? "");
+    const issueRef = url.searchParams.get("issue") ?? "";
+    if (Number.isInteger(commentId) && commentId > 0) {
+      const c = await getComment(commentId);
+      if (!c) return json({ error: "not found" }, 404);
+      return json({ body: c.body });
+    }
+    const m = issueRef.match(/^([\w.-]+)\/([\w.-]+)\/(\d+)$/);
+    if (m) {
+      const project = await getProject(m[1] ?? "", m[2] ?? "");
+      if (!project) return json({ error: "not found" }, 404);
+      const issue = await getIssue(project.id, Number(m[3] ?? ""));
+      if (!issue) return json({ error: "not found" }, 404);
+      return json({ body: issue.body ?? "" });
+    }
+    return json({ error: "comment or issue required" }, 400);
+  }
   if (req.method === "POST" && url.pathname === "/api/translate") {
     if (!rateLimit(`translate:${ip}`, 10, 10 / 60)) return json({ error: "rate limited" }, 429);
     try {
