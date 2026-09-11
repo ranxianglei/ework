@@ -1,0 +1,9 @@
+{
+  "name": "ework-monorepo",
+  "private": true,
+  "workspaces": ["packages/*"],
+  "scripts": {
+    "check": "cd packages/web && bun run check && cd ../../packages/daemon && bun run check && cd ../../packages/aio && bun run check",
+    "test": "cd packages/web && bun run test && cd ../../packages/daemon && bun run test && cd ../../packages/aio && bun run test"
+  }
+}
