@@ -1,0 +1,25 @@
+{
+  "name": "ework-mirror",
+  "version": "0.1.17",
+  "description": "One-way mirror from ework to Gitea (webhook-driven, Gitea-compat auth as awork user)",
+  "type": "module",
+  "main": "src/index.ts",
+  "bin": {
+    "ework-mirror": "bin/ework-mirror.js"
+  },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "dev": "bun --watch src/index.ts",
+    "start": "bun src/index.ts"
+  },
+  "dependencies": {
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.5.0"
+  },
+  "engines": {
+    "bun": ">=1.1.0"
+  }
+}
