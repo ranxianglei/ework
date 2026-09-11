@@ -220,7 +220,14 @@ describe("runInstall: end-to-end (mocked fetch, real FS)", () => {
       const stub = path.join(stubDir, bin);
       fs.writeFileSync(stub, `#!/bin/sh\nsleep 60\n`, { mode: 0o755 });
     }
-    process.env.PATH = `${stubDir}:${process.env.PATH}`;
+    // `bun run <script>` prepends node_modules/.bin to PATH, and workspace
+    // installs link ework-* bins there — which would defeat every
+    // "binary missing" scenario below. Strip all .bin segments first.
+    const sanitizedPath = process.env.PATH
+      .split(":")
+      .filter(p => !p.includes(`${path.sep}node_modules${path.sep}.bin`))
+      .join(":");
+    process.env.PATH = `${stubDir}:${sanitizedPath}`;
     // HOME isolation so opencode.json lands in tmpDir.
     process.env.HOME = tmpDir;
     process.env.XDG_CONFIG_HOME = path.join(tmpDir, ".config");

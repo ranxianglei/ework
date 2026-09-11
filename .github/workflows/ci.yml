@@ -8,7 +8,7 @@ on:
 
 jobs:
   check:
-    name: Type-check + unit tests
+    name: Type-check + unit tests (all packages)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,7 +21,7 @@ jobs:
       - name: Install deps
         run: bun install --frozen-lockfile
 
-      # install.test.ts runs the real install flow → preflight requires
+      # aio's install tests run the real install flow → preflight requires
       # opencode on PATH. The runner has none.
       - name: Install opencode
         run: |
@@ -34,14 +34,20 @@ jobs:
           sudo install "$BIN" /usr/local/bin/opencode
           opencode --version
 
-      - name: TypeScript type-check
-        run: bun run check
-
-      - name: Run tests
-        run: bun test
-
-      - name: Verify CLI entry
-        run: bun run bin/ework-aio --help
+      - name: web — type-check + tests
+        run: cd packages/web && bun run check && bun run test
+      - name: daemon — type-check + tests
+        run: cd packages/daemon && bun run check && bun run test
+      - name: router — type-check + tests
+        run: cd packages/router && bun run check && bun run test
+      - name: mirror — type-check
+        run: cd packages/mirror && bun run check
+      - name: qq-bridge — type-check
+        run: cd packages/qq-bridge && bun run check
+      - name: chat — type-check
+        run: cd packages/chat && bun run check
+      - name: aio — type-check + tests + CLI entry
+        run: cd packages/aio && bun run check && bun run test && bun run bin/ework-aio --help
 
   e2e:
     name: Docker E2E (install + lifecycle + migration)
@@ -52,8 +58,7 @@ jobs:
 
       # e2e-install.sh mounts the host's opencode binary into the test
       # container (preflight requires it). The runner has none, so install
-      # from the sst/opencode GitHub release — the same source README points
-      # users at (https://opencode.ai).
+      # from the sst/opencode GitHub release.
       - name: Install opencode
         run: |
           set -euo pipefail
@@ -66,6 +71,6 @@ jobs:
           opencode --version
 
       - name: Run E2E install test
-        run: ./scripts/e2e-install.sh docker latest
+        run: cd packages/aio && ./scripts/e2e-install.sh docker latest
         env:
           OPENCODE_HOST_BIN: /usr/local/bin/opencode
