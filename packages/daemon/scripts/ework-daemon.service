@@ -1,0 +1,22 @@
+[Unit]
+Description=ework-daemon — issue-driven AI dev daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ework
+Group=ework
+WorkingDirectory=%h/.local/share/ework-daemon
+ExecStart=bun run src/index.ts
+Restart=on-failure
+RestartSec=5
+KillMode=process
+EnvironmentFile=%h/.local/share/ework-daemon/.env
+Environment="PATH=/usr/local/bin:/usr/bin:/bin:%h/.local/bin:%h/.bun/bin"
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ework-daemon
+
+[Install]
+WantedBy=multi-user.target
