@@ -420,6 +420,9 @@ const SESSION_BATCH_RE = /^\/api\/sessions\/([A-Za-z0-9_-]+)\/batch$/;
 const server = Bun.serve({
   port: cfg.port,
   hostname: cfg.host,
+  // Streaming routes (translate, live tails) legitimately sit silent past the
+  // 10s default while upstream queues; 60s matches their in-route heartbeats.
+  idleTimeout: 60,
   async fetch(req, server) {
     const url = new URL(req.url);
     const ip = remoteAddr(req, server);
@@ -1009,6 +1012,16 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
       async start(controller) {
         const enc = new TextEncoder();
         const send = (obj: unknown) => controller.enqueue(enc.encode(JSON.stringify(obj) + "\n"));
+        // Bun closes connections idle >10s by default; under model-server load
+        // the first translation chunk can queue longer than that. Heartbeat
+        // lines ({"s":1}) keep the connection alive and are ignored by clients.
+        const heartbeat = setInterval(() => {
+          try {
+            send({ s: 1 });
+          } catch {
+            /* client disconnected */
+          }
+        }, 5000);
         try {
           let full = "";
           for await (const chunk of translateTextStream(cfg, text)) {
@@ -1019,6 +1032,7 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
         } catch (e) {
           send({ e: e instanceof Error ? e.message : String(e) });
         } finally {
+          clearInterval(heartbeat);
           controller.close();
         }
       },
