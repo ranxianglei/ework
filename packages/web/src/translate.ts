@@ -45,6 +45,9 @@ export async function translateText(cfg: Config, text: string): Promise<string> 
       body: JSON.stringify({
         model: cfg.translateModel,
         stream: false,
+        // Reasoning-off: translation needs none, and reasoning tokens delay
+        // time-to-first-token past interactive patience on the shared server.
+        chat_template_kwargs: { enable_thinking: false },
         messages: [
           { role: "system", content: SYSTEM_PROMPT },
           { role: "user", content: body },
@@ -121,6 +124,7 @@ async function* streamOneChunk(cfg: Config, chunk: string): AsyncGenerator<strin
       body: JSON.stringify({
         model: cfg.translateModel,
         stream: true,
+        chat_template_kwargs: { enable_thinking: false },
         messages: [
           { role: "system", content: SYSTEM_PROMPT },
           { role: "user", content: chunk },
