@@ -16,7 +16,7 @@
     "noEmit": true,
     "allowImportingTsExtensions": true,
     "lib": ["ES2022"],
-    "types": ["bun-types"],
+    "types": ["bun"],
     "forceConsistentCasingInFileNames": true,
     "verbatimModuleSyntax": false
   },

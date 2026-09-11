@@ -15,7 +15,7 @@
     "noUnusedParameters": true,
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true,
-    "types": ["bun-types"],
+    "types": ["bun"],
     "resolveJsonModule": true,
     "isolatedModules": true,
     "verbatimModuleSyntax": true,
