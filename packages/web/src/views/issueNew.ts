@@ -1,4 +1,5 @@
 import { THEME_CSS, escapeHtml, escapeAttr } from "../render/layout";
+import { BUILD_ID } from "../build";
 import type { CachedModel } from "../store";
 
 export function buildIssueNew(owner: string, repo: string, writesEnabled: boolean, models: CachedModel[] = [], currentModel = ""): string {
@@ -11,16 +12,16 @@ export function buildIssueNew(owner: string, repo: string, writesEnabled: boolea
 </select>`
     : "";
   const body = writesEnabled
-    ? `<form class="new-form" method="POST" action="${escapeAttr(action)}">
-  <input type="text" name="title" placeholder="标题（必填）" required maxlength="255" class="new-title">
-  <textarea name="body" rows="14" placeholder="正文（支持 Markdown）…"></textarea>
+    ? `<form class="new-form" method="POST" action="${escapeAttr(action)}" data-owner="${escapeAttr(owner)}" data-repo="${escapeAttr(repo)}">
+  <input type="text" name="title" id="newTitle" placeholder="标题（必填）" required maxlength="255" class="new-title">
+  <textarea name="body" id="newBody" rows="14" placeholder="正文（支持 Markdown）…"></textarea>
   ${modelSelect}
   <select name="runtime" class="new-model">
   <option value="">默认运行时（daemon 设置）</option>
   <option value="opencode">opencode</option>
   <option value="pi">pi</option>
 </select>
-  <div class="new-actions"><a class="new-cancel" href="${escapeAttr(listHref)}">取消</a><button type="submit">创建工单</button></div>
+  <div class="new-actions"><label class="new-upload" title="上传图片/附件">📎<input type="file" id="newFile" multiple></label><span id="newUpStatus" class="new-upstatus"></span><a class="new-cancel" href="${escapeAttr(listHref)}">取消</a><button type="submit" id="newSubmit">创建工单</button></div>
 </form>`
     : `<div class="composer-ro">只读模式：创建工单未启用（WORK_WRITES_ENABLED=false）</div>`;
   return `<!doctype html>
@@ -37,6 +38,9 @@ export function buildIssueNew(owner: string, repo: string, writesEnabled: boolea
 .new-actions{display:flex;gap:.6rem;justify-content:flex-end;align-items:center}
 .new-cancel{font-size:13px;color:var(--text-muted)}
 .new-form button{background:var(--green);color:#fff;border:none;border-radius:8px;padding:.55rem 1.2rem;font:600 13px system-ui,sans-serif;cursor:pointer}
+.new-upload{background:var(--bg-muted);color:var(--text-muted);border:1px solid var(--border);border-radius:8px;padding:.4rem .6rem;font-size:18px;line-height:1;cursor:pointer;position:relative;overflow:hidden}
+.new-upload input{position:absolute;inset:0;opacity:0;cursor:pointer}
+.new-upstatus{font-size:12px;color:var(--text-muted);margin-right:auto}
 </style></head><body>
 <header class="topbar">
   <a href="/" style="color:var(--header-text)">🏠</a>
@@ -45,5 +49,6 @@ export function buildIssueNew(owner: string, repo: string, writesEnabled: boolea
   <span class="num">新建工单</span>
 </header>
 <main class="new-wrap">${body}</main>
+${writesEnabled ? `<script src="/static/new-issue.js?v=${BUILD_ID}" defer></script>` : ""}
 </body></html>`;
 }

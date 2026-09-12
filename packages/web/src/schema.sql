@@ -145,7 +145,8 @@ CREATE INDEX IF NOT EXISTS reactions_comment
 CREATE TABLE IF NOT EXISTS {{attachments}} (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   uuid          TEXT NOT NULL UNIQUE,
-  issue_id      INTEGER NOT NULL REFERENCES {{issues}}(id) ON DELETE CASCADE,
+  -- issue_id NULL = orphan upload bound at issue-create time (new-issue flow)
+  issue_id      INTEGER REFERENCES {{issues}}(id) ON DELETE CASCADE,
   filename      TEXT NOT NULL,
   content_type  TEXT NOT NULL DEFAULT 'application/octet-stream',
   size          INTEGER NOT NULL,

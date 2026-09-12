@@ -142,8 +142,28 @@ function migrateIssuesTable(db: Database): void {
   }
 }
 
-function migrateCommentsTable(db: Database): void {
-  const have = tableColumns(db, "comments");
+// SQLite cannot ALTER a column constraint, so dropping attachments.issue_id
+// NOT NULL (new-issue orphan uploads) requires a table rebuild.
+function migrateAttachmentsTable(db: Database): void {
+  const rows = db.query(applyPrefix("PRAGMA table_info({{attachments}})")).all() as { name: string; notnull: number }[];
+  if (rows.length === 0) return;
+  const issueId = rows.find((r) => r.name === "issue_id");
+  if (!issueId || issueId.notnull === 0) return;
+  db.exec("PRAGMA foreign_keys = OFF");
+  try {
+    db.exec(applyPrefix("ALTER TABLE {{attachments}} RENAME TO attachments_old"));
+    const t = SURROGATE_ID_TABLES.find((x) => x.name === "attachments")!;
+    db.exec(applyPrefix(t.createSql));
+    db.exec(applyPrefix(
+      "INSERT INTO {{attachments}} (id, uuid, issue_id, filename, content_type, size, blob_path, uploaded_by, created_at) SELECT id, uuid, issue_id, filename, content_type, size, blob_path, uploaded_by, created_at FROM attachments_old"
+    ));
+    db.exec("DROP TABLE attachments_old");
+  } finally {
+    db.exec("PRAGMA foreign_keys = ON");
+  }
+}
+
+function migrateCommentsTable(db: Database): void {  const have = tableColumns(db, "comments");
   if (have.size === 0) return;
   if (!have.has("upstream_comment_id")) {
     db.exec(applyPrefix("ALTER TABLE {{comments}} ADD COLUMN upstream_comment_id INTEGER"));
@@ -213,7 +233,7 @@ const SURROGATE_ID_TABLES: Array<{ name: string; createSql: string; dataCols: st
   },
   {
     name: "attachments",
-    createSql: "CREATE TABLE {{attachments}} (id INTEGER PRIMARY KEY AUTOINCREMENT, uuid TEXT NOT NULL UNIQUE, issue_id INTEGER NOT NULL REFERENCES {{issues}}(id) ON DELETE CASCADE, filename TEXT NOT NULL, content_type TEXT NOT NULL DEFAULT 'application/octet-stream', size INTEGER NOT NULL, blob_path TEXT NOT NULL, uploaded_by TEXT NOT NULL REFERENCES {{users}}(login), created_at TEXT NOT NULL)",
+    createSql: "CREATE TABLE {{attachments}} (id INTEGER PRIMARY KEY AUTOINCREMENT, uuid TEXT NOT NULL UNIQUE, issue_id INTEGER REFERENCES {{issues}}(id) ON DELETE CASCADE, filename TEXT NOT NULL, content_type TEXT NOT NULL DEFAULT 'application/octet-stream', size INTEGER NOT NULL, blob_path TEXT NOT NULL, uploaded_by TEXT NOT NULL REFERENCES {{users}}(login), created_at TEXT NOT NULL)",
     dataCols: "uuid, issue_id, filename, content_type, size, blob_path, uploaded_by, created_at",
   },
   {
@@ -264,6 +284,7 @@ class SqliteDriver implements AsyncDatabase {
   migrateIssuesTable(db);
   migrateCommentsTable(db);
   migrateLabelsTable(db);
+  migrateAttachmentsTable(db);
   migrateAddSurrogateId(db);
     db.exec(applyPrefix(readFileSync(join(import.meta.dir, "schema.sql"), "utf8")));
     return new SqliteDriver(db);
@@ -381,8 +402,21 @@ async function migrateMysqlProjectsVisibility(pool: Pool): Promise<void> {
   }
 }
 
-async function migrateMysqlColumn(pool: Pool, table: string, column: string, ddl: string): Promise<void> {
+async function migrateMysqlAttachmentsNullable(pool: Pool): Promise<void> {
+  const [cols] = await pool.query(
+    `SELECT IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = 'issue_id'`,
+    [DB_PREFIX + "attachments"]
+  );
+  const rows = cols as { IS_NULLABLE: string }[];
+  if (!Array.isArray(rows) || rows.length === 0 || rows[0]?.IS_NULLABLE === "YES") return;
   try {
+    await pool.query(applyPrefix("ALTER TABLE {{attachments}} MODIFY issue_id BIGINT NULL"));
+  } catch (e) {
+    console.warn("[db] MySQL attachments.issue_id nullable migration failed:", (e as Error).message);
+  }
+}
+
+async function migrateMysqlColumn(pool: Pool, table: string, column: string, ddl: string): Promise<void> {  try {
     const [cols] = await pool.query(
       `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?`,
       [DB_PREFIX + table, column]
@@ -467,6 +501,7 @@ class MysqlDriver implements AsyncDatabase {
       await migrateMysqlSurrogateId(pool);
       await migrateMysqlProjectsVisibility(pool);
       await migrateMysqlIssuesAiStatus(pool);
+      await migrateMysqlAttachmentsNullable(pool);
     }
     return new MysqlDriver(pool);
   }

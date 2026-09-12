@@ -2,7 +2,7 @@ import { createRequire } from "module";
 import { buildPiSessionPage, loadPiSessionExport } from "./pi-sessions";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
-import { readFileSync, appendFileSync, existsSync } from "fs";
+import { readFileSync, appendFileSync, existsSync, unlink } from "fs";
 import { spawn } from "child_process";
 import { homedir } from "os";
 import { loadConfig, DB_OVERRIDABLE, parseOverride, resolveTtsBackend } from "./config";
@@ -46,6 +46,9 @@ import {
   listCommentsForIssue,
   createAttachment,
   getAttachment,
+  extractAttachmentUUIDs,
+  bindOrphanAttachments,
+  sweepOrphanAttachments,
   verifyUserPassword,
   updateUser,
   countAdmins,
@@ -388,6 +391,7 @@ const REPO_RE = /^\/([^/]+)\/([^/]+)$/;
 const API_RE = /^\/api\/([^/]+)\/([^/]+)\/issues\/(\d+)\/(page|since)$/;
 const COMMENT_POST_RE = /^\/api\/([^/]+)\/([^/]+)\/issues\/(\d+)\/comment$/;
 const UPLOAD_RE = /^\/api\/([^/]+)\/([^/]+)\/issues\/(\d+)\/upload$/;
+const PROJECT_UPLOAD_RE = /^\/api\/([^/]+)\/([^/]+)\/upload$/;
 const ATTACHMENT_RE = /^\/attachments\/([0-9a-fA-F-]+)$/;
 const REPO_WEBHOOKS_RE = /^\/([^/]+)\/([^/]+)\/settings\/webhooks$/;
 const REPO_MEMBERS_RE = /^\/([^/]+)\/([^/]+)\/settings\/members$/;
@@ -1975,6 +1979,47 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
         return json({ error: errMsg(e) }, e instanceof StoreError ? e.status : 500);
       }
     }
+    const pu = url.pathname.match(PROJECT_UPLOAD_RE);
+    if (pu) {
+      const [, owner, repo] = pu;
+      if (!(owner && repo)) return json({ error: "bad path" }, 400);
+      const cl = Number(req.headers.get("content-length") ?? "0");
+      if (cl > MAX_ATTACHMENT_BYTES) return json({ error: "file too large (max 20MB)" }, 413);
+      try {
+        const project = await getProject(owner, repo);
+        if (!project) return json({ error: "project not found" }, 404);
+        if (!(await canWriteProject(project.id, ctx.user))) return json({ error: "forbidden: needs writer role on project" }, 403);
+        const form = await req.formData().catch(() => null);
+        const file = form?.get("attachment");
+        if (!(file instanceof File)) return json({ error: "attachment required" }, 400);
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        if (bytes.length > MAX_ATTACHMENT_BYTES) return json({ error: "file too large (max 20MB)" }, 413);
+        const filename = file.name || "upload.bin";
+        const contentType = file.type || sniffImageContentType(filename);
+        const uuid = newAttachmentUUID();
+        const blobPath = saveAttachmentBlob(uuid, bytes);
+        await createAttachment({
+          uuid,
+          issue_id: null,
+          filename,
+          content_type: contentType,
+          size: bytes.length,
+          blob_path: blobPath,
+          uploaded_by: ctx.user!.login,
+        });
+        // GC rides the upload path (no cron); unlink is best-effort.
+        sweepOrphanAttachments(48 * 60 * 60 * 1000)
+          .then((paths) => { for (const p of paths) unlink(p, () => {}); })
+          .catch(() => {});
+        const isImg = isImageContentType(contentType);
+        const markdown = isImg
+          ? `![${filename}](/attachments/${uuid})`
+          : `[${filename}](/attachments/${uuid})`;
+        return json({ uuid, name: filename, markdown });
+      } catch (e) {
+        return json({ error: errMsg(e) }, e instanceof StoreError ? e.status : 500);
+      }
+    }
 
     const cp = url.pathname.match(COMMENT_POST_RE);
     if (cp) {
@@ -2145,6 +2190,7 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
         if (model) issueOpts.model = model;
         if (formRuntime === "pi" || formRuntime === "opencode") issueOpts.runtime = formRuntime;
         const issue = await createIssue(project.id, title, body, ctx.user!.login, issueOpts);
+        await bindOrphanAttachments(extractAttachmentUUIDs(body), issue.id, ctx.user!.login);
         void emitIssueEvent(project.id, issue.id, "opened", url.origin);
         return Response.redirect(
           `${url.origin}/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${issue.number}`,

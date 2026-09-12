@@ -118,7 +118,7 @@ export function labelScope(name: string): string {
 
 export interface AttachmentRow {
   uuid: string;
-  issue_id: number;
+  issue_id: number | null;
   filename: string;
   content_type: string;
   size: number;
@@ -1028,6 +1028,39 @@ export async function createAttachment(a: Omit<AttachmentRow, "created_at">): Pr
 
 export async function getAttachment(uuid: string): Promise<AttachmentRow | null> {
   return (await getDB().get<AttachmentRow>("SELECT * FROM {{attachments}} WHERE uuid = ?", [uuid])) ?? null;
+}
+
+export function extractAttachmentUUIDs(body: string): string[] {
+  const out = new Set<string>();
+  for (const m of body.matchAll(/\/attachments\/([0-9a-fA-F-]{36})/g)) {
+    if (m[1]) out.add(m[1]);
+  }
+  return [...out];
+}
+
+// Ownership guard (`uploaded_by = ?`) prevents binding another user's orphan,
+// e.g. an attacker pasting someone else's /attachments/<uuid> into a new issue.
+export async function bindOrphanAttachments(uuids: string[], issueId: number, uploader: string): Promise<number> {
+  if (uuids.length === 0) return 0;
+  const ph = uuids.map(() => "?").join(", ");
+  const r = await getDB().run(
+    `UPDATE {{attachments}} SET issue_id = ? WHERE uuid IN (${ph}) AND issue_id IS NULL AND uploaded_by = ?`,
+    [issueId, ...uuids, uploader]
+  );
+  return r.changes;
+}
+
+export async function sweepOrphanAttachments(maxAgeMs: number, nowMs = Date.now()): Promise<string[]> {
+  const cutoff = new Date(nowMs - maxAgeMs).toISOString();
+  const db = getDB();
+  const rows = await db.all<AttachmentRow>(
+    "SELECT * FROM {{attachments}} WHERE issue_id IS NULL AND created_at <= ?",
+    [cutoff]
+  );
+  for (const row of rows) {
+    await db.run("DELETE FROM {{attachments}} WHERE uuid = ?", [row.uuid]);
+  }
+  return rows.map((r) => r.blob_path);
 }
 
 const LOGIN_RE = /^[A-Za-z0-9_-]{1,64}$/;

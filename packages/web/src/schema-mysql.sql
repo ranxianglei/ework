@@ -141,7 +141,8 @@ CREATE INDEX reactions_user   ON {{reactions}} (user_login);
 CREATE TABLE IF NOT EXISTS {{attachments}} (
   id            BIGINT AUTO_INCREMENT PRIMARY KEY,
   uuid          VARCHAR(64) NOT NULL UNIQUE,
-  issue_id      BIGINT NOT NULL,
+  -- issue_id NULL = orphan upload bound at issue-create time (new-issue flow)
+  issue_id      BIGINT,
   filename      VARCHAR(255) NOT NULL,
   content_type  VARCHAR(128) NOT NULL DEFAULT 'application/octet-stream',
   size          BIGINT NOT NULL,
