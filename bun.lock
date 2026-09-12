@@ -14,7 +14,7 @@
       "dependencies": {
         "ework-daemon": "^0.4.96",
         "ework-router": "^0.1.9",
-        "ework-web": "^0.10.129",
+        "ework-web": "^0.10.130",
         "opencode-ework": "^0.1.0",
         "zod": "^3.23.0",
       },
@@ -100,7 +100,7 @@
     },
     "packages/web": {
       "name": "ework-web",
-      "version": "0.10.129",
+      "version": "0.10.130",
       "bin": {
         "ework-web": "./bin/ework-web.js",
       },
