@@ -36,6 +36,7 @@ import {
   getUserByLogin,
   type UserRow,
   updateCommentModel,
+  getLastCommentByAuthor,
 } from "./store";
 import {
   buildUser,
@@ -45,6 +46,14 @@ import {
   emitIssueEvent,
   emitCommentEvent,
 } from "./webhooks";
+
+const DUPLICATE_REPLY_WINDOW_MS = 3 * 60_000;
+
+// Whitespace-insensitive comparison so re-posts that only differ in trailing
+// newlines or indentation still match the loop detector.
+function normalizeForDup(body: string): string {
+  return body.replace(/\s+/g, " ").trim();
+}
 
 const ROUTES = {
   version: /^\/api\/v1\/version$/,
@@ -276,6 +285,27 @@ export async function handleGiteaApi(
         const body = await readJson(req);
         const text = asString(body.body);
         if (text === undefined) return giteaError(400, "body required");
+        // A looping agent session can re-perceive a standing instruction and
+        // re-post the same reply every turn. Suppressing HERE (instead of in
+        // the daemon) lets the error travel back through the reply tool so the
+        // model itself sees "duplicate suppressed" and can break its own loop;
+        // the daemon's burst breaker stays as the last-resort backstop.
+        // Only substantial bodies: short acks ("ok") legitimately repeat, and
+        // [system] operational notices ("✓ Message forwarded") are identical
+        // by design when several messages land within the window.
+        if (text.trim().length >= 40 && !text.startsWith("[system]")) {
+          const last = await getLastCommentByAuthor(issue.id, user.login);
+          const lastAt = last ? Date.parse(last.created_at) : NaN;
+          if (
+            last && Date.now() - lastAt < DUPLICATE_REPLY_WINDOW_MS &&
+            normalizeForDup(last.body) === normalizeForDup(text)
+          ) {
+            return giteaError(
+              429,
+              `duplicate reply suppressed: identical comment posted ${Math.round((Date.now() - lastAt) / 1000)}s ago — you may be re-answering an already-answered message; if you have nothing new to add, stop and wait for user input`
+            );
+          }
+        }
         const created = await postComment(issue.id, text, user.login, {
           createdAt: asString(body.created_at),
           updatedAt: asString(body.updated_at),

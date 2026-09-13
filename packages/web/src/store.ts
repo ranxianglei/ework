@@ -801,9 +801,18 @@ export async function postComment(
   });
 }
 
-export async function getComment(commentId: number): Promise<CommentRow | null> {
-  const row = await getDB().get<CommentRow>(
+export async function getLastCommentByAuthor(issueId: number, author: string): Promise<CommentRow | null> {
+  return await getDB().get<CommentRow>(
     `SELECT c.*, u.kind AS author_kind, u.display_name AS author_display_name
+     FROM {{comments}} c LEFT JOIN {{users}} u ON u.login = c.author
+     WHERE c.issue_id = ? AND c.author = ?
+     ORDER BY c.id DESC LIMIT 1`,
+    [issueId, author]
+  );
+}
+
+export async function getComment(commentId: number): Promise<CommentRow | null> {
+  const row = await getDB().get<CommentRow>(    `SELECT c.*, u.kind AS author_kind, u.display_name AS author_display_name
      FROM {{comments}} c LEFT JOIN {{users}} u ON u.login = c.author
      WHERE c.id = ?`,
     [commentId]
