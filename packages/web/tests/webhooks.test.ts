@@ -10,6 +10,7 @@ import {
   emitIssueEvent,
   listWebhooks,
   setWebhookActive,
+  waitForWebhookQueueIdle,
 } from "../src/webhooks";
 import { createIssue, createProject, ensureUser, postComment } from "../src/store";
 
@@ -21,6 +22,12 @@ beforeAll(async () => {
 });
 
 afterEach(async () => {
+  // Retry-exhaustion tests (drain.local) leave deliveries backing off for
+  // [0, 2s, 8s]; without a full drain they leak into later test files and
+  // starve the shared delivery semaphore there (observed as 5s timeouts in
+  // upstream-sync.test.ts). Restore fetch AFTER the drain so in-flight
+  // retries resolve against the mock instead of the network.
+  await waitForWebhookQueueIdle(15_000);
   globalThis.fetch = originalFetch;
   await new Promise((r) => setTimeout(r, 60));
   const db = getDB();
@@ -213,19 +220,29 @@ describe("concurrency cap (WORK_WEBHOOK_MAX_CONCURRENT=3)", () => {
       });
     }
 
+    // Per-URL status: even-indexed targets fail their FIRST attempt (forcing
+    // a slot-holding 2s backoff), then succeed on retry; odd ones succeed
+    // immediately. Deterministic — a shared counter would let a url 500 three
+    // times in a row (10s slot hold) depending on attempt interleaving.
     let inFlight = 0;
     let maxInFlight = 0;
-    let completed = 0;
-
+    const failedOnce = new Set<string>();
+    const succeeded = new Set<string>();
     globalThis.fetch = ((_input: any) => {
       inFlight++;
       maxInFlight = Math.max(maxInFlight, inFlight);
+      const url = String(_input);
       return new Promise((resolve) => {
         setTimeout(() => {
           inFlight--;
-          completed++;
-          const status = completed % 2 === 0 ? 200 : 500;
-          resolve(new Response("x", { status }));
+          const idx = Number(url.slice(url.lastIndexOf("/") + 1));
+          if (idx % 2 === 0 && !failedOnce.has(url)) {
+            failedOnce.add(url);
+            resolve(new Response("x", { status: 500 }));
+            return;
+          }
+          succeeded.add(url);
+          resolve(new Response("x", { status: 200 }));
         }, 30);
       });
     }) as typeof fetch;
@@ -234,10 +251,10 @@ describe("concurrency cap (WORK_WEBHOOK_MAX_CONCURRENT=3)", () => {
     void emitIssueEvent(project.id, issue.id, "opened", ORIGIN);
 
     const start = Date.now();
-    while (completed < 6 && Date.now() - start < 8000) {
+    while (succeeded.size < 6 && Date.now() - start < 8000) {
       await new Promise((r) => setTimeout(r, 20));
     }
-    expect(completed).toBeGreaterThanOrEqual(6);
+    expect(succeeded.size).toBe(6);
     expect(maxInFlight).toBeLessThanOrEqual(3);
   }, 15000);
 });
