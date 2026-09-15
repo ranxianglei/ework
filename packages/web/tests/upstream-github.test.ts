@@ -198,8 +198,8 @@ describe('upstream-sync github bot-kind mapping', () => {
   });
 });
 
-describe('upstream-sync agent-PR feedback loop guard', () => {
-  test('PR carrying the agent marker imports silently (no opened event)', async () => {
+describe('upstream-sync agent-PR marker announce', () => {
+  test('PR carrying the agent marker still emits opened (marker cannot attribute authorship)', async () => {
     const { sync, project } = await setup();
     const { createWebhook } = await import('../src/webhooks');
     await createWebhook({ project_id: project.id, url: 'http://hook.local/x', events: ['issues'] });
@@ -208,7 +208,7 @@ describe('upstream-sync agent-PR feedback loop guard', () => {
     await engine({ ...sync, issue_cursor: '2020-01-01T00:00:00Z' }, project).pollOnce();
     await new Promise((r) => setTimeout(r, 150));
     expect(await getIssueByUpstreamNumber(project.id, 9)).not.toBeNull();
-    expect(calledUrls.filter((u) => u.startsWith('http://hook.local')).length).toBe(0);
+    expect(calledUrls.filter((u) => u.startsWith('http://hook.local')).length).toBe(1);
   });
 
   test('human PR without marker still emits opened', async () => {

@@ -143,10 +143,14 @@ export class UpstreamSync {
         number: gi.number,
       }
     );
-    // PRs the sandbox agent opens itself carry the ework-agent-pr marker;
-    // announcing them would wake the agent on its own artifact (feedback loop)
-    const agentAuthored = !!gi.pull_request && /<!--\s*ework-agent-pr\s*-->/.test(gi.body ?? "");
-    if (emit && !agentAuthored) {
+    // Always announce imported PRs, including ones carrying the
+    // ework-agent-pr marker. The marker used to silence the opened event as
+    // an anti-feedback-loop guard, but agents open PRs with the same GitHub
+    // login as the human owner, so a body marker cannot attribute
+    // authorship: it silently ate PRs the owner opened themselves (or via an
+    // agent-prepared body). Self-recognition now lives at the session level
+    // (AGENTS.md: marker-PR = verify + report, don't redo).
+    if (emit) {
       const created = await getIssueByUpstreamNumber(this.project.id, gi.number);
       if (created) void emitIssueEvent(this.project.id, created.id, "opened", this.origin);
     }
