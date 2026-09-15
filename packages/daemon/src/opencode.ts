@@ -2209,6 +2209,56 @@ export class Engine {
     this.observedIssues.delete(issueId);
   }
 
+  /**
+   * Restart-stranding repair. When the daemon boots while the web is
+   * unreachable, recover() parks in-flight messages as 'interrupted' and
+   * nothing ever revisits them once the web returns — the work silently dies
+   * (observed live: five issues stranded after a restart). This sweep, run on
+   * the observer cycle, resurrects stranded messages when conditions allow:
+   *  - skip if a NEWER message in the same session is pending/running
+   *    (preemption semantics — the newer prompt supersedes this one)
+   *  - skip (and mark done) if the bot already replied after this message
+   *    was created — re-running would duplicate the answer
+   *  - otherwise flip to pending and let drainGlobalPending pick it up
+   * Public so tests can drive it directly.
+   */
+  async sweepStrandedInterrupted(): Promise<void> {
+    if (this.destroyed) return;
+    let stranded: Message[];
+    try {
+      stranded = await this.store.listInterruptedMessages(this.daemonId);
+    } catch (err) {
+      log.error("engine: listInterruptedMessages failed:", (err as Error).message);
+      return;
+    }
+    for (const msg of stranded) {
+      if (this.destroyed) return;
+      const session = await this.store.getSession(msg.sessionId);
+      if (!session) continue;
+      const issue = await this.store.getIssue(session.issueId);
+      if (!issue || issue.state === "closed") continue;
+      const gate = await this.gateChecker(issue);
+      if (!gate.allowed) continue; // blocked or unreachable — next cycle retries
+      if (await this.store.hasNewerActiveMessage(msg.sessionId, msg.createdAt)) continue;
+      const ref = this.sessionToRef(session, issue);
+      const tracker = this.getTracker(issue.trackerType);
+      const comments = await tracker.listComments(ref).catch((): TrackerComment[] => []);
+      const alreadyAnswered = comments.some((c) => {
+        if (!tracker.isBotUser(c.author) || c.body.startsWith(SYSTEM_PREFIX)) return false;
+        if (!c.createdAt) return false;
+        return new Date(c.createdAt).getTime() > msg.createdAt.getTime();
+      });
+      if (alreadyAnswered) {
+        log.info(`engine: observer — stranded msg ${msg.id.slice(0, 8)} for ${issue.trackerScopeKey}#${issue.trackerIssueId} already answered, marking done`);
+        await this.store.updateMessageStatus(msg.id, "done");
+        continue;
+      }
+      log.info(`engine: observer — resurrecting stranded msg ${msg.id.slice(0, 8)} for ${issue.trackerScopeKey}#${issue.trackerIssueId}`);
+      await this.store.updateMessageStatus(msg.id, "pending");
+      void this.drainGlobalPending();
+    }
+  }
+
   private async runObserverCycle() {
     try {
       await this.store.releaseDeadOwners(this.cfg.work.leaseTtlMs);
@@ -2291,6 +2341,8 @@ export class Engine {
         } catch { /* badge convergence is best-effort */ }
       }
     }
+
+    await this.sweepStrandedInterrupted();
   }
 
   private async observeIssue(issue: Issue) {

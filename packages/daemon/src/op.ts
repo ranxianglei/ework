@@ -569,6 +569,27 @@ export class Store {
     return rows.map(rowToMessage);
   }
 
+  async listInterruptedMessages(daemonId: number): Promise<Message[]> {
+    const rows = await getDB().all<MessageRow>(
+      `SELECT m.* FROM {{messages}} m
+       INNER JOIN {{op_sessions}} s ON s.uid = m.session_id
+       INNER JOIN {{issues}} i ON i.uid = s.issue_id
+       WHERE i.owner_daemon_id = ? AND m.status = 'interrupted'
+       ORDER BY m.created_at ASC`,
+      [daemonId]
+    );
+    return rows.map(rowToMessage);
+  }
+
+  async hasNewerActiveMessage(sessionId: string, createdAt: Date): Promise<boolean> {
+    const row = await getDB().get<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM {{messages}}
+       WHERE session_id = ? AND created_at > ? AND status IN ('pending', 'running')`,
+      [sessionId, createdAt.toISOString()]
+    );
+    return (row?.n ?? 0) > 0;
+  }
+
   async close(): Promise<void> {
     // The DB singleton is owned by db.ts; callers close it via shutdown of the
     // driver there. This method is retained for API compatibility (tests,
