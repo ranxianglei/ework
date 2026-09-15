@@ -221,7 +221,10 @@ function buildCsp(cfg: Config): string {
   const origins = cfg.publicOrigins.join(" ");
   const formAction = origins ? `'self' ${origins}` : "'self'";
   const connectSrc = origins ? `'self' ${origins}` : "'self'";
-  return `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src ${connectSrc}; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action ${formAction}`;
+  // img-src includes https: so GitHub-synced comments can embed remote
+  // screenshots (user-attachments). Tracking-pixel exposure is accepted;
+  // scripts stay 'self' so images carry no code-execution risk.
+  return `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src ${connectSrc}; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action ${formAction}`;
 }
 
 const hlCss = loadHighlightCss();
