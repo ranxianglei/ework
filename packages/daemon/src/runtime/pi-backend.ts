@@ -56,11 +56,44 @@ export class PiBackend implements RuntimeBackend {
       stdin: "ignore",
     });
 
-    const stderrText = new Response(proc.stderr).text();
+    const stderr = proc.stderr;
+    let stderrText: Promise<string>;
+    let stderrTail = "";
+    let stderrReader: import("stream/web").ReadableStreamDefaultReader<Uint8Array<ArrayBuffer>> | undefined;
+    if (stderr && typeof stderr !== "number") {
+      // Manual reader (not Response.text()): resolves only at EOF otherwise, and
+      // orphaned descendants inheriting the fd would park the engine forever.
+      stderrReader = stderr.getReader();
+      const dec = new TextDecoder();
+      const STDERR_CAP = 64_000;
+      stderrText = (async () => {
+        try {
+          while (true) {
+            const { done, value } = await stderrReader!.read();
+            if (done) break;
+            stderrTail += dec.decode(value, { stream: true });
+            if (stderrTail.length > STDERR_CAP) stderrTail = stderrTail.slice(-STDERR_CAP);
+          }
+        } catch {
+          // stream error — keep whatever tail was captured; this promise must never reject
+        }
+        return stderrTail;
+      })();
+    } else {
+      stderrText = Promise.resolve("");
+    }
+    const stderrPartial = () => stderrTail;
+    const stderrCancel = () => {
+      try {
+        void stderrReader?.cancel().catch(() => {});
+      } catch {
+        // already released
+      }
+    };
 
     void this.readStdout(proc, cb);
 
-    return { pid: proc.pid, exited: proc.exited, stderrText };
+    return { pid: proc.pid, exited: proc.exited, stderrText, stderrPartial, stderrCancel };
   }
 
   private async readStdout(

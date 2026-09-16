@@ -19,6 +19,10 @@ export interface RuntimeHandle {
   pid: number;
   exited: Promise<number>;
   stderrText: Promise<string>;
+  /** Best-effort stderr captured so far (tail-capped); safe to call anytime. */
+  stderrPartial(): string;
+  /** Release the stderr stream when EOF will never arrive (orphaned descendants). */
+  stderrCancel(): void;
 }
 
 export interface SessionOutputResult {

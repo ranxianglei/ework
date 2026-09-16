@@ -78,7 +78,7 @@ export async function runHookScript(script: string | undefined, workdir: string,
       stderr: "pipe",
       env: { ...process.env, ...env },
     });
-    const timer = setTimeout(() => { try { proc.kill("SIGKILL"); } catch { /* already dead */ } }, effectiveTimeout);
+    const timer = setTimeout(() => { try { killTree(proc.pid, "SIGKILL"); } catch { /* already dead */ } }, effectiveTimeout);
     try {
       const exitCode = await proc.exited;
       const stderr = await new Response(proc.stderr).text().catch(() => "");
@@ -93,6 +93,19 @@ export async function runHookScript(script: string | undefined, workdir: string,
   } catch (e) {
     log.warn(`engine: ${label} failed: ${(e as Error).message}`);
   }
+}
+
+// Direct-child kills strand descendants (omo delegates, LSP servers, ssh) that
+// hold the stderr pipe and the workdir; kills must walk the tree.
+function killTree(pid: number, signal: NodeJS.Signals | number = 9): void {
+  try {
+    const result = Bun.spawnSync(["pgrep", "-P", String(pid)]);
+    const childPids = result.stdout.toString().trim().split("\n").filter(Boolean);
+    for (const childPid of childPids) {
+      killTree(Number(childPid), signal);
+    }
+  } catch { /* pgrep failed */ }
+  try { process.kill(pid, signal); } catch { /* already dead */ }
 }
 
 const SYSTEM_PREFIX = "[system]";
@@ -193,7 +206,7 @@ export class RecloneStrategy implements TakeoverStrategy {
         cmd, stdout: "ignore", stderr: "pipe",
         env: { ...process.env, ...env, GIT_SSH_COMMAND: sshCmd },
       });
-      const killTimer = setTimeout(() => { try { proc.kill("SIGKILL"); } catch { /* already dead */ } }, timeoutMs);
+      const killTimer = setTimeout(() => { try { killTree(proc.pid, "SIGKILL"); } catch { /* already dead */ } }, timeoutMs);
       const [exitCode] = await Promise.all([proc.exited, new Response(proc.stderr).arrayBuffer()]);
       clearTimeout(killTimer);
       return exitCode ?? -1;
@@ -297,7 +310,7 @@ export class RecloneStrategy implements TakeoverStrategy {
             cmd: gitArgs, stdout: "ignore", stderr: "pipe",
             env: { ...process.env, ...env, GIT_SSH_COMMAND: sshCmd },
           });
-          const killTimer = setTimeout(() => { try { proc.kill("SIGKILL"); } catch { /* already dead */ } }, 10 * 60_000);
+          const killTimer = setTimeout(() => { try { killTree(proc.pid, "SIGKILL"); } catch { /* already dead */ } }, 10 * 60_000);
           const [exitCode, stderr] = await Promise.all([proc.exited, new Response(proc.stderr).arrayBuffer()]);
           clearTimeout(killTimer);
           r = { exitCode, stderr: new Uint8Array(stderr) };
@@ -493,7 +506,9 @@ export class Engine {
   // Runtime state keyed by session key (trackerType:scopeKey#issueId@sessionName)
   private processes = new Map<string, RuntimeHandle>();
   private running = new Set<string>();
-  private stopping = new Set<string>();
+  // generation-scoped: a stale flag from a preempted/killed run must not
+  // suppress finishRun for the replacement run spawned afterwards
+  private stopping = new Map<string, number>();
   private destroyed = false;
   private processingComments = new Set<string>();
   private currentMessage = new Map<string, string>();
@@ -1418,8 +1433,16 @@ export class Engine {
   private async killSessionProcess(session: OpSession, k: string): Promise<boolean> {
     const handle = this.processes.get(k);
     if (handle) {
-      this.stopping.add(k);
-      try { this.killProcessTree(handle.pid, "SIGTERM"); } catch { /* already dead */ }
+      this.stopping.set(k, this.generation.get(k) ?? 0);
+      try {
+        killTree(handle.pid, "SIGTERM");
+        // escalate: a trapping process survives SIGTERM and keeps the stderr fd held
+        for (let i = 0; i < 30; i++) {
+          await new Promise(r => setTimeout(r, 100));
+          try { process.kill(handle.pid, 0); } catch { break; }
+        }
+        killTree(handle.pid, "SIGKILL");
+      } catch { /* already dead */ }
       this.processes.delete(k);
       return true;
     }
@@ -1433,9 +1456,10 @@ export class Engine {
     }
 
     log.info(`engine: killing orphaned pid=${pid} for ${k} (cross-restart)`);
-    this.stopping.add(k);
+    // no in-memory run for a cross-restart orphan; gen 0 can never match a live run's gen
+    this.stopping.set(k, 0);
     try {
-      this.killProcessTree(pid, "SIGTERM");
+      killTree(pid, "SIGTERM");
       for (let i = 0; i < 30; i++) {
         await new Promise(r => setTimeout(r, 100));
         try { process.kill(pid, 0); } catch { break; }
@@ -1491,8 +1515,8 @@ export class Engine {
 
     // Kill running process
     if (proc) {
-      this.stopping.add(k);
-       try { this.killProcessTree(proc.pid); } catch { /* already dead */ }
+      this.stopping.set(k, this.generation.get(k) ?? 0);
+       try { killTree(proc.pid); } catch { /* already dead */ }
       this.processes.delete(k);
       this.lastOutputAt.delete(k);
     }
@@ -1723,7 +1747,7 @@ export class Engine {
 
       if (this.generation.get(k) !== gen) {
         log.warn(`engine: spawned pid=${handle.pid} but generation superseded — killing orphan for ${k}`);
-        try { this.killProcessTree(handle.pid); } catch { /* already dead */ }
+        try { killTree(handle.pid); } catch { /* already dead */ }
         return;
       }
 
@@ -1741,7 +1765,7 @@ export class Engine {
       log.info(`engine: spawned pid=${handle.pid} for ${k} (backend=${backend.name})`);
 
       exitCode = await handle.exited;
-      const stderr = await handle.stderrText;
+      const stderr = await this.drainStderr(handle);
 
       if (this.processes.get(k) !== handle) {
         log.info(`engine: process replaced, skipping finishRun for ${k}`);
@@ -1771,8 +1795,28 @@ export class Engine {
     await this.finishRun(k, session, issue, exitCode, gen);
   }
 
+  private static readonly STDERR_DRAIN_MS = 5_000;
+
+  // After the child exits, stderr normally hits EOF within microtasks; a
+  // surviving descendant holding the fd would park us here forever, so bound
+  // the wait and release the stream with whatever tail was captured.
+  private async drainStderr(handle: RuntimeHandle): Promise<string> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        handle.stderrText,
+        new Promise<string>((resolve) => {
+          timer = setTimeout(() => resolve(handle.stderrPartial()), Engine.STDERR_DRAIN_MS);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+      handle.stderrCancel();
+    }
+  }
+
   private async finishRun(k: string, session: OpSession, issue: Issue, exitCode: number | null, gen: number) {
-    if (this.stopping.delete(k)) {
+    if (this.stopping.get(k) === gen && this.stopping.delete(k)) {
       log.info(`engine: finishRun skipped (force-stopped) for ${k}`);
       return;
     }
@@ -2027,6 +2071,10 @@ export class Engine {
   }
 
   private async dequeueOrIdle(k: string, session: OpSession, issue: Issue, msg: Message, opts: { force?: boolean } = {}) {
+    // every spawn path funnels through here (webhook, drain, recover, nudge,
+    // retry) — register the watchdog here or takeover/drain-spawned runs run
+    // unobserved: no dead-proc detection, no stuck nudge, no runtime cap
+    this.startObserver(issue);
     if (!opts.force) {
       let next: Message | undefined = msg;
       while (next) {
@@ -2335,9 +2383,12 @@ export class Engine {
               : "";
           const prev = this.badgeWrites.get(issue.id);
           if (prev === desired) continue;
-          this.badgeWrites.set(issue.id, desired);
           const ref = { trackerType: issue.trackerType, scope: { owner: scopeParts[0]!, repo: scopeParts[1]! }, issueId: String(issue.trackerIssueId) };
-          void this.getTracker(issue.trackerType).updateStatus(ref, desired);
+          // cache only after success — a failed write must retry next cycle, not be skipped forever
+          await this.getTracker(issue.trackerType).updateStatus(ref, desired).then(
+            () => { this.badgeWrites.set(issue.id, desired); },
+            () => { /* best-effort; retried next cycle */ },
+          );
         } catch { /* badge convergence is best-effort */ }
       }
     }
@@ -2366,6 +2417,7 @@ export class Engine {
           log.warn(`engine: observer detected dead process for ${k}`);
           this.processes.delete(k);
           this.lastOutputAt.delete(k);
+          this.startedAt.delete(k);
           this.running.delete(k);
           await this.store.updateSession(session.id, { state: "idle", opencodePid: undefined });
 
@@ -2505,7 +2557,10 @@ export class Engine {
       } catch (err) {
         log.error(`engine: progress report failed for ${k}:`, (err as Error).message);
         if (existingId) {
-          this.progressCommentId.delete(k);
+          // recreate only when the edit target is really gone (e.g. human deleted
+          // it); other failures must not spawn a fresh ⏳ comment every cycle
+          const status = (err as { status?: number }).status;
+          if (status === 404 || status === 403) this.progressCommentId.delete(k);
         }
       }
     }
@@ -2702,7 +2757,7 @@ export class Engine {
 
       if (ppid === 1) {
         log.info(`engine: killing orphaned pid=${s.opencodePid} (PPID=1, session ${s.id})`);
-        try { this.killProcessTree(s.opencodePid); } catch { /* dead */ }
+        try { killTree(s.opencodePid); } catch { /* dead */ }
         killed++;
       }
     }
@@ -2769,24 +2824,14 @@ export class Engine {
     return result;
   }
 
-  private killProcessTree(pid: number, signal: NodeJS.Signals | number = 9): void {
-    try {
-      const result = Bun.spawnSync(["pgrep", "-P", String(pid)]);
-      const childPids = result.stdout.toString().trim().split("\n").filter(Boolean);
-      for (const childPid of childPids) {
-        this.killProcessTree(Number(childPid), signal);
-      }
-    } catch { /* pgrep failed */ }
-    try { process.kill(pid, signal); } catch { /* already dead */ }
-  }
-
   async forceStop(key: string): Promise<boolean> {
     const proc = this.processes.get(key);
-    this.stopping.add(key);
+    this.stopping.set(key, this.generation.get(key) ?? 0);
     log.warn(`engine: forceStop ${key}, pid=${proc?.pid ?? "none"}`);
 
     if (proc) {
-      try { process.kill(proc.pid, 9); } catch { /* dead */ }
+      // tree-kill: the direct child's descendants hold the stderr fd and the workdir
+      try { killTree(proc.pid, "SIGKILL"); } catch { /* dead */ }
       this.processes.delete(key);
     }
 
