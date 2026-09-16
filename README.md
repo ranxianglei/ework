@@ -40,12 +40,26 @@ Self-hosted, issue-driven AI development fleet. You file issues; AI agents pick 
 
 ## Quick start
 
+**Docker** (works the same on Linux, Windows, and macOS — bundles opencode-stable + opencode-acp + omo-stable + the opencode-ework plugin):
+
+```bash
+git clone https://github.com/ranxianglei/ework.git && cd ework/docker
+cp .env.docker.example .env.docker   # fill in secrets + model endpoint
+docker compose up -d                 # → http://localhost:3002 (login: op / WORK_TOKEN)
+```
+
+Full walkthrough incl. hosted-API model wiring: **[docs/quick-start.md](docs/quick-start.md)**.
+
+**Linux / WSL2 native**:
+
 ```bash
 # install bun, then:
 npm install -g ework-aio
-ework-aio install          # interactive: web + daemon as systemd services
+ework-aio install          # PID-file mode by default; `install systemd` for systemd units
 ework-aio status           # fleet health at a glance
 ```
+
+Native Windows is not supported — use Docker Desktop (or WSL2 for the native path).
 
 Point your browser at the web port, create a project (or wire one from GitHub via ework-mirror), and file an issue. The daemon picks it up, an agent works it, replies land in the thread.
 

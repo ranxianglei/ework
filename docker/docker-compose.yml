@@ -1,0 +1,25 @@
+services:
+  ework:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: ework:latest
+    container_name: ework
+    restart: unless-stopped
+    ports:
+      - "3002:3002"   # ework-web UI + Gitea-compat API
+      - "3101:3101"   # ework-daemon webhook receiver
+    env_file:
+      - .env.docker
+    volumes:
+      - ework-data:/data
+    extra_hosts:
+      # Lets WORK_LLM_BASE_URL=http://host.docker.internal:PORT reach a model
+      # server running on the Docker host (Linux needs this; Docker Desktop
+      # for Windows/macOS provides it automatically).
+      - "host.docker.internal:host-gateway"
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  ework-data:

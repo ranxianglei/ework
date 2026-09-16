@@ -74,3 +74,60 @@ jobs:
         run: cd packages/aio && ./scripts/e2e-install.sh docker latest
         env:
           OPENCODE_HOST_BIN: /usr/local/bin/opencode
+
+  docker-image:
+    name: Docker image smoke (build + boot + web up)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      # Build from the repo root exactly as documented in docs/quick-start.md
+      # (context-independent build: everything installs from npm).
+      - name: Build all-in-one image
+        run: docker build -t ework-smoke -f docker/Dockerfile .
+
+      # Boot with a fake model endpoint (aio's fake-llm-server) so the
+      # entrypoint's provider generation path is exercised too.
+      - name: Start fake model server
+        run: |
+          curl -fsSL https://bun.sh/install | bash >/dev/null 2>&1 || true
+          export PATH="$HOME/.bun/bin:$PATH"
+          nohup bun packages/aio/scripts/fake-llm-server.ts >/tmp/fake-llm.log 2>&1 &
+          sleep 2
+          curl -sf http://127.0.0.1:8401/health >/dev/null || curl -sf http://127.0.0.1:8401/ >/dev/null || { cat /tmp/fake-llm.log || true; }
+
+      - name: Boot container
+        run: |
+          docker run -d --name ework-smoke \
+            -p 13002:3002 -p 13101:3101 \
+            --add-host host.docker.internal:host-gateway \
+            -e WORK_TOKEN=smoketoken123 \
+            -e WORK_COOKIE_SECRET=smokesecret123 \
+            -e GITEA_WEBHOOK_SECRET=smokewebhook123 \
+            -e WORK_LLM_BASE_URL=http://host.docker.internal:8401/v1 \
+            -e WORK_LLM_MODEL=fake \
+            ework-smoke
+
+      - name: Wait for web + assert
+        run: |
+          for i in $(seq 1 60); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:13002/login || true)
+            [[ "$code" == "200" ]] && break
+            sleep 2
+          done
+          [[ "$code" == "200" ]] || { docker logs ework-smoke; exit 1; }
+          echo "web is up"
+
+      - name: Assert daemon + bootstrap artifacts
+        run: |
+          docker logs ework-smoke 2>&1 | tee /tmp/smoke.log | grep -q "supervisord" || { echo "supervisord not running"; exit 1; }
+          docker logs ework-smoke 2>&1 | grep -qE "ework-daemon (started|running)" \
+            || docker logs ework-smoke 2>&1 | grep -q "daemon" || { echo "daemon program missing from logs"; exit 1; }
+          docker exec ework-smoke test -f /data/.bot-token || { echo "bot PAT not bootstrapped"; exit 1; }
+          docker exec ework-smoke test -f /data/.config/opencode/opencode.json || { echo "opencode config not generated"; exit 1; }
+          docker exec ework-smoke grep -q host.docker.internal /data/.config/opencode/opencode.json || { echo "provider baseURL wrong"; exit 1; }
+
+      - name: Dump logs on failure
+        if: failure()
+        run: docker logs ework-smoke || true
