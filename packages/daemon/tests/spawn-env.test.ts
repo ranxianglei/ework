@@ -25,4 +25,10 @@ describe("spawnEnvFor — per-issue npm isolation", () => {
     const env = spawnEnvFor({}, {}, workdir);
     expect(env.PATH).toBe(`${workdir}/.npm-global/bin:`);
   });
+
+  test("TMPDIR and npm tmp redirect into the persistent workdir", () => {
+    const env = spawnEnvFor({ PATH: "/usr/bin", TMPDIR: "/tmp" }, {}, workdir);
+    expect(env.TMPDIR).toBe(`${workdir}/.tmp`);
+    expect(env.npm_config_tmp).toBe(`${workdir}/.tmp`);
+  });
 });

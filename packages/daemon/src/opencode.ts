@@ -477,16 +477,23 @@ export function replyBurstState(
 // Per-issue npm prefix: `npm install -g <pkg>` inside a session lands in the issue's
 // workdir instead of the system global, so concurrent agents debugging different
 // issues cannot clobber each other's global installs (nor poison the shared daemon env).
+// TMPDIR redirect: same isolation for temp files. Models habitually write scratch data
+// to /tmp despite instructions; pointing every temp-default consumer (python tempfile,
+// node os.tmpdir, mktemp, npm) at the persistent workdir means tool-driven temp usage
+// survives restarts and is reaped by the workdir GC instead of vanishing on reboot.
 export function spawnEnvFor(
   base: Record<string, string | undefined>,
   hooks: Record<string, string | undefined>,
   workdir: string,
 ): Record<string, string> {
   const npmHome = `${workdir}/.npm-global`;
+  const tmp = `${workdir}/.tmp`;
   return {
     ...base,
     ...hooks,
     NPM_CONFIG_PREFIX: npmHome,
+    npm_config_tmp: tmp,
+    TMPDIR: tmp,
     PATH: `${npmHome}/bin:${base.PATH ?? ""}`,
   };
 }
@@ -1687,6 +1694,9 @@ export class Engine {
     }
 
     const childEnv = spawnEnvFor(process.env, this.hookEnvFor(issue, session, workdir), workdir);
+    // tempfile consumers do not create TMPDIR themselves (python falls back to
+    // /var/tmp, mktemp errors out), so the redirect target must pre-exist
+    mkdirSync(`${workdir}/.tmp`, { recursive: true });
 
     let spawnPrompt = msg.content;
     try {
