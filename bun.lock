@@ -12,7 +12,7 @@
         "ework-aio": "./bin/ework-aio",
       },
       "dependencies": {
-        "ework-daemon": "^0.4.98",
+        "ework-daemon": "^0.4.99",
         "ework-router": "^0.1.9",
         "ework-web": "^0.10.135",
         "opencode-ework": "^0.1.0",
@@ -39,7 +39,7 @@
     },
     "packages/daemon": {
       "name": "ework-daemon",
-      "version": "0.4.98",
+      "version": "0.4.99",
       "bin": {
         "ework-daemon": "./src/cli.ts",
         "ework-daemon-server": "./bin/ework-daemon-server.js",
