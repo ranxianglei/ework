@@ -7,14 +7,14 @@
     },
     "packages/aio": {
       "name": "ework-aio",
-      "version": "0.5.76",
+      "version": "0.5.80",
       "bin": {
         "ework-aio": "./bin/ework-aio",
       },
       "dependencies": {
-        "ework-daemon": "^0.4.96",
+        "ework-daemon": "^0.4.98",
         "ework-router": "^0.1.9",
-        "ework-web": "^0.10.134",
+        "ework-web": "^0.10.135",
         "opencode-ework": "^0.1.0",
         "zod": "^3.23.0",
       },
@@ -39,7 +39,7 @@
     },
     "packages/daemon": {
       "name": "ework-daemon",
-      "version": "0.4.96",
+      "version": "0.4.98",
       "bin": {
         "ework-daemon": "./src/cli.ts",
         "ework-daemon-server": "./bin/ework-daemon-server.js",
@@ -57,7 +57,7 @@
     },
     "packages/mirror": {
       "name": "ework-mirror",
-      "version": "0.1.17",
+      "version": "0.1.18",
       "bin": {
         "ework-mirror": "bin/ework-mirror.js",
       },
@@ -100,7 +100,7 @@
     },
     "packages/web": {
       "name": "ework-web",
-      "version": "0.10.134",
+      "version": "0.10.135",
       "bin": {
         "ework-web": "./bin/ework-web.js",
       },
