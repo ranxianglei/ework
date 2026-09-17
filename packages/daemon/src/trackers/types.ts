@@ -119,6 +119,12 @@ export interface Message {
   reactionCommentId?: string;
   status: "pending" | "running" | "done" | "failed" | "interrupted";
   attempts: number;
+  /** Infra-failure retry budget used (web unreachable / ENOSPC / signal-kill). */
+  infraAttempts?: number;
+  /** When the message (re)entered pending; stale expiry ages from this. */
+  pendingSince?: Date;
+  /** Backoff hold: pickup paths skip the message until this instant. */
+  retryAfter?: Date;
   error?: string;
   createdAt: Date;
   updatedAt: Date;

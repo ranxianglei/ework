@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { Database } from "bun:sqlite";
-import { hasRecentBotReply, checkSessionOutput } from "../src/opencode";
+import { hasRecentBotReply, hasRecoveryDelivery, looksLikeInProgress, checkSessionOutput } from "../src/opencode";
 import type { TrackerComment } from "../src/trackers/types";
 
 function makeComment(author: string, createdAt: string, body = "reply"): TrackerComment {
@@ -75,6 +75,71 @@ describe("hasRecentBotReply — absolute window fallback (no promptTime)", () =>
   test("ignores system comments in fallback mode", () => {
     const comments = [makeComment("bot", new Date().toISOString(), "[system] done")];
     expect(hasRecentBotReply(comments, isBot)).toBe(false);
+  });
+});
+
+describe("looksLikeInProgress — in-progress wording is not a delivery (ework#9)", () => {
+  test("detects Chinese in-progress phrasing", () => {
+    expect(looksLikeInProgress("[bot] 🏷 正在处理中，稍后汇报结果")).toBe(true);
+    expect(looksLikeInProgress("[bot] 🏷 收到，我先排查一下")).toBe(true);
+    expect(looksLikeInProgress("[bot] 🏷 开始执行了，请稍候")).toBe(true);
+    expect(looksLikeInProgress("[bot] 🏷 继续处理中…")).toBe(true);
+  });
+
+  test("detects English in-progress phrasing (case-insensitive)", () => {
+    expect(looksLikeInProgress("[bot] 🏷 Working on it, will follow up soon.")).toBe(true);
+    expect(looksLikeInProgress("[bot] 🏷 [WIP] first pass done, more to come")).toBe(true);
+    expect(looksLikeInProgress("[bot] 🏷 In progress — results shortly")).toBe(true);
+  });
+
+  test("does not flag finished deliverables", () => {
+    expect(looksLikeInProgress("[bot] 🏷 已完成，PR 已提交：https://github.com/x/y/pull/1")).toBe(false);
+    expect(looksLikeInProgress("[bot] 🏷 Done. The fix lands in commit abc123 and tests pass.")).toBe(false);
+    expect(looksLikeInProgress("[bot] 🏷 分析完成：根因是连接池泄漏，详见上文。")).toBe(false);
+  });
+
+  test("empty body is not in-progress", () => {
+    expect(looksLikeInProgress("")).toBe(false);
+  });
+});
+
+describe("hasRecoveryDelivery — strict restart-time check (ework#9)", () => {
+  const promptTime = new Date(Date.now() - 60_000); // run started 1 min ago
+
+  test("counts only bot replies posted strictly AFTER promptTime", () => {
+    const before = makeComment("bot", new Date(promptTime.getTime() - 5_000).toISOString(), "done");
+    const after = makeComment("bot", new Date(promptTime.getTime() + 5_000).toISOString(), "done");
+    expect(hasRecoveryDelivery([before], isBot, promptTime)).toBe(false);
+    expect(hasRecoveryDelivery([after], isBot, promptTime)).toBe(true);
+  });
+
+  test("a reply exactly at promptTime does not count (causality: prompt precedes reply)", () => {
+    const at = makeComment("bot", promptTime.toISOString());
+    expect(hasRecoveryDelivery([at], isBot, promptTime)).toBe(false);
+  });
+
+  test("in-progress wording after promptTime is NOT a delivery", () => {
+    const wip = makeComment("bot", new Date(promptTime.getTime() + 5_000).toISOString(), "进行中，稍后汇报");
+    expect(hasRecoveryDelivery([wip], isBot, promptTime)).toBe(false);
+  });
+
+  test("missing or unparseable createdAt → undelivered (uncertain ⇒ requeue)", () => {
+    const noDate: TrackerComment = { id: "c1", author: "bot", body: "done" };
+    const badDate = makeComment("bot", "not-a-date");
+    expect(hasRecoveryDelivery([noDate], isBot, promptTime)).toBe(false);
+    expect(hasRecoveryDelivery([badDate], isBot, promptTime)).toBe(false);
+  });
+
+  test("ignores [system] comments and non-bot authors", () => {
+    const sys = makeComment("bot", new Date(promptTime.getTime() + 5_000).toISOString(), "[system] picked up");
+    const human = makeComment("human", new Date(promptTime.getTime() + 5_000).toISOString(), "done");
+    expect(hasRecoveryDelivery([sys, human], isBot, promptTime)).toBe(false);
+  });
+
+  test("one real delivery among noise counts", () => {
+    const wip = makeComment("bot", new Date(promptTime.getTime() + 5_000).toISOString(), "进行中");
+    const done = makeComment("bot", new Date(promptTime.getTime() + 40_000).toISOString(), "已完成，PR 见 #12");
+    expect(hasRecoveryDelivery([wip, done], isBot, promptTime)).toBe(true);
   });
 });
 

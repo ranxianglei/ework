@@ -57,9 +57,9 @@ beforeEach(async () => {
   }
   await db.exec(mysql ? "SET FOREIGN_KEY_CHECKS = 1" : "PRAGMA foreign_keys = ON");
 
-  argsFile = `/tmp/fake-opencode-mp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  argsFile = `${tmpdir()}/fake-opencode-mp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   process.env.FAKE_MODEL_ARGS = argsFile;
-  workdirBase = `/tmp/ework-daemon-mp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  workdirBase = `${tmpdir()}/ework-daemon-mp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   mkdirSync(workdirBase, { recursive: true });
 
   fakeTracker = new FakeTracker();
@@ -133,7 +133,7 @@ function makeConfig(pool: string[]): Config {
       modelPool: pool,
       modelCooldownMs: 60_000,
     },
-    work: { capacity: 4, maxConcurrent: 2, maxConcurrentExplicit: true, heartbeatMs: HEARTBEAT_MS, leaseTtlMs: LEASE_TTL_MS },
+    work: { ...cfg.work, capacity: 4, maxConcurrent: 2, maxConcurrentExplicit: true, heartbeatMs: HEARTBEAT_MS, leaseTtlMs: LEASE_TTL_MS },
   };
 }
 

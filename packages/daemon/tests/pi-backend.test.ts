@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
+import { tmpdir } from "os";
 import { PiBackend } from "../src/runtime/pi-backend";
 
 // PiBackend session bookkeeping against a synthetic ~/.pi/agent/sessions tree.
@@ -13,7 +14,7 @@ let savedSessionDir: string | undefined;
 let savedAgentDir: string | undefined;
 
 beforeEach(() => {
-  root = `/tmp/ework-pi-backend-test-${process.pid}`;
+  root = `${tmpdir()}/ework-pi-backend-test-${process.pid}`;
   rmSync(root, { recursive: true, force: true });
   mkdirSync(join(root, "sessions", "--proj-a--"), { recursive: true });
   savedSessionDir = process.env.PI_CODING_AGENT_SESSION_DIR;

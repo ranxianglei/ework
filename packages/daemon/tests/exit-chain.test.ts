@@ -68,9 +68,9 @@ beforeEach(async () => {
   }
   await db.exec(mysql ? "SET FOREIGN_KEY_CHECKS = 1" : "PRAGMA foreign_keys = ON");
 
-  counterFile = `/tmp/fake-opencode-exit-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  counterFile = `${tmpdir()}/fake-opencode-exit-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   process.env.FAKE_OPENCODE_COUNTER = counterFile;
-  workdirBase = `/tmp/ework-daemon-exit-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  workdirBase = `${tmpdir()}/ework-daemon-exit-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   mkdirSync(workdirBase, { recursive: true });
 
   trackerRegistry = new Map<string, IssueTracker>();
@@ -123,7 +123,7 @@ function makeConfig(binary: string): Config {
   return {
     ...cfg,
     opencode: { ...cfg.opencode, binary, baseWorkdir: workdirBase },
-    work: { capacity: 4, maxConcurrent: 4, maxConcurrentExplicit: true, heartbeatMs: HEARTBEAT_MS, leaseTtlMs: LEASE_TTL_MS },
+    work: { ...cfg.work, capacity: 4, maxConcurrent: 4, maxConcurrentExplicit: true, heartbeatMs: HEARTBEAT_MS, leaseTtlMs: LEASE_TTL_MS },
   };
 }
 

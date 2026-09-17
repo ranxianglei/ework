@@ -44,6 +44,9 @@ CREATE TABLE IF NOT EXISTS {{messages}} (
   model TEXT,
   status TEXT NOT NULL DEFAULT 'pending',
   attempts INTEGER NOT NULL DEFAULT 0,
+  infra_attempts INTEGER NOT NULL DEFAULT 0,
+  pending_since TEXT,
+  retry_after TEXT,
   error TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL

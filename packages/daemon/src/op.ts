@@ -45,6 +45,9 @@ interface MessageRow {
   model: string | null;
   status: string;
   attempts: number;
+  infra_attempts: number;
+  pending_since: string | null;
+  retry_after: string | null;
   error: string | null;
   created_at: string;
   updated_at: string;
@@ -100,6 +103,9 @@ function rowToMessage(row: MessageRow): Message {
     model: row.model ?? undefined,
     status: row.status as Message["status"],
     attempts: row.attempts,
+    infraAttempts: row.infra_attempts ?? 0,
+    pendingSince: row.pending_since ? new Date(row.pending_since) : undefined,
+    retryAfter: row.retry_after ? new Date(row.retry_after) : undefined,
     error: row.error ?? undefined,
     createdAt: new Date(row.created_at),
     updatedAt: new Date(row.updated_at),
@@ -289,12 +295,12 @@ export class Store {
     const now = new Date().toISOString();
     const id = crypto.randomUUID();
     await getDB().run(
-      "INSERT OR IGNORE INTO {{messages}} (uid, session_id, content, source_comment_id, reaction_comment_id, model, status, attempts, error, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      [id, sessionId, content, sourceCommentId ?? null, reactionCommentId ?? null, model ?? null, "pending", 0, null, now, now]
+      "INSERT OR IGNORE INTO {{messages}} (uid, session_id, content, source_comment_id, reaction_comment_id, model, status, attempts, infra_attempts, pending_since, error, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [id, sessionId, content, sourceCommentId ?? null, reactionCommentId ?? null, model ?? null, "pending", 0, 0, now, null, now, now]
     );
     return {
       id, sessionId, content, sourceCommentId, reactionCommentId,
-      status: "pending", attempts: 0,
+      status: "pending", attempts: 0, infraAttempts: 0, pendingSince: new Date(now),
       createdAt: new Date(now), updatedAt: new Date(now),
       model,
     };
@@ -305,18 +311,21 @@ export class Store {
     return row ? rowToMessage(row) : undefined;
   }
 
+  /** Pickup scan must skip messages still inside an infra-retry backoff hold. */
+  private static readonly RETRY_HOLD_SQL = "(retry_after IS NULL OR retry_after <= ?)";
+
   async getNextPendingMessage(sessionId: string): Promise<Message | undefined> {
     const row = await getDB().get<MessageRow>(
-      "SELECT * FROM {{messages}} WHERE session_id = ? AND status = 'pending' ORDER BY created_at ASC LIMIT 1",
-      [sessionId]
+      `SELECT * FROM {{messages}} WHERE session_id = ? AND status = 'pending' AND ${Store.RETRY_HOLD_SQL} ORDER BY created_at ASC LIMIT 1`,
+      [sessionId, new Date().toISOString()]
     );
     return row ? rowToMessage(row) : undefined;
   }
 
   async getGlobalPendingMessages(limit: number): Promise<Message[]> {
     const rows = await getDB().all<MessageRow>(
-      "SELECT * FROM {{messages}} WHERE status = 'pending' ORDER BY created_at ASC LIMIT ?",
-      [limit]
+      `SELECT * FROM {{messages}} WHERE status = 'pending' AND ${Store.RETRY_HOLD_SQL} ORDER BY created_at ASC LIMIT ?`,
+      [new Date().toISOString(), limit]
     );
     return rows.map(rowToMessage);
   }
@@ -328,12 +337,64 @@ export class Store {
     ]);
   }
 
+  /** Infra-failure retries use their own budget; `attempts` stays content-only. */
+  async bumpInfraAttempts(id: string): Promise<void> {
+    await getDB().run("UPDATE {{messages}} SET infra_attempts = infra_attempts + 1, updated_at = ? WHERE uid = ?", [
+      new Date().toISOString(),
+      id,
+    ]);
+  }
+
+  /** Set/clear the backoff hold. ISO-8601 strings compare lexicographically. */
+  async setRetryAfter(id: string, untilIso: string | null): Promise<void> {
+    await getDB().run(
+      "UPDATE {{messages}} SET retry_after = ?, updated_at = ? WHERE uid = ?",
+      [untilIso, new Date().toISOString(), id]
+    );
+  }
+
+  /**
+   * Atomic infra-retry requeue: flip the message back to pending AND set the
+   * backoff hold in a single write. Two separate statements would leave a
+   * window where the message is claimable but its hold is not yet visible
+   * (status transitions clear retry_after), letting a racing daemon pull it
+   * out before the backoff elapses.
+   */
+  async requeueWithBackoff(id: string, error: string, retryAfterIso: string): Promise<void> {
+    const now = new Date().toISOString();
+    await getDB().run(
+      "UPDATE {{messages}} SET status = 'pending', pending_since = ?, retry_after = ?, error = ?, updated_at = ? WHERE uid = ?",
+      [now, retryAfterIso, error, now, id]
+    );
+  }
+
+  /**
+   * Restart recovery: shift the pending clock of every pending message owned by
+   * this daemon to now, so time the engine spent down does not count toward
+   * stale-pending age. Scoped to owned issues — other daemons' queues are live.
+   */
+  async shiftPendingSinceForOwned(daemonId: number): Promise<number> {
+    const res = await getDB().run(
+      `UPDATE {{messages}} SET pending_since = ?, updated_at = ?
+       WHERE status = 'pending' AND session_id IN (
+         SELECT s.uid FROM {{op_sessions}} s
+         INNER JOIN {{issues}} i ON i.uid = s.issue_id
+         WHERE i.owner_daemon_id = ?
+       )`,
+      [new Date().toISOString(), new Date().toISOString(), daemonId]
+    );
+    return res.changes;
+  }
+
   async updateMessageStatus(id: string, status: Message["status"], error?: string): Promise<void> {
     const row = await getDB().get<MessageRow>("SELECT * FROM {{messages}} WHERE uid = ?", [id]);
     const attempts = row ? row.attempts + (status === "failed" ? 1 : 0) : 0;
+    // Entering pending restarts the staleness clock; any other transition drops
+    // it. A normal requeue also clears any lingering backoff hold.
+    const now = new Date().toISOString();
     await getDB().run(
-      "UPDATE {{messages}} SET status = ?, attempts = ?, error = ?, updated_at = ? WHERE uid = ?",
-      [status, attempts, error ?? null, new Date().toISOString(), id]
+      "UPDATE {{messages}} SET status = ?, attempts = ?, pending_since = ?, retry_after = NULL, error = ?, updated_at = ? WHERE uid = ?",
+      [status, attempts, status === "pending" ? now : null, error ?? null, now, id]
     );
   }
 
@@ -528,11 +589,17 @@ export class Store {
     return res.changes;
   }
 
-  /** Atomic message claim: pending → running. False = lost or already done. */
+  /**
+   * Atomic message claim: pending → running. False = lost or already done.
+   * Enforces the retry_after backoff hold atomically so racing daemons cannot
+   * pull a message out early; a successful claim clears the hold.
+   */
   async claimMessage(messageId: string): Promise<boolean> {
+    const now = new Date().toISOString();
     const res = await getDB().run(
-      "UPDATE {{messages}} SET status = 'running', updated_at = ? WHERE uid = ? AND status = 'pending'",
-      [new Date().toISOString(), messageId]
+      `UPDATE {{messages}} SET status = 'running', retry_after = NULL, updated_at = ?
+       WHERE uid = ? AND status = 'pending' AND ${Store.RETRY_HOLD_SQL}`,
+      [now, messageId, now]
     );
     return res.changes === 1;
   }
