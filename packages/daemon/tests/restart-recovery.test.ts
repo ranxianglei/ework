@@ -86,7 +86,11 @@ class FakeTracker implements IssueTracker {
     return { id };
   }
 
-  async editComment(): Promise<void> {}
+  edits: Array<{ id: string; body: string }> = [];
+
+  async editComment(_ref: TrackerRef, id: string, body: string): Promise<void> {
+    this.edits.push({ id, body });
+  }
   async deleteComment(): Promise<void> {}
   async listComments(): Promise<TrackerComment[]> { return [...this.comments]; }
   async closeIssue(): Promise<void> {}
@@ -400,5 +404,39 @@ describe("restart recovery (ework#9)", () => {
       return lost.length === 1 && lost[0]?.status === "done" ? true : undefined;
     });
     expect(done).toBe(true);
+  });
+
+  it("closes the stale progress comment of a run interrupted by the restart (ework#420)", async () => {
+    const store = new Store();
+    const cfg = makeConfig();
+    const backend = new FakeBackend(fakeTracker.comments);
+    backend.deliver = false;
+    const { engine: engineA } = await bootEngine("A", store, cfg, 7411, backend);
+    await engineA.handleEvent(commentEvent("701", "long task"));
+    expect(await waitFor(async () => {
+      const r = await messageRows();
+      return r.length === 1 && r[0]!.status === "running" ? true : undefined;
+    })).toBe(true);
+
+    // The in-flight run's ⏳ progress comment, persisted on the session row
+    // exactly like the 5-min observer does in production.
+    fakeTracker.comments.push({
+      id: "pc-stale",
+      body: "[system] 🏷 ⏳ **ework-daemon** processing, running for 3 min...",
+      author: BOT_USER,
+      createdAt: new Date().toISOString(),
+    });
+    const sess = await getDB().get<{ uid: string }>(`SELECT uid FROM {{op_sessions}} LIMIT 1`);
+    expect(sess).toBeDefined();
+    await store.updateSession(sess!.uid, { progressCommentId: "pc-stale" });
+
+    await expireLease(engineA);
+    const { engine: engineB } = await bootEngine("B", store, cfg, 7412, backend);
+    await engineB.recover();
+
+    const staleEdits = fakeTracker.edits.filter((e) => e.id === "pc-stale");
+    expect(staleEdits.length).toBe(1);
+    expect(staleEdits[0]!.body).toContain("interrupted");
+    expect(staleEdits[0]!.body).toContain("auto-retry");
   });
 });

@@ -2926,6 +2926,23 @@ export class Engine {
         }
       }
 
+      // A run that was in-flight when the daemon died left its ⏳ progress
+      // comment forever "processing" — finishRun never executed to close it
+      // (the ework#420 incident: force-stop skips the terminal edit by
+      // design, and nothing else repaired the stale comment). Close it with
+      // a terminal interrupted marker here; the requeued run opens a fresh
+      // progress comment on its next observer tick.
+      const staleProgressId = this.progressCommentId.get(k);
+      if (msgs.some(m => m.status === "running") && staleProgressId) {
+        const staleRef = this.sessionToRef(session, issue);
+        const staleTracker = this.getTracker(issue.trackerType);
+        await staleTracker.editComment(
+          staleRef, staleProgressId,
+          `[system] 🏷 ⚡ **${session.name}** interrupted (daemon restart) — auto-retry scheduled`
+        ).catch(err => log.warn(`engine: recover — failed to close stale progress comment for ${k}: ${(err as Error).message}`));
+        this.progressCommentId.delete(k);
+      }
+
       const first = msgs.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())[0]!;
 
       // Strict recovery-time delivery check (ework#9 spec item 3): only a bot
@@ -2941,7 +2958,19 @@ export class Engine {
         report.delivered++;
         const next = await this.store.getNextPendingMessage(session.id);
         if (next && this.running.size < this.maxConcurrent) { await this.dequeueOrIdle(k, session, issue, next); }
-        else if (!next) { void tracker.updateStatus(ref, ""); }
+        else if (!next) {
+          void tracker.updateStatus(ref, "");
+          // Same stale-⏳ hazard as the requeue path: the run died mid-flight
+          // but its reply was already delivered — without this edit the ⏳
+          // comment would claim "processing" forever (ework#420).
+          const doneId = this.progressCommentId.get(k);
+          if (doneId) {
+            this.progressCommentId.delete(k);
+            await tracker.editComment(ref, doneId,
+              `[system] 🏷 ✅ **${session.name}** recovered after restart — delivery confirmed`
+            ).catch(err => log.warn(`engine: recover — failed to close progress comment for ${k}: ${(err as Error).message}`));
+          }
+        }
         continue;
       }
 
