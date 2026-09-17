@@ -6,8 +6,11 @@ import {
   ensureUser,
   getIssueByUpstreamNumber,
   getCommentByUpstreamId,
+  getProject,
+  getProjectUpstreamUrls,
   getUpstreamSync,
   listIssues,
+  setProjectUpstreamUrls,
   upsertUpstreamSync,
   type UpstreamSyncRow,
 } from "../src/store";
@@ -291,5 +294,44 @@ describe("syncOrigin", () => {
     const cfg = { publicOrigins: ["http://ex.example/"], port: 3000 } as unknown as Config;
     expect(syncOrigin(cfg)).toBe("http://ex.example");
     expect(syncOrigin({ publicOrigins: [], port: 3002 } as unknown as Config)).toBe("http://127.0.0.1:3002");
+  });
+});
+
+describe("upstream sync defaults project upstream_urls", () => {
+  test("enabled sync on a project without upstream_urls defaults them", async () => {
+    const project = await createProject("acme", "jumpless", "root");
+    await upsertUpstreamSync(project.id, {
+      baseUrl: "http://gitea.local",
+      upstreamOwner: "acme",
+      upstreamRepo: "widget",
+      enabled: true,
+    });
+    const after = await getProject("acme", "jumpless");
+    expect(getProjectUpstreamUrls(after!)).toEqual(["http://gitea.local/acme/widget"]);
+  });
+
+  test("api.github.com base is normalized to the github.com web base", async () => {
+    const project = await createProject("acme", "apibase", "root");
+    await upsertUpstreamSync(project.id, {
+      baseUrl: "https://api.github.com",
+      upstreamOwner: "ranxianglei",
+      upstreamRepo: "ework",
+      enabled: true,
+    });
+    const after = await getProject("acme", "apibase");
+    expect(getProjectUpstreamUrls(after!)).toEqual(["https://github.com/ranxianglei/ework"]);
+  });
+
+  test("explicitly configured upstream_urls are never overwritten", async () => {
+    const project = await createProject("acme", "explicit", "root");
+    await setProjectUpstreamUrls(project.id, ["https://example.com/custom"]);
+    await upsertUpstreamSync(project.id, {
+      baseUrl: "https://github.com",
+      upstreamOwner: "acme",
+      upstreamRepo: "explicit",
+      enabled: true,
+    });
+    const after = await getProject("acme", "explicit");
+    expect(getProjectUpstreamUrls(after!)).toEqual(["https://example.com/custom"]);
   });
 });

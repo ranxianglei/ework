@@ -611,6 +611,14 @@ export async function upsertUpstreamSync(projectId: number, opts: UpsertUpstream
       [projectId, baseUrl, owner, repo, token, enabled ? 1 : 0, Math.floor(interval), ts, ts]
     );
   }
+  // A configured sync IS the upstream: default the project's upstream_urls
+  // (they drive the issue-page "jump to upstream" links) so newly mirrored
+  // repos don't ship without them. Never overwrite explicit configuration.
+  const project = await getProjectById(projectId);
+  if (enabled && project && getProjectUpstreamUrls(project).length === 0) {
+    const webBase = baseUrl.replace(/^https?:\/\/api\.github\.com$/i, "https://github.com");
+    await setProjectUpstreamUrls(projectId, [`${webBase}/${owner}/${repo}`]);
+  }
   return (await getUpstreamSync(projectId))!;
 }
 
