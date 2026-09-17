@@ -382,6 +382,8 @@ export interface ListIssuesOpts {
   q?: string;
   label?: string;
   limit?: number;
+  /** Zero-based row offset for pagination (listAllIssues); clamped to >= 0. */
+  offset?: number;
   viewerLogin?: string;
   viewerIsAdmin?: boolean;
 }
@@ -418,6 +420,8 @@ export async function listAllIssues(opts: ListIssuesOpts = {}): Promise<IssueWit
   const state = opts.state ?? "open";
   const q = (opts.q ?? "").trim();
   const limit = Math.min(opts.limit ?? 50, 200);
+  const offsetRaw = opts.offset ?? 0;
+  const offset = Number.isFinite(offsetRaw) && offsetRaw > 0 ? Math.floor(offsetRaw) : 0;
   let sql = `SELECT i.*, p.owner AS project_owner, p.name AS project_name,
               (SELECT COUNT(*) FROM {{comments}} c WHERE c.issue_id = i.id) AS comment_count
             FROM {{issues}} i JOIN {{projects}} p ON p.id = i.project_id
@@ -445,8 +449,8 @@ export async function listAllIssues(opts: ListIssuesOpts = {}): Promise<IssueWit
     }
     sql += ")";
   }
-  sql += " ORDER BY i.updated_at DESC LIMIT ?";
-  args.push(limit);
+  sql += " ORDER BY i.updated_at DESC LIMIT ? OFFSET ?";
+  args.push(limit, offset);
   return await getDB().all<IssueWithMeta>(sql, args);
 }
 

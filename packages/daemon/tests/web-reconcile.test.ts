@@ -31,6 +31,21 @@ function mockFetch(items: FakeItem[], status = 200): { fetchImpl: FetchLike; cal
   return { fetchImpl, calls };
 }
 
+// Serves a different item list per requested ?page=N (1-based); unknown pages
+// come back empty so the walker sees a short page and stops.
+function mockFetchPaged(pages: FakeItem[][]): { fetchImpl: FetchLike; calls: string[] } {
+  const calls: string[] = [];
+  const fetchImpl: FetchLike = async (input, init) => {
+    calls.push(String(input));
+    void init;
+    const m = String(input).match(/page=(\d+)/);
+    const idx = m ? Number(m[1]) - 1 : 0;
+    const items = pages[idx] ?? [];
+    return new Response(JSON.stringify(items), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  return { fetchImpl, calls };
+}
+
 beforeAll(async () => {
   await initDB();
 });
@@ -136,7 +151,57 @@ describe("reconcileWebIssues", () => {
     };
 
     await reconcileWebIssues({ webUrl: WEB, token: "admin-tok", scopes: ["dog/repo"], store, fetchImpl: wrapped });
-    expect(calledWith).toContain("/api/v1/repos/issues/search?q=&state=open&type=issues&limit=100");
+    expect(calledWith).toContain("/api/v1/repos/issues/search?q=&state=open&type=issues&limit=200&page=1");
     expect(seenHeaders["authorization"]).toBe("token admin-tok");
+  });
+
+  it("walks multiple pages until a short page and restores across pages", async () => {
+    // limit=50 keeps this under the 5s test timeout on slow CI boxes while
+    // still exercising full-page → next-page → short-page termination.
+    const page1: FakeItem[] = Array.from({ length: 50 }, (_, i) => ({
+      url: `${WEB}/api/v1/repos/dog/repo/issues/${i + 1}`,
+      number: i + 1,
+      title: `issue ${i + 1}`,
+    }));
+    const page2: FakeItem[] = Array.from({ length: 3 }, (_, i) => ({
+      url: `${WEB}/api/v1/repos/dog/repo/issues/${i + 51}`,
+      number: i + 51,
+      title: `issue ${i + 51}`,
+    }));
+    const { fetchImpl, calls } = mockFetchPaged([page1, page2]);
+    const result = await reconcileWebIssues({ webUrl: WEB, token: "tok", scopes: ["dog/repo"], store, fetchImpl, limit: 50 });
+
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toContain("&limit=50&page=1");
+    expect(calls[1]).toContain("&limit=50&page=2");
+    expect(result).toEqual({ checked: 53, matched: 53, restored: 53 });
+    expect(await store.findIssue("gitea", "dog/repo", "1")).toBeDefined();
+    expect(await store.findIssue("gitea", "dog/repo", "53")).toBeDefined();
+  });
+
+  it("stops when an old shim repeats the same page instead of looping forever", async () => {
+    const page: FakeItem[] = [
+      { url: `${WEB}/api/v1/repos/dog/repo/issues/1`, number: 1, title: "a" },
+      { url: `${WEB}/api/v1/repos/dog/repo/issues/2`, number: 2, title: "b" },
+    ];
+    const { fetchImpl, calls } = mockFetchPaged([page, page, page]);
+    // limit=2 makes page 1 a full page, so the walker would otherwise keep going.
+    const result = await reconcileWebIssues({ webUrl: WEB, token: "tok", scopes: ["dog/repo"], store, fetchImpl, limit: 2 });
+
+    expect(calls).toHaveLength(2);
+    expect(result).toEqual({ checked: 2, matched: 2, restored: 2 });
+  });
+
+  it("caps the walk at maxPages even when every page is full", async () => {
+    const makePage = (start: number): FakeItem[] => [
+      { url: `${WEB}/api/v1/repos/dog/repo/issues/${start}`, number: start, title: `x${start}` },
+      { url: `${WEB}/api/v1/repos/dog/repo/issues/${start + 1}`, number: start + 1, title: `y${start}` },
+    ];
+    const { fetchImpl, calls } = mockFetchPaged([makePage(1), makePage(100), makePage(200)]);
+    const result = await reconcileWebIssues({ webUrl: WEB, token: "tok", scopes: ["dog/repo"], store, fetchImpl, limit: 2, maxPages: 2 });
+
+    expect(calls).toHaveLength(2);
+    expect(result.checked).toBe(4);
+    expect(result.restored).toBe(4);
   });
 });

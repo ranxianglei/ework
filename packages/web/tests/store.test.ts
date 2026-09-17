@@ -11,6 +11,7 @@ import {
   getIssueById,
   getIssueWithMeta,
   getProject,
+  listAllIssues,
   listCommentsForIssue,
   listCommentsPage,
   postComment,
@@ -427,5 +428,29 @@ describe("createIssue: number preservation (upstream imports)", () => {
     await createIssue(p.id, "two", "b", "dog");
     const imported = await createIssue(p.id, "clash", "b", "dog", { number: 1, upstreamIssueNumber: 1 });
     expect(imported.number).toBe(3);
+  });
+});
+
+describe("listAllIssues: pagination", () => {
+  test("offset slices the updated_at DESC ordering", async () => {
+    const p = await seedProject();
+    for (let i = 1; i <= 5; i++) {
+      await createIssue(p.id, `issue ${i}`, "b", AUTHOR, { updatedAt: `2026-01-0${i}T00:00:00Z` });
+    }
+    const first = await listAllIssues({ limit: 3 });
+    expect(first.map((r) => r.number)).toEqual([5, 4, 3]);
+    const second = await listAllIssues({ limit: 3, offset: 3 });
+    expect(second.map((r) => r.number)).toEqual([2, 1]);
+    const beyond = await listAllIssues({ limit: 3, offset: 99 });
+    expect(beyond).toEqual([]);
+  });
+
+  test("negative and non-finite offsets clamp to zero", async () => {
+    const p = await seedProject();
+    for (let i = 1; i <= 4; i++) {
+      await createIssue(p.id, `issue ${i}`, "b", AUTHOR, { updatedAt: `2026-02-0${i}T00:00:00Z` });
+    }
+    expect(await listAllIssues({ limit: 10, offset: -5 })).toHaveLength(4);
+    expect(await listAllIssues({ limit: 10, offset: Number.NaN })).toHaveLength(4);
   });
 });
