@@ -57,6 +57,7 @@ export const configSchema = z.object({
     maxConcurrentExplicit: z.boolean().default(false),
     heartbeatMs: z.coerce.number().int().positive().default(10_000),
     leaseTtlMs: z.coerce.number().int().positive().default(60_000),
+    reconcileScopes: z.array(z.string()).default([]),
   }),
   db: z.object({
     driver: z.enum(["sqlite", "mysql"]).default("sqlite"),
@@ -117,6 +118,7 @@ function readWorkSection() {
     maxConcurrentExplicit,
     heartbeatMs: process.env.WORK_DAEMON_HEARTBEAT_MS ? Number(process.env.WORK_DAEMON_HEARTBEAT_MS) : 10_000,
     leaseTtlMs: process.env.WORK_DAEMON_LEASE_TTL_MS ? Number(process.env.WORK_DAEMON_LEASE_TTL_MS) : 60_000,
+    reconcileScopes: (process.env.WORK_RECONCILE_SCOPES ?? "").split(",").map((s) => s.trim()).filter(Boolean),
   };
 }
 
