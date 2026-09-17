@@ -1,11 +1,11 @@
 import { Database } from "bun:sqlite";
 import { mkdirSync, writeFileSync, unlinkSync, rmdirSync, readdirSync, existsSync, readFileSync } from "fs";
 import { join, dirname, resolve, isAbsolute } from "path";
-import { homedir } from "os";
+import { homedir, hostname } from "os";
 import { log } from "./logger";
 import { listBusyOpencodeWorkdirs, purgeStaleNodeModules } from "./workdir-gc";
 import type { Config } from "./config";
-import type { Store } from "./op";
+import { isForeignKeyError, type Store } from "./op";
 import type { IssueTracker, TrackerRef, TrackerEvent, TrackerComment, Issue, OpSession, Message } from "./trackers/types";
 import { formatKey, parseKey } from "./trackers/types";
 import type { RuntimeBackend, RuntimeHandle } from "./runtime/types";
@@ -502,7 +502,9 @@ export class Engine {
   private cfg: Config;
   private store: Store;
   private trackers: TrackerRegistry;
-  private readonly daemonId: number;
+  // Not readonly: healDaemonRow() re-registers the daemon after its identity
+  // row was lost (DB wipe) and reassigns this to the new row's id.
+  private daemonId: number;
   private readonly takeover: TakeoverStrategy;
   private readonly backend: RuntimeBackend;
   private gateChecker: (issue: Issue) => Promise<{ allowed: boolean; reason: string; resetMs?: number; concurrency?: number | null; unreachable?: boolean }>;
@@ -835,16 +837,80 @@ export class Engine {
   /**
    * Ensure this engine owns the issue before doing work on it. Returns true
    * if we own it (either already, or just claimed). Returns false if another
-   * daemon won the claim — caller must skip.
+   * daemon won the claim — caller must skip. Public so tests can drive the
+   * self-heal paths directly (see sweepStrandedInterrupted precedent).
+   *
+   * Self-heals (ranxianglei/ework#7): a missing issues row is re-created
+   * first (claiming a nonexistent row matches zero rows and would read as
+   * "lost the race"), and an FK failure on claim means our daemons row
+   * vanished (e.g. DB wipe) — re-register and retry the claim once.
    */
-  private async ensureOwned(issue: Issue): Promise<boolean> {
-    if (issue.ownerDaemonId === this.daemonId) return true;
-    const won = await this.store.claimIssue(issue.id, this.daemonId);
-    if (!won) {
-      log.info(`engine: lost claim on issue ${issue.id} to another daemon (owner=${issue.ownerDaemonId})`);
-      return false;
+  async ensureOwned(issue: Issue): Promise<boolean> {
+    let target: Issue | undefined = await this.store.getIssue(issue.id);
+    if (!target) {
+      // Row was lost (DB wipe etc.): re-create it. Note findOrCreateIssue
+      // mints a fresh local uid, so all subsequent steps must use the
+      // returned row — claiming the stale uid would match zero rows. A
+      // freshly created row has no owner, so fall through to the claim
+      // instead of trusting the (stale) in-memory ownership.
+      target = await this.store.findOrCreateIssue(
+        { trackerType: issue.trackerType, scope: issue.trackerScope, issueId: issue.trackerIssueId },
+        issue.trackerScopeKey,
+        issue.title,
+      );
+    } else if (issue.ownerDaemonId === this.daemonId) {
+      return true;
     }
-    return true;
+
+    try {
+      const won = await this.store.claimIssue(target.id, this.daemonId);
+      if (!won) {
+        const current = await this.store.getIssue(target.id);
+        log.info(`engine: lost claim on issue ${target.id} to another daemon (owner=${current?.ownerDaemonId ?? "unknown"})`);
+        return false;
+      }
+      return true;
+    } catch (err) {
+      if (!isForeignKeyError(err)) throw err;
+      log.warn(`engine: claim on issue ${target.id} hit FK violation — daemon row missing, re-registering`);
+      const healed = await this.healDaemonRow();
+      if (healed === null) return false;
+      try {
+        const won = await this.store.claimIssue(target.id, this.daemonId);
+        if (!won) {
+          const current = await this.store.getIssue(target.id);
+          log.warn(`engine: retry claim on issue ${target.id} after heal still lost (owner=${current?.ownerDaemonId ?? "unknown"})`);
+          return false;
+        }
+        log.info(`engine: recovered ownership of issue ${target.id} after daemon row heal`);
+        return true;
+      } catch (retryErr) {
+        log.error(`engine: retry claim on issue ${target.id} after heal failed:`, (retryErr as Error).message);
+        return false;
+      }
+    }
+  }
+
+  /**
+   * Re-register this daemon after its identity row was lost (DB wipe etc.),
+   * absorbing same-host duplicate rows. Returns the new daemon id, or null
+   * when re-registration itself fails.
+   */
+  private async healDaemonRow(): Promise<number | null> {
+    try {
+      const displayName = hostname();
+      const endpoint = this.cfg.daemon.endpoint || `${this.cfg.daemon.host}:${this.cfg.daemon.port}`;
+      const id = await this.store.registerDaemon(displayName, endpoint, this.cfg.work.capacity, this.cfg.work.leaseTtlMs);
+      await this.store.absorbSameHostDaemons(id, displayName, endpoint);
+      if (id !== this.daemonId) {
+        log.warn(`engine: daemon identity changed ${this.daemonId} → ${id} (previous row was lost)`);
+        this.daemonId = id;
+      }
+      return id;
+    } catch (err) {
+      log.error("engine: daemon re-registration after FK failure failed:", (err as Error).message);
+      return null;
+    }
   }
 
   private get stuckThresholdMs(): number {
@@ -2320,6 +2386,8 @@ export class Engine {
   private async runObserverCycle() {
     try {
       await this.store.releaseDeadOwners(this.cfg.work.leaseTtlMs);
+      const dangling = await this.store.releaseDanglingOwners();
+      if (dangling > 0) log.info(`engine: released ${dangling} issue(s) owned by vanished daemon rows`);
     } catch (err) {
       log.error("engine: releaseDeadOwners failed:", (err as Error).message);
     }
@@ -2584,6 +2652,8 @@ export class Engine {
     // reclaimable).
     try {
       await this.store.releaseDeadOwners(this.cfg.work.leaseTtlMs);
+      const dangling = await this.store.releaseDanglingOwners();
+      if (dangling > 0) log.info(`engine: released ${dangling} issue(s) owned by vanished daemon rows at boot`);
     } catch (err) {
       log.error("engine: releaseDeadOwners at boot failed:", (err as Error).message);
     }
