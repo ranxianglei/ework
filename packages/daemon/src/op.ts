@@ -34,6 +34,7 @@ interface SessionRow {
   nudge_rounds: number;
   stuck_nudge_rounds: number;
   generation: number;
+  expected_heartbeat_at: number | null;
 }
 
 interface MessageRow {
@@ -90,6 +91,7 @@ function rowToSession(row: SessionRow): OpSession {
     nudgeRounds: row.nudge_rounds ?? 0,
     stuckNudgeRounds: row.stuck_nudge_rounds ?? 0,
     generation: row.generation ?? 0,
+    expectedHeartbeatAt: row.expected_heartbeat_at ?? undefined,
   };
 }
 
@@ -546,6 +548,11 @@ export class Store {
 
   async clearSessionPointers(issueUid: string): Promise<void> {
     await getDB().run("UPDATE {{op_sessions}} SET opencode_session_id = NULL WHERE issue_id = ?", [issueUid]);
+  }
+
+  /** Set or clear the processing-badge heartbeat deadline for a session. */
+  async setExpectedHeartbeat(sessionId: string, ms: number | null): Promise<void> {
+    await getDB().run("UPDATE {{op_sessions}} SET expected_heartbeat_at = ? WHERE uid = ?", [ms, sessionId]);
   }
 
   async markDaemonStatus(daemonId: number, status: "active" | "drained" | "dead"): Promise<void> {

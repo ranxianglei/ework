@@ -101,6 +101,12 @@ export class GiteaClient {
     );
   }
 
+  async listAiStatusBadges(status: string) {
+    return this.request<{ badges: Array<{ owner: string; repo: string; number: number; aiStatus: string; since: string | null }> }>(
+      "GET", `/ai-status?status=${encodeURIComponent(status)}`
+    );
+  }
+
   async listComments(owner: string, repo: string, issueNumber: number) {
     return this.request<
       Array<{ id: number; body: string; created_at: string; user: { login: string } }>

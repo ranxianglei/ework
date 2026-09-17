@@ -131,6 +131,9 @@ function migrateIssuesTable(db: Database): void {
   if (!have.has("ai_status")) {
     db.exec(applyPrefix("ALTER TABLE {{issues}} ADD COLUMN ai_status TEXT NOT NULL DEFAULT ''"));
   }
+  if (!have.has("ai_status_since")) {
+    db.exec(applyPrefix("ALTER TABLE {{issues}} ADD COLUMN ai_status_since TEXT NOT NULL DEFAULT ''"));
+  }
   if (!have.has("model")) {
     db.exec(applyPrefix("ALTER TABLE {{issues}} ADD COLUMN model TEXT NOT NULL DEFAULT ''"));
   }
@@ -430,6 +433,7 @@ async function migrateMysqlColumn(pool: Pool, table: string, column: string, ddl
 
 async function migrateMysqlIssuesAiStatus(pool: Pool): Promise<void> {
   await migrateMysqlColumn(pool, "issues", "ai_status", "ai_status VARCHAR(32) NOT NULL DEFAULT ''");
+  await migrateMysqlColumn(pool, "issues", "ai_status_since", "ai_status_since VARCHAR(64) NOT NULL DEFAULT ''");
   await migrateMysqlColumn(pool, "issues", "model", "model VARCHAR(128) NOT NULL DEFAULT ''");
   await migrateMysqlColumn(pool, "issues", "runtime", "runtime VARCHAR(32) NOT NULL DEFAULT ''");
   await migrateMysqlColumn(pool, "issues", "upstream_issue_number", "upstream_issue_number INT DEFAULT NULL");

@@ -40,6 +40,7 @@ import {
   postComment,
   setIssueState,
   updateIssueAiStatus,
+  listIssuesByAiStatus,
   updateIssueModel,
   updateIssueRuntime,
   listIssues,
@@ -116,6 +117,7 @@ import {
 import { classifyActor, type CommentView } from "./render/components";
 import { buildWebhooksPage } from "./views/webhooks";
 import { buildWebhookDeliveriesPage } from "./views/webhookDeliveries";
+import { buildBadgeMonitorPage, type DaemonBadgeReport, type DaemonBadgeEntry } from "./views/badgeMonitor";
 import { browseRemoteFile, proxyFileSince, RemoteFileError } from "./remote-file";
 import { buildProjectMembersPage } from "./views/projectMembers";
 import {
@@ -631,6 +633,14 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
       const sessionResetMs = Number(cfgKv[`sessionReset:${owner}/${repo}#${number}`]) || null;
       const concurrency = Number(cfgKv[`concurrency:${owner}/${repo}`]) || null;
       return json({ dispatchOff: globalOff || projectOff || issueOff, aiStatus, sessionResetMs, concurrency });
+    }
+    if (url.pathname === "/api/v1/ai-status" && req.method === "GET") {
+      const status = url.searchParams.get("status") ?? "";
+      if (!status) return json({ error: "status required" }, 400);
+      // Machine-facing badge enumeration for the daemon's stuck-badge sweep:
+      // every issue currently carrying the given ai_status, fleet-wide.
+      const badges = await listIssuesByAiStatus(status);
+      return json({ badges });
     }
     if (url.pathname === "/api/v1/wake-logins" && req.method === "GET") {
       const owner = url.searchParams.get("owner") ?? "";
@@ -1720,6 +1730,29 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
   if (url.pathname === "/admin/deliveries") {
     const deliveries = await listAllRecentDeliveries(100);
     return html(buildWebhookDeliveriesPage(ctx.user!, deliveries));
+  }
+
+  if (url.pathname === "/admin/badges") {
+    const webBadges = await listIssuesByAiStatus("processing");
+    const active = await getActiveDaemons();
+    const reports = await Promise.all(
+      active.map(async (d): Promise<DaemonBadgeReport> => {
+        try {
+          const res = await fetch(`${d.endpoint.replace(/\/$/, "")}/api/badges`, {
+            signal: AbortSignal.timeout(5_000),
+          });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const body = (await res.json()) as { checkedAt: number; intervalMs: number; entries: DaemonBadgeEntry[] };
+          return { daemonId: d.id, endpoint: d.endpoint, reachable: true, ...body };
+        } catch {
+          return {
+            daemonId: d.id, endpoint: d.endpoint, reachable: false,
+            checkedAt: Date.now(), intervalMs: 0, entries: [],
+          };
+        }
+      }),
+    );
+    return html(buildBadgeMonitorPage(ctx.user!, webBadges, reports, Date.now()));
   }
 
   const adminPatRevoke = url.pathname.match(/^\/admin\/tokens\/(\d+)\/revoke$/);

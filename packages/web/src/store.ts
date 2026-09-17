@@ -525,7 +525,36 @@ export async function setIssueState(
 }
 
 export async function updateIssueAiStatus(issueId: number, status: string): Promise<void> {
-  await getDB().run("UPDATE {{issues}} SET ai_status = ? WHERE id = ?", [status, issueId]);
+  const row = await getDB().get<{ ai_status: string }>("SELECT ai_status FROM {{issues}} WHERE id = ?", [issueId]);
+  if (!row) return;
+  if (row.ai_status === status) return;
+  // Stamp the change time only when the status actually flips — badge age
+  // (now - ai_status_since) drives the daemon's TTL arbitration.
+  await getDB().run("UPDATE {{issues}} SET ai_status = ?, ai_status_since = ? WHERE id = ?", [status, now(), issueId]);
+}
+
+export interface AiStatusBadgeRow {
+  owner: string;
+  repo: string;
+  number: number;
+  aiStatus: string;
+  since: string | null;
+}
+
+export async function listIssuesByAiStatus(status: string): Promise<AiStatusBadgeRow[]> {
+  const rows = await getDB().all<{
+    owner: string; name: string; number: number; ai_status: string; ai_status_since: string;
+  }>(
+    "SELECT p.owner AS owner, p.name AS name, i.number AS number, i.ai_status AS ai_status, i.ai_status_since AS ai_status_since FROM {{issues}} i JOIN {{projects}} p ON i.project_id = p.id WHERE i.ai_status = ? ORDER BY i.ai_status_since ASC",
+    [status],
+  );
+  return rows.map((r) => ({
+    owner: r.owner,
+    repo: r.name,
+    number: r.number,
+    aiStatus: r.ai_status,
+    since: r.ai_status_since || null,
+  }));
 }
 
 export async function getIssueAiStatusByNumber(owner: string, repo: string, number: number): Promise<string> {

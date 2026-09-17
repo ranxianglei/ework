@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS {{issues}} (
   updated_at VARCHAR(40) NOT NULL,
   closed_at  VARCHAR(40) DEFAULT NULL,
   ai_status  VARCHAR(32) NOT NULL DEFAULT '',
+  ai_status_since VARCHAR(64) NOT NULL DEFAULT '',
   model      VARCHAR(128) NOT NULL DEFAULT '',
   runtime      VARCHAR(32) NOT NULL DEFAULT '',
   upstream_issue_number INT DEFAULT NULL,

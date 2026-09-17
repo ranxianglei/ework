@@ -550,6 +550,14 @@ async function runMigrations(db: AsyncDatabase): Promise<void> {
     "generation",
     sqlite ? "generation INTEGER NOT NULL DEFAULT 0" : "generation INT NOT NULL DEFAULT 0"
   );
+  // Processing-badge heartbeat deadline (ms epoch). NULL = session not
+  // currently holding a processing badge; past due = badge must be treated
+  // as stale by the stuck-badge sweep regardless of other signals.
+  await ensureColumn(
+    tSessions,
+    "expected_heartbeat_at",
+    sqlite ? "expected_heartbeat_at INTEGER" : "expected_heartbeat_at BIGINT"
+  );
 
   // messages.model — per-message model override from the webhook payload.
   // Persisted so queued/nudged/recovered messages keep their model instead of
