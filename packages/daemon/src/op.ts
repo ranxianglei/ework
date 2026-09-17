@@ -354,6 +354,21 @@ export class Store {
   }
 
   /**
+   * Atomic infra-retry requeue: flip the message back to pending AND set the
+   * backoff hold in a single write. Two separate statements would leave a
+   * window where the message is claimable but its hold is not yet visible
+   * (status transitions clear retry_after), letting a racing daemon pull it
+   * out before the backoff elapses.
+   */
+  async requeueWithBackoff(id: string, error: string, retryAfterIso: string): Promise<void> {
+    const now = new Date().toISOString();
+    await getDB().run(
+      "UPDATE {{messages}} SET status = 'pending', pending_since = ?, retry_after = ?, error = ?, updated_at = ? WHERE uid = ?",
+      [now, retryAfterIso, error, now, id]
+    );
+  }
+
+  /**
    * Restart recovery: shift the pending clock of every pending message owned by
    * this daemon to now, so time the engine spent down does not count toward
    * stale-pending age. Scoped to owned issues — other daemons' queues are live.

@@ -1896,12 +1896,11 @@ export class Engine {
     await this.store.bumpInfraAttempts(msg.id);
     const delayMs = this.cfg.work.infraRetryBaseMs * 2 ** (attempt - 1);
     const until = new Date(Date.now() + delayMs);
-    await this.store.updateMessageStatus(
+    await this.store.requeueWithBackoff(
       msg.id,
-      "pending",
       `infra: ${kind} (auto-retry ${attempt}/${limit} after ${Math.round(delayMs / 1000)}s)`,
+      until.toISOString(),
     );
-    await this.store.setRetryAfter(msg.id, until.toISOString());
 
     if (attempt === 1) {
       const ref = this.sessionToRef(session, issue);

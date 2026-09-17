@@ -590,9 +590,13 @@ async function runMigrations(db: AsyncDatabase): Promise<void> {
     sqlite ? "retry_after TEXT" : "retry_after VARCHAR(40)"
   );
 
-  // Backfill pre-migration rows: no clock recorded yet, and created_at matches
-  // the legacy behaviour (age counted from creation) exactly.
-  await db.run(`UPDATE ${tMessages} SET pending_since = created_at WHERE pending_since IS NULL`);
+  // Backfill pre-migration pending rows: no clock recorded yet, and created_at
+  // matches the legacy behaviour (age counted from creation) exactly. Pending
+  // rows only — transitions out of pending null the clock on purpose, so
+  // non-pending rows must not be re-stamped on every boot.
+  await db.run(
+    `UPDATE ${tMessages} SET pending_since = created_at WHERE pending_since IS NULL AND status = 'pending'`
+  );
 
   // Index over owner_daemon_id — added after the column exists. SQLite tolerates
   // IF NOT EXISTS; MySQL lacks it, so we tolerate ER_DUP_KEYNAME (1061) on re-runs.
