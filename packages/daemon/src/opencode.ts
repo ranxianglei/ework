@@ -2966,12 +2966,16 @@ export class Engine {
     // failure window but never persisted has no message row — requeue it here.
     // Runs after the stuck-message pass so recovered in-flight work keeps
     // priority over backfilled new work.
+    let ownedIssueCount = -1;
+    let reconcileScanned = 0;
     try {
       const ownedIssues = await this.store.listOwnedIssues(this.daemonId);
+      ownedIssueCount = ownedIssues.length;
       for (const issue of ownedIssues) {
         if (issue.state === "closed") continue;
         const gate = await this.gateChecker(issue);
         if (gate.unreachable || !gate.allowed) continue;
+        reconcileScanned++;
         await this.reconcileWebComments(issue, report);
       }
     } catch (err) {
@@ -2986,6 +2990,13 @@ export class Engine {
     if (report.interrupted + report.requeued + report.delivered + report.backfilled + report.deferred > 0) {
       const counts = `interrupted=${report.interrupted} requeued=${report.requeued} delivered=${report.delivered} backfilled=${report.backfilled} deferred=${report.deferred} queued_now=${queuedNow}`;
       log.info(this.cfg.work.recoveryReport ? `[system] 🏷 ⚙️ restart recovery: ${counts}` : `restart recovery: ${counts}`);
+    } else {
+      // CI flake 35193047795 showed a recovery that finished with zero counts
+      // and zero log lines — impossible to attribute. A zero-count recovery
+      // with owned issues is always logged now so the next occurrence tells
+      // us whether reconcile ran against nothing (ownership broke) or scanned
+      // issues and skipped everything (candidate filtering broke).
+      log.info(`restart recovery: nothing to do (owned_issues=${ownedIssueCount}, reconcile_scanned=${reconcileScanned})`);
     }
 
     // Converge orphaned web statuses: a hard daemon death (host reboot, OOM,
@@ -3056,7 +3067,12 @@ export class Engine {
           skip = wakePolicySkips(this.cfg.daemon, c.author, kind, [c.author]);
         }
       }
-      if (skip) continue;
+      if (skip) {
+        // Post-floor + no message row = genuine failure-window candidate that
+        // only reconcile ever sees; skipping one silently is unattributable.
+        log.info(`engine: restart reconciliation skipped comment ${c.id} of ${scopeKey}#${issue.trackerIssueId} (wake policy: ${skip})`);
+        continue;
+      }
 
       let session = pickLastActive(sessions);
       if (!session) {

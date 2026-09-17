@@ -372,7 +372,20 @@ describe("restart recovery (ework#9)", () => {
     await engineB.recover();
 
     let rows = await messageRows();
-    expect(rows.filter((r) => r.source_comment_id === "wc-lost").length).toBe(1);
+    const lostCount = rows.filter((r) => r.source_comment_id === "wc-lost").length;
+    if (lostCount !== 1) {
+      // Flake run 35193047795: recover() returned with this row missing and
+      // nothing in the log explained why. Dump the ownership chain tables so
+      // the next occurrence pinpoints the broken link instead of guessing.
+      const db = getDB();
+      console.error("[recovery-flake-dump]", JSON.stringify({
+        daemons: db.all("SELECT * FROM {{daemons}}"),
+        issues: db.all("SELECT * FROM {{issues}}"),
+        sessions: db.all("SELECT * FROM {{op_sessions}}"),
+        messages: db.all("SELECT id, session_id, source_comment_id, status, created_at FROM {{messages}}"),
+      }, null, 2));
+    }
+    expect(lostCount).toBe(1);
     expect(rows.filter((r) => r.source_comment_id === "wc-old").length).toBe(0);
 
     // Idempotent: a second recovery pass must not duplicate the backfill.
