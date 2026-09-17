@@ -27,6 +27,11 @@ export async function initDB(cfg: Config): Promise<void> {
   } else {
     const { Database } = await import("bun:sqlite");
     const path = cfg.WORK_DB_PATH || `${process.env.HOME}/.local/share/ework-router/router.db`;
+    // sqlite creates the file but not parent dirs — a fresh $HOME (docker
+    // volume, new machine) dies with SQLITE_CANTOPEN without this.
+    const { mkdirSync } = await import("node:fs");
+    const { dirname } = await import("node:path");
+    mkdirSync(dirname(path), { recursive: true });
     sqliteDb = new Database(path, { create: true });
   }
 }
