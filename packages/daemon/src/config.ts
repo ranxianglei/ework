@@ -35,6 +35,8 @@ export const configSchema = z.object({
     binary: z.string().default("opencode"),
     cloneMode: z.enum(["worktree", "clone"]).default("worktree"),
     nodeModulesTtlDays: z.number().int().min(0).default(7),
+    workdirTtlDays: z.number().int().min(0).default(7),
+    minFreeMb: z.number().int().min(0).default(1024),
     baseWorkdir: z.string().default(
       `${process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share")}/ework-aio/opencode-workdir`
     ),
@@ -57,6 +59,11 @@ export const configSchema = z.object({
     maxConcurrentExplicit: z.boolean().default(false),
     heartbeatMs: z.coerce.number().int().positive().default(10_000),
     leaseTtlMs: z.coerce.number().int().positive().default(60_000),
+    // Infra-failure auto-retry budget (web unreachable / ENOSPC / signal-kill).
+    // Separate from content failures; 0 disables auto-retry.
+    infraRetryMax: z.coerce.number().int().nonnegative().default(3),
+    infraRetryBaseMs: z.coerce.number().int().positive().default(15_000),
+    recoveryReport: z.boolean().default(true),
     reconcileScopes: z.array(z.string()).default([]),
   }),
   db: z.object({
@@ -118,6 +125,11 @@ function readWorkSection() {
     maxConcurrentExplicit,
     heartbeatMs: process.env.WORK_DAEMON_HEARTBEAT_MS ? Number(process.env.WORK_DAEMON_HEARTBEAT_MS) : 10_000,
     leaseTtlMs: process.env.WORK_DAEMON_LEASE_TTL_MS ? Number(process.env.WORK_DAEMON_LEASE_TTL_MS) : 60_000,
+    infraRetryMax: process.env.WORK_INFRA_RETRY_MAX != null && process.env.WORK_INFRA_RETRY_MAX !== ""
+      ? Math.max(0, Math.trunc(Number(process.env.WORK_INFRA_RETRY_MAX)))
+      : 3,
+    infraRetryBaseMs: process.env.WORK_INFRA_RETRY_BASE_MS ? Math.max(1, Number(process.env.WORK_INFRA_RETRY_BASE_MS)) : 15_000,
+    recoveryReport: !(process.env.WORK_RECOVERY_REPORT === "false" || process.env.WORK_RECOVERY_REPORT === "0"),
     reconcileScopes: (process.env.WORK_RECONCILE_SCOPES ?? "").split(",").map((s) => s.trim()).filter(Boolean),
   };
 }
@@ -169,6 +181,8 @@ export function loadConfig(): Config {
         baseWorkdir: process.env.OPENCODE_BASE_WORKDIR ?? TEST_DEFAULTS.opencode.baseWorkdir,
         cloneMode: process.env.WORK_CLONE_MODE === "clone" ? "clone" : TEST_DEFAULTS.opencode.cloneMode,
         nodeModulesTtlDays: Number(process.env.WORK_NODE_MODULES_TTL_DAYS ?? 7) || 0,
+        workdirTtlDays: Number(process.env.WORK_WORKDIR_TTL_DAYS ?? 7) || 0,
+        minFreeMb: Number(process.env.WORK_MIN_FREE_MB ?? 1024) || 0,
         dbPath: process.env.OPENCODE_DB_PATH ?? `${process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share")}/opencode/opencode.db`,
         defaultModel: process.env.WORK_DEFAULT_MODEL ?? TEST_DEFAULTS.opencode.defaultModel,
         modelPool: (process.env.WORK_MODEL_POOL ?? "").split(",").map((s) => s.trim()).filter(Boolean),
@@ -226,6 +240,8 @@ export function loadConfig(): Config {
       baseWorkdir: process.env.OPENCODE_BASE_WORKDIR,
         cloneMode: process.env.WORK_CLONE_MODE === "clone" ? "clone" : "worktree",
         nodeModulesTtlDays: Number(process.env.WORK_NODE_MODULES_TTL_DAYS ?? 7) || 0,
+        workdirTtlDays: Number(process.env.WORK_WORKDIR_TTL_DAYS ?? 7) || 0,
+        minFreeMb: Number(process.env.WORK_MIN_FREE_MB ?? 1024) || 0,
       dbPath: process.env.OPENCODE_DB_PATH ?? `${process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share")}/opencode/opencode.db`,
       defaultModel: process.env.WORK_DEFAULT_MODEL ?? "",
       modelPool: (process.env.WORK_MODEL_POOL ?? "").split(",").map((s) => s.trim()).filter(Boolean),

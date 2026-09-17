@@ -61,6 +61,10 @@ function makeConfig(wakeLogins: string[]): Config {
   const cfg = loadConfig();
   return {
     ...cfg,
+    // Dead endpoint: the per-project wake allowlist is fetched from the web
+    // config center; a reachable host could admit authors the test expects
+    // to be gated (fail-closed keeps these assertions deterministic).
+    gitea: { ...cfg.gitea, url: "http://127.0.0.1:9" },
     opencode: { ...cfg.opencode, binary: FAKE_BIN, baseWorkdir: workdirBase },
     daemon: { ...cfg.daemon, wakeLogins, noWakeLogins: [], nonWakingAuthors: [] },
     work: { ...cfg.work, capacity: 4, maxConcurrent: 4, heartbeatMs: 10_000, leaseTtlMs: 60_000 },

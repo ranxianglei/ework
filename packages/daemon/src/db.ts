@@ -565,6 +565,44 @@ async function runMigrations(db: AsyncDatabase): Promise<void> {
     sqlite ? "model TEXT" : "model VARCHAR(128)"
   );
 
+  // messages.infra_attempts — retry budget for infrastructure failures (web
+  // unreachable / ENOSPC / child killed by signal). Kept separate from
+  // `attempts` on purpose: infra retries must not consume the content-failure
+  // budget (e.g. the single-shot model fallback guard).
+  await ensureColumn(
+    tMessages,
+    "infra_attempts",
+    sqlite ? "infra_attempts INTEGER NOT NULL DEFAULT 0" : "infra_attempts INT NOT NULL DEFAULT 0"
+  );
+
+  // messages.pending_since — when the message (re)entered the pending state.
+  // Stale-pending expiry ages from this instead of created_at, and recover()
+  // shifts it to now on daemon restart so downtime does not count toward age
+  // (a message cannot be consumed while the engine is down; replaying it is
+  // always the right move).
+  await ensureColumn(
+    tMessages,
+    "pending_since",
+    sqlite ? "pending_since TEXT" : "pending_since VARCHAR(40)"
+  );
+
+  // messages.retry_after — backoff hold for infra auto-retries. Pickup paths
+  // (claim, queue scans) skip the message while this timestamp is in the
+  // future; cleared whenever the message leaves or re-enters pending normally.
+  await ensureColumn(
+    tMessages,
+    "retry_after",
+    sqlite ? "retry_after TEXT" : "retry_after VARCHAR(40)"
+  );
+
+  // Backfill pre-migration pending rows: no clock recorded yet, and created_at
+  // matches the legacy behaviour (age counted from creation) exactly. Pending
+  // rows only — transitions out of pending null the clock on purpose, so
+  // non-pending rows must not be re-stamped on every boot.
+  await db.run(
+    `UPDATE ${tMessages} SET pending_since = created_at WHERE pending_since IS NULL AND status = 'pending'`
+  );
+
   // Index over owner_daemon_id — added after the column exists. SQLite tolerates
   // IF NOT EXISTS; MySQL lacks it, so we tolerate ER_DUP_KEYNAME (1061) on re-runs.
   if (sqlite) {

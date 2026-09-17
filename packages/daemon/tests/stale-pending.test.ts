@@ -87,9 +87,12 @@ const REF: TrackerRef = {
 
 const KEY = "gitea:ranxianglei/billion-context#361@ework-daemon";
 
+// Backdates BOTH creation and the pending clock: these tests model messages
+// that sat in the queue (pending) since that instant, which is what the
+// staleness guard ages from.
 async function backdate(uid: string, minutes: number): Promise<void> {
   const past = new Date(Date.now() - minutes * 60_000).toISOString();
-  await getDB().run("UPDATE {{messages}} SET created_at = ? WHERE uid = ?", [past, uid]);
+  await getDB().run("UPDATE {{messages}} SET created_at = ?, pending_since = ? WHERE uid = ?", [past, past, uid]);
 }
 
 async function eventually(assert: () => void | Promise<void>, timeoutMs = 2000): Promise<void> {
@@ -239,6 +242,52 @@ describe("boot-race tolerance (web unreachable at recover)", () => {
     const row = await store.getMessage(msg.id);
     expect(row?.status).toBe("failed");
     expect(row?.error).toContain("web gate: dispatch off");
+  });
+});
+
+describe("restart recovery (downtime does not age pending)", () => {
+  // The ework#5 incident: a message queued while the VM was down for disk
+  // expansion sat 32 min beyond the limit and was expired on boot without
+  // ever running. recover() must shift the pending clock so such messages
+  // replay instead of dying.
+  test("pending message older than the limit is replayed after restart, not expired", async () => {
+    const { engine, store, daemonId } = await bootEngine();
+    const issue = await store.findOrCreateIssue(REF, "ranxianglei/billion-context", "t");
+    await store.claimIssue(issue.id, daemonId);
+    const session = await store.createSession(issue.id, "ework-daemon");
+    const msg = await store.createMessage(session.id, "[SYSTEM FORWARD] queued while the engine was down");
+    await backdate(msg.id, 45);
+
+    await (engine as unknown as { recover: () => Promise<void> }).recover();
+
+    await eventually(async () => {
+      const row = await store.getMessage(msg.id);
+      if (row?.status !== "running") throw new Error(`status=${row?.status} error=${row?.error}`);
+    });
+  });
+
+  test("clock shift only touches this daemon's issues (multi-machine safety)", async () => {
+    const { engine, store } = await bootEngine();
+    const otherDaemonId = await store.registerDaemon("host-other", "127.0.0.1:9", 4, 60_000);
+
+    const otherRef: TrackerRef = {
+      trackerType: "gitea",
+      scope: { owner: "ranxianglei", repo: "other-repo" },
+      issueId: "77",
+    };
+    const otherIssue = await store.findOrCreateIssue(otherRef, "ranxianglei/other-repo", "t");
+    await store.claimIssue(otherIssue.id, otherDaemonId);
+    const otherSession = await store.createSession(otherIssue.id, "ework-daemon");
+    const otherMsg = await store.createMessage(otherSession.id, "neighbor's queued work");
+    await backdate(otherMsg.id, 45);
+
+    await (engine as unknown as { recover: () => Promise<void> }).recover();
+
+    const row = await store.getMessage(otherMsg.id);
+    expect(row?.status).toBe("pending");
+    // Still aged from its original instant — a live neighbor's queue must not
+    // have its clock reset by our restart.
+    expect((row?.pendingSince ?? new Date(0)).getTime()).toBeLessThan(Date.now() - 30 * 60_000);
   });
 });
 

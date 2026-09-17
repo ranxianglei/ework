@@ -3,3 +3,7 @@
 import { isolateTestDbEnv } from "./env-isolation";
 
 isolateTestDbEnv();
+
+// The host may run tests inside a live daemon environment; the production
+// wake whitelist would silently gate test authors out of dispatch.
+delete process.env.WORK_WAKE_LOGINS;

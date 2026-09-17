@@ -56,7 +56,7 @@ beforeEach(async () => {
   }
   await db.exec(mysql ? "SET FOREIGN_KEY_CHECKS = 1" : "PRAGMA foreign_keys = ON");
 
-  workdirBase = `/tmp/ework-daemon-stranded-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  workdirBase = `${tmpdir()}/ework-daemon-stranded-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   mkdirSync(workdirBase, { recursive: true });
 
   opencodeDbPath = join(workdirBase, "opencode.db");
@@ -127,7 +127,7 @@ function makeConfig(): Config {
   return {
     ...cfg,
     opencode: { ...cfg.opencode, binary: FAKE_BIN, baseWorkdir: workdirBase, dbPath: opencodeDbPath },
-    work: { capacity: 4, maxConcurrent: 4, maxConcurrentExplicit: false, heartbeatMs: HEARTBEAT_MS, leaseTtlMs: LEASE_TTL_MS, reconcileScopes: [] },
+    work: { ...cfg.work, capacity: 4, maxConcurrent: 4, maxConcurrentExplicit: false, heartbeatMs: HEARTBEAT_MS, leaseTtlMs: LEASE_TTL_MS, reconcileScopes: [] },
   };
 }
 

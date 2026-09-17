@@ -13,6 +13,8 @@ const KEYS = [
   "BOT_USERNAME",
   "BOT_TOKEN",
   "OPENCODE_BASE_WORKDIR",
+  "WORK_WORKDIR_TTL_DAYS",
+  "WORK_MIN_FREE_MB",
   "WORK_WAKE_KINDS",
   "WORK_WAKE_LOGINS",
   "WORK_NO_WAKE_LOGINS",
@@ -80,5 +82,35 @@ describe("production config env mapping (wake policy)", () => {
 
     expect(cfg.env).toBe("test");
     expect(cfg.daemon.wakeKinds).toEqual(["human", "bot"]);
+  });
+});
+
+describe("workdir GC + disk watermark env mapping (issue #4)", () => {
+  test("defaults: workdirTtlDays=7, minFreeMb=1024 (production mode)", () => {
+    setProductionBasics();
+
+    const cfg = loadConfig();
+
+    expect(cfg.opencode.workdirTtlDays).toBe(7);
+    expect(cfg.opencode.minFreeMb).toBe(1024);
+  });
+
+  test("defaults hold in test mode too", () => {
+    const cfg = loadConfig();
+
+    expect(cfg.env).toBe("test");
+    expect(cfg.opencode.workdirTtlDays).toBe(7);
+    expect(cfg.opencode.minFreeMb).toBe(1024);
+  });
+
+  test("env overrides: WORK_WORKDIR_TTL_DAYS=0 disables GC, WORK_MIN_FREE_MB is honored", () => {
+    setProductionBasics();
+    process.env.WORK_WORKDIR_TTL_DAYS = "0";
+    process.env.WORK_MIN_FREE_MB = "512";
+
+    const cfg = loadConfig();
+
+    expect(cfg.opencode.workdirTtlDays).toBe(0);
+    expect(cfg.opencode.minFreeMb).toBe(512);
   });
 });
