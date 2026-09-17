@@ -133,7 +133,7 @@ function makeConfig(): Config {
   return {
     ...cfg,
     opencode: { ...cfg.opencode, binary: FAKE_BIN, baseWorkdir: workdirBase },
-    work: { ...cfg.work, capacity: 4, maxConcurrent: 4, maxConcurrentExplicit: false, heartbeatMs: HEARTBEAT_MS, leaseTtlMs: LEASE_TTL_MS },
+    work: { ...cfg.work, capacity: 4, maxConcurrent: 4, maxConcurrentExplicit: false, heartbeatMs: HEARTBEAT_MS, leaseTtlMs: LEASE_TTL_MS, reconcileScopes: [] },
   };
 }
 

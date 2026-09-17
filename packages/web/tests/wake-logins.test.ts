@@ -1,5 +1,7 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { join } from "node:path";
+import { openSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { addProjectMember, createIssue, createProject, ensureUser } from "../src/store";
 import { initDB } from "../src/db";
 
@@ -23,6 +25,7 @@ async function login(): Promise<void> {
 }
 
 let child: ReturnType<typeof Bun.spawn> | null = null;
+let serverStderrPath = "";
 
 async function waitUntilUp(): Promise<void> {
   for (let i = 0; i < 80; i++) {
@@ -38,6 +41,8 @@ async function waitUntilUp(): Promise<void> {
 
 beforeAll(async () => {
   await initDB();
+  serverStderrPath = join(tmpdir(), `ework-web-server-${process.pid}-${PORT}.stderr.log`);
+  const serverStderrFd = openSync(serverStderrPath, "w");
   child = Bun.spawn(["bun", "src/index.ts"], {
     cwd: join(import.meta.dir, ".."),
     env: {
@@ -47,15 +52,25 @@ beforeAll(async () => {
       WORK_AUTOWIRE_ACTIVE: "false",
     },
     stdout: "ignore",
-    stderr: "ignore",
+    stderr: serverStderrFd,
   });
-  await waitUntilUp();
+  try {
+    await waitUntilUp();
+  } catch (err) {
+    // The server's own output was previously discarded (stderr: "ignore"), so
+    // a failed boot surfaced as a bare 20s timeout with zero diagnostics.
+    let tail = "";
+    try { tail = readFileSync(serverStderrPath, "utf8").slice(-2000); } catch { /* no output */ }
+    const base = err instanceof Error ? err.message : String(err);
+    throw new Error(`${base}\n--- spawned server stderr (tail) ---\n${tail || "(no output captured)"}`);
+  }
   await login();
 });
 
 afterAll(() => {
   child?.kill();
   child?.exited;
+  try { rmSync(serverStderrPath, { force: true }); } catch {}
 });
 
 const OWNER = "dog";

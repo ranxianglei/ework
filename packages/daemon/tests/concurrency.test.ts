@@ -127,7 +127,7 @@ function makeConfig(maxConcurrent: number): Config {
   return {
     ...cfg,
     opencode: { ...cfg.opencode, binary: FAKE_BIN, baseWorkdir: workdirBase },
-    work: { ...cfg.work, capacity: 4, maxConcurrent, maxConcurrentExplicit: true, heartbeatMs: HEARTBEAT_MS, leaseTtlMs: LEASE_TTL_MS },
+    work: { ...cfg.work, capacity: 4, maxConcurrent, maxConcurrentExplicit: true, heartbeatMs: HEARTBEAT_MS, leaseTtlMs: LEASE_TTL_MS, reconcileScopes: [] },
   };
 }
 

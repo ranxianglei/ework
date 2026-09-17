@@ -120,6 +120,14 @@ export function sessionToTrackerRef(session: OpSession, issue: Issue): TrackerRe
   };
 }
 
+/** True for SQLite/MySQL foreign-key violations (message- or errno-based). */
+export function isForeignKeyError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const e = err as { message?: string; errno?: number };
+  if (typeof e.message === "string" && /FOREIGN KEY constraint failed/i.test(e.message)) return true;
+  return e.errno === 1452; // MySQL ER_NO_REFERENCED_ROW_2
+}
+
 // ─── Store (async DAO over the global AsyncDatabase from db.ts) ───
 
 export class Store {
@@ -562,6 +570,19 @@ export class Store {
     const res = await db.run(
       "UPDATE {{issues}} SET owner_daemon_id = NULL WHERE owner_daemon_id IN (SELECT id FROM {{daemons}} WHERE last_heartbeat < ?)",
       [cutoff]
+    );
+    return res.changes;
+  }
+
+  /**
+   * Clear owner refs pointing at daemons rows that no longer exist (wiped or
+   * deleted). Such refs are permanent deadlocks: claimIssue only accepts
+   * owner IS NULL, and releaseDeadOwners only matches existing-but-stale
+   * rows. (ranxianglei/ework#7: an emptied daemons table stranded every thread.)
+   */
+  async releaseDanglingOwners(): Promise<number> {
+    const res = await getDB().run(
+      "UPDATE {{issues}} SET owner_daemon_id = NULL WHERE owner_daemon_id IS NOT NULL AND owner_daemon_id NOT IN (SELECT id FROM {{daemons}})"
     );
     return res.changes;
   }

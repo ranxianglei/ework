@@ -164,8 +164,10 @@ export async function handleGiteaApi(
     const state = (url.searchParams.get("state") ?? "open") as "open" | "closed" | "all";
     const limitRaw = Number(url.searchParams.get("limit") ?? 50);
     const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 200) : 50;
+    const pageRaw = Number(url.searchParams.get("page") ?? 1);
+    const page = Number.isFinite(pageRaw) && pageRaw >= 1 ? Math.floor(pageRaw) : 1;
     try {
-      const rows = await listAllIssues({ q, state, limit, viewerLogin: user.login, viewerIsAdmin: caller.is_admin === 1 && user.is_admin === 1 });
+      const rows = await listAllIssues({ q, state, limit, offset: (page - 1) * limit, viewerLogin: user.login, viewerIsAdmin: caller.is_admin === 1 && user.is_admin === 1 });
       const body = [];
       for (const row of rows) {
         const project = await getProject(row.project_owner, row.project_name);

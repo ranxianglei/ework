@@ -64,6 +64,7 @@ export const configSchema = z.object({
     infraRetryMax: z.coerce.number().int().nonnegative().default(3),
     infraRetryBaseMs: z.coerce.number().int().positive().default(15_000),
     recoveryReport: z.boolean().default(true),
+    reconcileScopes: z.array(z.string()).default([]),
   }),
   db: z.object({
     driver: z.enum(["sqlite", "mysql"]).default("sqlite"),
@@ -129,6 +130,7 @@ function readWorkSection() {
       : 3,
     infraRetryBaseMs: process.env.WORK_INFRA_RETRY_BASE_MS ? Math.max(1, Number(process.env.WORK_INFRA_RETRY_BASE_MS)) : 15_000,
     recoveryReport: !(process.env.WORK_RECOVERY_REPORT === "false" || process.env.WORK_RECOVERY_REPORT === "0"),
+    reconcileScopes: (process.env.WORK_RECONCILE_SCOPES ?? "").split(",").map((s) => s.trim()).filter(Boolean),
   };
 }
 

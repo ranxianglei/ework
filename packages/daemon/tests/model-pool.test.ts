@@ -133,7 +133,7 @@ function makeConfig(pool: string[]): Config {
       modelPool: pool,
       modelCooldownMs: 60_000,
     },
-    work: { ...cfg.work, capacity: 4, maxConcurrent: 2, maxConcurrentExplicit: true, heartbeatMs: HEARTBEAT_MS, leaseTtlMs: LEASE_TTL_MS },
+    work: { ...cfg.work, capacity: 4, maxConcurrent: 2, maxConcurrentExplicit: true, heartbeatMs: HEARTBEAT_MS, leaseTtlMs: LEASE_TTL_MS, reconcileScopes: [] },
   };
 }
 

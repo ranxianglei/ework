@@ -123,7 +123,7 @@ function makeConfig(binary: string): Config {
   return {
     ...cfg,
     opencode: { ...cfg.opencode, binary, baseWorkdir: workdirBase },
-    work: { ...cfg.work, capacity: 4, maxConcurrent: 4, maxConcurrentExplicit: true, heartbeatMs: HEARTBEAT_MS, leaseTtlMs: LEASE_TTL_MS },
+    work: { ...cfg.work, capacity: 4, maxConcurrent: 4, maxConcurrentExplicit: true, heartbeatMs: HEARTBEAT_MS, leaseTtlMs: LEASE_TTL_MS, reconcileScopes: [] },
   };
 }
 
