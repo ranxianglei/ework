@@ -26,7 +26,7 @@ function makeConfig(): Config {
   return {
     ...cfg,
     opencode: { ...cfg.opencode, binary: "/bin/true", baseWorkdir: workdirBase },
-    work: { capacity: 4, maxConcurrent: 4, maxConcurrentExplicit: false, heartbeatMs: 60_000, leaseTtlMs: 60_000, reconcileScopes: [] },
+    work: { ...cfg.work, capacity: 4, maxConcurrent: 4, maxConcurrentExplicit: false, heartbeatMs: 60_000, leaseTtlMs: 60_000, reconcileScopes: [] },
   };
 }
 
