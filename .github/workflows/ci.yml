@@ -136,11 +136,28 @@ jobs:
           # All three supervised programs must reach RUNNING (router used to
           # FATAL on a fresh volume: SQLITE_CANTOPEN, no parent dirs).
           # NB: supervisord quotes program names in "spawned:" lines but not
-          # in "success: <prog> entered RUNNING state".
-          for prog in ework-web ework-daemon ework-router; do
-            grep -q "success: ${prog} entered RUNNING state" /tmp/smoke.log \
-              || { echo "${prog} never entered RUNNING state"; exit 1; }
+          # in "success: <prog> entered RUNNING state". That line only appears
+          # startsecs (2s) AFTER spawn, and the web-up gate above can pass in
+          # ~1s — poll with a deadline instead of asserting immediately
+          # (immediate assert raced startsecs and flaked on run 35192160955).
+          running_ok=0
+          deadline=$((SECONDS + 45))
+          while (( SECONDS < deadline )); do
+            docker logs ework-smoke > /tmp/smoke.log 2>&1
+            if grep -q "success: ework-web entered RUNNING state" /tmp/smoke.log \
+              && grep -q "success: ework-daemon entered RUNNING state" /tmp/smoke.log \
+              && grep -q "success: ework-router entered RUNNING state" /tmp/smoke.log; then
+              running_ok=1
+              break
+            fi
+            if grep -q "gave up: ework-router" /tmp/smoke.log; then break; fi
+            sleep 2
           done
+          if [[ "$running_ok" != 1 ]]; then
+            echo "supervised programs did not all reach RUNNING state within 45s"
+            tail -40 /tmp/smoke.log
+            exit 1
+          fi
           ! grep -q "gave up: ework-router" /tmp/smoke.log || { echo "ework-router gave up (fatal loop)"; exit 1; }
 
       - name: Dump logs on failure
