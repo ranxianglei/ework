@@ -35,6 +35,8 @@ export const configSchema = z.object({
     binary: z.string().default("opencode"),
     cloneMode: z.enum(["worktree", "clone"]).default("worktree"),
     nodeModulesTtlDays: z.number().int().min(0).default(7),
+    workdirTtlDays: z.number().int().min(0).default(7),
+    minFreeMb: z.number().int().min(0).default(1024),
     baseWorkdir: z.string().default(
       `${process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share")}/ework-aio/opencode-workdir`
     ),
@@ -167,6 +169,8 @@ export function loadConfig(): Config {
         baseWorkdir: process.env.OPENCODE_BASE_WORKDIR ?? TEST_DEFAULTS.opencode.baseWorkdir,
         cloneMode: process.env.WORK_CLONE_MODE === "clone" ? "clone" : TEST_DEFAULTS.opencode.cloneMode,
         nodeModulesTtlDays: Number(process.env.WORK_NODE_MODULES_TTL_DAYS ?? 7) || 0,
+        workdirTtlDays: Number(process.env.WORK_WORKDIR_TTL_DAYS ?? 7) || 0,
+        minFreeMb: Number(process.env.WORK_MIN_FREE_MB ?? 1024) || 0,
         dbPath: process.env.OPENCODE_DB_PATH ?? `${process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share")}/opencode/opencode.db`,
         defaultModel: process.env.WORK_DEFAULT_MODEL ?? TEST_DEFAULTS.opencode.defaultModel,
         modelPool: (process.env.WORK_MODEL_POOL ?? "").split(",").map((s) => s.trim()).filter(Boolean),
@@ -224,6 +228,8 @@ export function loadConfig(): Config {
       baseWorkdir: process.env.OPENCODE_BASE_WORKDIR,
         cloneMode: process.env.WORK_CLONE_MODE === "clone" ? "clone" : "worktree",
         nodeModulesTtlDays: Number(process.env.WORK_NODE_MODULES_TTL_DAYS ?? 7) || 0,
+        workdirTtlDays: Number(process.env.WORK_WORKDIR_TTL_DAYS ?? 7) || 0,
+        minFreeMb: Number(process.env.WORK_MIN_FREE_MB ?? 1024) || 0,
       dbPath: process.env.OPENCODE_DB_PATH ?? `${process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share")}/opencode/opencode.db`,
       defaultModel: process.env.WORK_DEFAULT_MODEL ?? "",
       modelPool: (process.env.WORK_MODEL_POOL ?? "").split(",").map((s) => s.trim()).filter(Boolean),

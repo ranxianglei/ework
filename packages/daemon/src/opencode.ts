@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync, unlinkSync, rmdirSync, readdirSync, existsSyn
 import { join, dirname, resolve, isAbsolute } from "path";
 import { homedir } from "os";
 import { log } from "./logger";
-import { listBusyOpencodeWorkdirs, purgeStaleNodeModules } from "./workdir-gc";
+import { freeSpaceMb, listBusyOpencodeWorkdirs, purgeStaleNodeModules, purgeStaleWorkdirs, shouldBlockSpawn } from "./workdir-gc";
 import type { Config } from "./config";
 import type { Store } from "./op";
 import type { IssueTracker, TrackerRef, TrackerEvent, TrackerComment, Issue, OpSession, Message } from "./trackers/types";
@@ -1673,6 +1673,26 @@ export class Engine {
     const ref = this.sessionToRef(session, issue);
     const tracker = this.getTracker(issue.trackerType);
 
+    // Disk watermark gate (incident 2026-09-17): spawning into a near-full
+    // filesystem dies mid-run with ENOSPC and strands the session. Refuse
+    // up-front and tell the user instead.
+    if (this.cfg.opencode.minFreeMb > 0) {
+      const freeMb = freeSpaceMb(workdir);
+      if (shouldBlockSpawn(freeMb, this.cfg.opencode.minFreeMb)) {
+        log.warn(`engine: spawn blocked for ${k} — ${freeMb}MB free < ${this.cfg.opencode.minFreeMb}MB watermark`);
+        await tracker.createComment(
+          ref,
+          `[system] ⚠️ ${this.sessionRef(session)} spawn refused: only ${freeMb}MB free on disk (< ${this.cfg.opencode.minFreeMb}MB watermark). Free up space and post again.`,
+        ).catch((err) => log.error(`engine: watermark notice failed for ${k}:`, (err as Error).message));
+        await this.store.updateMessageStatus(msg.id, "failed", `disk watermark: ${freeMb}MB < ${this.cfg.opencode.minFreeMb}MB`);
+        this.running.delete(k);
+        this.currentMessage.delete(k);
+        this.currentModel.delete(k);
+        void this.dequeueAfterGate(k, session, issue);
+        return;
+      }
+    }
+
     let resumeSessionId = session.opencodeSessionId;
     if (!resumeSessionId) {
       const fromStrategy = await this.takeover.resumeOpenCodeSession(session);
@@ -2324,13 +2344,28 @@ export class Engine {
       log.error("engine: releaseDeadOwners failed:", (err as Error).message);
     }
 
-    const gcTtlMs = this.cfg.opencode.nodeModulesTtlDays * 24 * 60 * 60 * 1000;
-    if (gcTtlMs > 0 && Date.now() - this.lastWorkdirGcAt > 24 * 60 * 60 * 1000) {
+    const nmTtlMs = this.cfg.opencode.nodeModulesTtlDays * 24 * 60 * 60 * 1000;
+    const wdTtlMs = this.cfg.opencode.workdirTtlDays * 24 * 60 * 60 * 1000;
+    if ((nmTtlMs > 0 || wdTtlMs > 0) && Date.now() - this.lastWorkdirGcAt > 24 * 60 * 60 * 1000) {
       this.lastWorkdirGcAt = Date.now();
       try {
+        // busy cwds cover live processes from ANY daemon sharing baseWorkdir.
         const busy = await listBusyOpencodeWorkdirs();
-        const removed = await purgeStaleNodeModules(this.cfg.opencode.baseWorkdir, gcTtlMs, busy);
-        if (removed > 0) log.info(`workdir-gc: removed ${removed} node_modules dir(s) older than ${this.cfg.opencode.nodeModulesTtlDays}d`);
+        if (nmTtlMs > 0) {
+          const removed = await purgeStaleNodeModules(this.cfg.opencode.baseWorkdir, nmTtlMs, busy);
+          if (removed > 0) log.info(`workdir-gc: removed ${removed} node_modules dir(s) older than ${this.cfg.opencode.nodeModulesTtlDays}d`);
+        }
+        if (wdTtlMs > 0) {
+          // Running judgment comes from engine/session state, never mtime
+          // freshness: a stale-but-running workdir must survive, a fresh-but-
+          // idle one may be reclaimed after the TTL.
+          const protectedDirs: string[] = [...busy];
+          for (const s of await this.store.listNonIdleSessions()) {
+            if (s.state === "running" && s.workdir) protectedDirs.push(s.workdir);
+          }
+          const removed = await purgeStaleWorkdirs(this.cfg.opencode.baseWorkdir, wdTtlMs, protectedDirs);
+          if (removed > 0) log.info(`workdir-gc: removed ${removed} issue workdir(s) older than ${this.cfg.opencode.workdirTtlDays}d`);
+        }
       } catch (err) {
         log.warn("workdir-gc failed:", (err as Error).message);
       }

@@ -1,4 +1,5 @@
-import { readdir, stat, rm } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { readdir, stat, rm, realpath } from "node:fs/promises";
 import { join } from "node:path";
 
 /**
@@ -62,6 +63,129 @@ function isBusy(nodeModulesDir: string, busy: Set<string>): boolean {
     if (cwd === repoRoot || cwd.startsWith(repoRoot + "/")) return true;
   }
   return false;
+}
+
+/**
+ * Full issue-workdir GC.
+ *
+ * purgeStaleNodeModules only reclaims installs; the checkout/worktree itself
+ * (including .git) was never reclaimed, so closed issues accumulated 36GB+ of
+ * dead workdirs until the disk filled up (incident 2026-09-17: ENOSPC killed
+ * spawns and took the whole fleet down). This deletes entire per-issue
+ * workdirs whose effective mtime is older than ttlMs, skipping anything in
+ * protectedDirs (running sessions / live process cwds).
+ *
+ * Layout assumption: <root>/<owner>--<repo>/<issueId>/<sessionName> (the
+ * default RecloneStrategy template). Custom workdirTemplates that deviate
+ * from this shape are left alone — the node_modules pass still covers them.
+ */
+
+/** Max of the dir's own mtime and its immediate children's mtimes. */
+async function effectiveMtimeMs(dir: string): Promise<number | null> {
+  let newest = 0;
+  const touch = async (p: string): Promise<void> => {
+    try {
+      const s = await stat(p);
+      if (s.mtimeMs > newest) newest = s.mtimeMs;
+    } catch { /* entry vanished mid-walk */ }
+  };
+  await touch(dir);
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  for (const e of entries) {
+    await touch(join(dir, e.name));
+  }
+  return newest > 0 ? newest : null;
+}
+
+function isProtected(issueDirReal: string, protectedDirs: Set<string>): boolean {
+  if (protectedDirs.has(issueDirReal)) return true;
+  for (const p of protectedDirs) {
+    // p inside the issue dir (a live session workdir), or the issue dir
+    // under an ancestor that is itself protected.
+    if (p.startsWith(issueDirReal + "/") || issueDirReal.startsWith(p + "/")) return true;
+  }
+  return false;
+}
+
+export async function purgeStaleWorkdirs(
+  root: string,
+  ttlMs: number,
+  protectedDirs: Iterable<string>,
+  now = Date.now(),
+): Promise<number> {
+  if (ttlMs <= 0) return 0;
+  const protectedSet = new Set<string>();
+  for (const p of protectedDirs) {
+    try {
+      protectedSet.add(await realpath(p));
+    } catch { /* already gone — nothing to protect */ }
+  }
+  let repoEntries;
+  try {
+    repoEntries = await readdir(root, { withFileTypes: true });
+  } catch {
+    return 0;
+  }
+  let removed = 0;
+  for (const e of repoEntries) {
+    if (!e.isDirectory() || e.name.startsWith(".")) continue; // skips .refs.git etc.
+    const repoDir = join(root, e.name);
+    let issueEntries;
+    try {
+      issueEntries = await readdir(repoDir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const ie of issueEntries) {
+      if (!ie.isDirectory() || ie.name.startsWith(".")) continue;
+      const issueDir = join(repoDir, ie.name);
+      let issueDirReal: string;
+      try {
+        issueDirReal = await realpath(issueDir);
+      } catch {
+        continue;
+      }
+      if (isProtected(issueDirReal, protectedSet)) continue;
+      const mtimeMs = await effectiveMtimeMs(issueDir);
+      if (mtimeMs === null || now - mtimeMs < ttlMs) continue;
+      try {
+        await rm(issueDir, { recursive: true, force: true });
+        removed++;
+      } catch { /* best-effort: next cycle retries */ }
+    }
+  }
+  return removed;
+}
+
+/**
+ * Free space in MB on the filesystem holding `path`, or null when it cannot
+ * be measured (no df binary, permission errors, timeout). Callers must treat
+ * null as "unknown → do not block". Bun has no statfs binding, so we shell
+ * out like listBusyOpencodeWorkdirs does with pgrep; df -P gives POSIX
+ * single-line output whose 4th column is 1K blocks available to unprivileged
+ * users.
+ */
+export function freeSpaceMb(path: string): number | null {
+  try {
+    const out = execFileSync("df", ["-kP", path], { timeout: 5000, stdio: ["ignore", "pipe", "ignore"] })
+      .toString().trim().split("\n").pop()?.trim();
+    const availKb = Number(out?.split(/\s+/)[3]);
+    if (!out || !Number.isFinite(availKb)) return null;
+    return Math.floor(availKb / 1024);
+  } catch {
+    return null;
+  }
+}
+
+/** Spawn watermark decision: block only when measured AND below floor. */
+export function shouldBlockSpawn(freeMb: number | null, minFreeMb: number): boolean {
+  if (minFreeMb <= 0 || freeMb === null) return false;
+  return freeMb < minFreeMb;
 }
 
 export async function purgeStaleNodeModules(
