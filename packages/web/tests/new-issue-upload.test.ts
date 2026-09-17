@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, openSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import {
   addProjectMember, createAttachment, createProject, createUser,
@@ -26,6 +26,7 @@ async function login(): Promise<void> {
 
 let child: ReturnType<typeof Bun.spawn> | null = null;
 let attRoot: string;
+let serverStderrPath = "";
 
 async function waitUntilUp(): Promise<void> {
   for (let i = 0; i < 80; i++) {
@@ -44,6 +45,8 @@ beforeAll(async () => {
   const admin = await createUser({ login: "up-admin", password: "password123", is_admin: true });
   await ensureUser("up-writer", "human");
   attRoot = mkdtempSync(join(tmpdir(), "ework-att-"));
+  serverStderrPath = join(tmpdir(), `ework-web-server-${process.pid}-${PORT}.stderr.log`);
+  const serverStderrFd = openSync(serverStderrPath, "w");
   child = Bun.spawn(["bun", "src/index.ts"], {
     cwd: join(import.meta.dir, ".."),
     env: {
@@ -56,9 +59,18 @@ beforeAll(async () => {
       WORK_WEBHOOK_SECRET: "whsec-test",
     },
     stdout: "ignore",
-    stderr: "ignore",
+    stderr: serverStderrFd,
   });
-  await waitUntilUp();
+  try {
+    await waitUntilUp();
+  } catch (err) {
+    // The server's own output was previously discarded (stderr: "ignore"), so
+    // a failed boot surfaced as a bare 20s timeout with zero diagnostics.
+    let tail = "";
+    try { tail = readFileSync(serverStderrPath, "utf8").slice(-2000); } catch { /* no output */ }
+    const base = err instanceof Error ? err.message : String(err);
+    throw new Error(`${base}\n--- spawned server stderr (tail) ---\n${tail || "(no output captured)"}`);
+  }
   await login();
   const p = await getProject("up-owner", REPO);
   if (p) {
@@ -70,6 +82,7 @@ beforeAll(async () => {
 afterAll(() => {
   child?.kill();
   rmSync(attRoot, { recursive: true, force: true });
+  try { rmSync(serverStderrPath, { force: true }); } catch {}
 });
 
 const PNG_1PX = Buffer.from(

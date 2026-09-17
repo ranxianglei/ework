@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, openSync, readFileSync, rmSync } from "node:fs";
 import { initDB } from "../src/db";
 
 // GitHub-synced comments embed remote screenshots (user-attachments). The
@@ -12,6 +12,7 @@ const BASE = `http://127.0.0.1:${PORT}`;
 
 let child: ReturnType<typeof Bun.spawn> | null = null;
 let attRoot: string;
+let serverStderrPath = "";
 
 async function waitUntilUp(): Promise<void> {
   for (let i = 0; i < 80; i++) {
@@ -28,6 +29,8 @@ async function waitUntilUp(): Promise<void> {
 beforeAll(async () => {
   await initDB();
   attRoot = mkdtempSync(join(tmpdir(), "ework-csp-"));
+  serverStderrPath = join(tmpdir(), `ework-web-server-${process.pid}-${PORT}.stderr.log`);
+  const serverStderrFd = openSync(serverStderrPath, "w");
   child = Bun.spawn(["bun", "src/index.ts"], {
     cwd: join(import.meta.dir, ".."),
     env: {
@@ -40,14 +43,24 @@ beforeAll(async () => {
       WORK_WEBHOOK_SECRET: "whsec-test",
     },
     stdout: "ignore",
-    stderr: "ignore",
+    stderr: serverStderrFd,
   });
-  await waitUntilUp();
+  try {
+    await waitUntilUp();
+  } catch (err) {
+    // The server's own output was previously discarded (stderr: "ignore"), so
+    // a failed boot surfaced as a bare 20s timeout with zero diagnostics.
+    let tail = "";
+    try { tail = readFileSync(serverStderrPath, "utf8").slice(-2000); } catch { /* no output */ }
+    const base = err instanceof Error ? err.message : String(err);
+    throw new Error(`${base}\n--- spawned server stderr (tail) ---\n${tail || "(no output captured)"}`);
+  }
 });
 
 afterAll(() => {
   child?.kill();
   try { rmSync(attRoot, { recursive: true, force: true }); } catch {}
+  try { rmSync(serverStderrPath, { force: true }); } catch {}
 });
 
 test("img-src allows remote https images (GitHub-synced screenshots)", async () => {
