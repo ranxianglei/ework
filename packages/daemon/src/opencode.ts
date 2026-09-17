@@ -12,6 +12,7 @@ import type { RuntimeBackend, RuntimeHandle } from "./runtime/types";
 import { OpencodeBackend } from "./runtime/opencode-backend";
 import { PiBackend } from "./runtime/pi-backend";
 import { downloadIssueAttachments, attachmentNote } from "./attachments";
+import { reconcileWebIssues } from "./sync/web-reconcile";
 
 // ─── Types ───
 
@@ -545,6 +546,7 @@ export class Engine {
 
   private observedIssues = new Set<string>();
   private lastWorkdirGcAt = 0;
+  private lastWebReconcileAt = 0;
   private badgeWrites = new Map<string, string>();
   private observerTimer?: ReturnType<typeof setInterval>;
 
@@ -575,6 +577,7 @@ export class Engine {
   private static MAX_STUCK_NUDGE_ROUNDS = 1;
   private static MAX_RUNTIME_MS = 3 * 60 * 60 * 1000;
   private static OBSERVER_INTERVAL_MS = 5 * 60 * 1000;
+  private static WEB_RECONCILE_INTERVAL_MS = 60 * 60_000;
   private static STUCK_THRESHOLD_MS = 30 * 60 * 1000;
   private static MAX_REPLY_BURST = 8;
   private static REPLY_BURST_WINDOW_MS = 5 * 60 * 1000;
@@ -2441,6 +2444,28 @@ export class Engine {
           void this.drainGlobalPending();
         }
       } catch { /* transient store error — next cycle retries */ }
+    }
+
+    // Web→daemon row reconciliation: backfill open issue rows lost from the
+    // engine DB (the 2026-09-17 test-wipe incident made that permanent).
+    // Runs when reachability was confirmed through an owned issue OR when
+    // there are no owned issues at all — the latter is exactly the state a
+    // wipe leaves behind, where ownership can never confirm reachability.
+    if ((webReachable || allOwned.length === 0) && Date.now() - this.lastWebReconcileAt >= Engine.WEB_RECONCILE_INTERVAL_MS) {
+      this.lastWebReconcileAt = Date.now();
+      try {
+        const active = await this.store.listActiveIssues();
+        const scopes = [...new Set([...active.map((i) => i.trackerScopeKey), ...this.cfg.work.reconcileScopes])];
+        const result = await reconcileWebIssues({
+          webUrl: this.cfg.gitea.url,
+          token: this.cfg.gitea.token,
+          scopes,
+          store: this.store,
+        });
+        if (result.restored > 0) log.info(`engine: web reconcile restored ${result.restored} missing open issue row(s) (${result.matched}/${result.checked} in scope)`);
+      } catch (err) {
+        log.warn("engine: web reconcile failed:", (err as Error).message);
+      }
     }
 
     // Badge reconcile: the badge is written by many racing paths (enqueue,
