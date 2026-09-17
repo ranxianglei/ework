@@ -61,6 +61,7 @@ export const configSchema = z.object({
     // Separate from content failures; 0 disables auto-retry.
     infraRetryMax: z.coerce.number().int().nonnegative().default(3),
     infraRetryBaseMs: z.coerce.number().int().positive().default(15_000),
+    recoveryReport: z.boolean().default(true),
   }),
   db: z.object({
     driver: z.enum(["sqlite", "mysql"]).default("sqlite"),
@@ -125,6 +126,7 @@ function readWorkSection() {
       ? Math.max(0, Math.trunc(Number(process.env.WORK_INFRA_RETRY_MAX)))
       : 3,
     infraRetryBaseMs: process.env.WORK_INFRA_RETRY_BASE_MS ? Math.max(1, Number(process.env.WORK_INFRA_RETRY_BASE_MS)) : 15_000,
+    recoveryReport: !(process.env.WORK_RECOVERY_REPORT === "false" || process.env.WORK_RECOVERY_REPORT === "0"),
   };
 }
 
