@@ -1,0 +1,6 @@
+[test]
+# A bare `bun test` from the repo root (or any dir above packages/daemon)
+# would otherwise skip the daemon's DB-isolation preload and let daemon tests
+# inherit the caller's env — how the production engine DB got wiped
+# (ranxianglei/ework#7). Keep in sync with packages/daemon/bunfig.toml.
+preload = ["./packages/daemon/tests/setup.ts"]
