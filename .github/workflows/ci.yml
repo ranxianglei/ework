@@ -121,12 +121,27 @@ jobs:
 
       - name: Assert daemon + bootstrap artifacts
         run: |
-          docker logs ework-smoke 2>&1 | tee /tmp/smoke.log | grep -q "supervisord" || { echo "supervisord not running"; exit 1; }
-          docker logs ework-smoke 2>&1 | grep -qE "ework-daemon (started|running)" \
-            || docker logs ework-smoke 2>&1 | grep -q "daemon" || { echo "daemon program missing from logs"; exit 1; }
+          # Capture logs once and grep the FILE: piping `docker logs` into
+          # `grep -q` races SIGPIPE under bash pipefail — grep exits at the
+          # first match, the upstream writer dies with EPIPE, and the step
+          # fails even though the assertion matched (observed as a flake on
+          # 2026-09-17, run 35183741396).
+          docker logs ework-smoke > /tmp/smoke.log 2>&1
+          grep -q "supervisord" /tmp/smoke.log || { echo "supervisord not running"; exit 1; }
+          grep -qE "ework-daemon (started|running)" /tmp/smoke.log \
+            || grep -q "daemon" /tmp/smoke.log || { echo "daemon program missing from logs"; exit 1; }
           docker exec ework-smoke test -f /data/.bot-token || { echo "bot PAT not bootstrapped"; exit 1; }
           docker exec ework-smoke test -f /data/.config/opencode/opencode.json || { echo "opencode config not generated"; exit 1; }
           docker exec ework-smoke grep -q host.docker.internal /data/.config/opencode/opencode.json || { echo "provider baseURL wrong"; exit 1; }
+          # All three supervised programs must reach RUNNING (router used to
+          # FATAL on a fresh volume: SQLITE_CANTOPEN, no parent dirs).
+          # NB: supervisord quotes program names in "spawned:" lines but not
+          # in "success: <prog> entered RUNNING state".
+          for prog in ework-web ework-daemon ework-router; do
+            grep -q "success: ${prog} entered RUNNING state" /tmp/smoke.log \
+              || { echo "${prog} never entered RUNNING state"; exit 1; }
+          done
+          ! grep -q "gave up: ework-router" /tmp/smoke.log || { echo "ework-router gave up (fatal loop)"; exit 1; }
 
       - name: Dump logs on failure
         if: failure()
