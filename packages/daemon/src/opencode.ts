@@ -135,6 +135,46 @@ export function hasRecentBotReply(
 }
 
 /**
+ * In-progress wording that restart recovery must never mistake for a delivery
+ * (ework#9 spec item 3). Conservative by design: misreading a DELIVERY as
+ * in-progress costs one duplicate run; misreading IN-PROGRESS as delivery loses
+ * the work entirely. Duplicate-run cost < lost-work cost, so the list stays
+ * narrow and explicit.
+ */
+const IN_PROGRESS_PATTERNS: RegExp[] = [
+  /进行中/, /稍后/, /稍等/, /请稍候/, /收到/, /开始执行/, /正在处理/, /继续处理/, /马上/, /接着处理/,
+  /\bwip\b/i, /\bin progress\b/i, /\bworking on it\b/i, /\bwill follow up\b/i, /\bfollow-up soon\b/i,
+];
+
+export function looksLikeInProgress(body: string): boolean {
+  return IN_PROGRESS_PATTERNS.some((re) => re.test(body));
+}
+
+/**
+ * Recovery-time delivery check — stricter than hasRecentBotReply (ework#9).
+ * A bot reply counts as delivery for a crashed/interrupted message only if it
+ * was posted strictly after promptTime AND carries no in-progress wording.
+ * Deliberately NO recency-vs-now window: after a long outage the 5-minute
+ * window would misjudge real deliveries as stale. Missing/unparseable
+ * timestamps count as undelivered — when unsure we requeue (duplicate-run
+ * cost < lost-work cost). Exported for unit testing.
+ */
+export function hasRecoveryDelivery(
+  comments: TrackerComment[],
+  isBotUser: (author: string) => boolean,
+  promptTime: Date,
+): boolean {
+  const pt = promptTime.getTime();
+  return comments.some((c) => {
+    if (!isBotUser(c.author) || c.body.startsWith(SYSTEM_PREFIX)) return false;
+    if (!c.createdAt) return false;
+    const created = new Date(c.createdAt).getTime();
+    if (Number.isNaN(created) || created <= pt) return false;
+    return !looksLikeInProgress(c.body);
+  });
+}
+
+/**
  * Query the opencode SQLite DB for a session's assistant-message output tokens.
  * Returns `{hasOutput: true}` (safe default) when the DB can't be opened or
  * the session is undefined — this means the retry path is only triggered when
@@ -395,6 +435,8 @@ export interface EngineOptions {
   backend?: RuntimeBackend;
   gateChecker?: (issue: Issue) => Promise<{ allowed: boolean; reason: string; resetMs?: number; concurrency?: number | null }>;
   replyBurst?: { max: number; windowMs: number };
+  /** Set false in tests to drive recover() explicitly instead of fire-and-forget from the constructor. */
+  recoverOnBoot?: boolean;
 }
 
 function createDefaultBackend(cfg: Config): RuntimeBackend {
@@ -590,7 +632,7 @@ export class Engine {
     this.maxConcurrent = cfg.work.maxConcurrent;
     this.maxConcurrentExplicit = cfg.work.maxConcurrentExplicit;
     this.startGlobalObserver();
-    void this.recover();
+    if (opts.recoverOnBoot !== false) void this.recover();
   }
 
   // An existing session must keep the backend that owns it: opencode session
@@ -2443,11 +2485,10 @@ export class Engine {
       const ref = this.sessionToRef(session, issue);
       const tracker = this.getTracker(issue.trackerType);
       const comments = await tracker.listComments(ref).catch((): TrackerComment[] => []);
-      const alreadyAnswered = comments.some((c) => {
-        if (!tracker.isBotUser(c.author) || c.body.startsWith(SYSTEM_PREFIX)) return false;
-        if (!c.createdAt) return false;
-        return new Date(c.createdAt).getTime() > msg.createdAt.getTime();
-      });
+      // Strict recovery check (same as boot): only a bot reply AFTER this
+      // message's promptTime that is not in-progress wording counts as an
+      // answer. In-progress posts ("working on it…") must not end the thread.
+      const alreadyAnswered = hasRecoveryDelivery(comments, (a) => tracker.isBotUser(a), msg.createdAt);
       if (alreadyAnswered) {
         log.info(`engine: observer — stranded msg ${msg.id.slice(0, 8)} for ${issue.trackerScopeKey}#${issue.trackerIssueId} already answered, marking done`);
         await this.store.updateMessageStatus(msg.id, "done");
@@ -2745,6 +2786,9 @@ export class Engine {
       log.error("engine: shiftPendingSinceForOwned at boot failed:", (err as Error).message);
     }
 
+    // Per-boot recovery report (ework#9 spec item 4): what we found and did.
+    const report = { interrupted: 0, requeued: 0, delivered: 0, backfilled: 0, deferred: 0 };
+
     // Multi-machine: recover ONLY this daemon's sessions. Other daemons own
     // the rest; touching their state would race them.
     const ownedSessions = await this.store.listOwnedSessions(this.daemonId);
@@ -2800,6 +2844,7 @@ export class Engine {
     for (const msg of stuck) {
       if (msg.status === "running") {
         await this.store.updateMessageStatus(msg.id, "interrupted");
+        report.interrupted++;
       }
     }
 
@@ -2819,16 +2864,19 @@ export class Engine {
       if (!issue || issue.state === "closed") continue;
 
       const gate = await this.gateChecker(issue);
+      if (gate.unreachable) {
+        // Web unreachable: cannot verify dispatch state or post replies.
+        log.warn(`engine: recover — web unreachable for ${issue.trackerScopeKey}#${issue.trackerIssueId} (${gate.reason}) — keeping ${msgs.length} message(s) queued for retry`);
+        report.deferred += msgs.length;
+        continue;
+      }
       if (!gate.allowed) {
-        if (gate.unreachable) {
-          log.warn(`engine: recover — web unreachable for ${issue.trackerScopeKey}#${issue.trackerIssueId}, keeping queued messages for retry`);
-          continue;
-        }
         log.info(`engine: recover — web gate blocked ${issue.trackerScopeKey}#${issue.trackerIssueId} (${gate.reason}), discarding queued (pending) messages`);
         for (const m of msgs) {
           if (m.status === "pending") {
             await this.store.updateMessageStatus(m.id, "failed", `web gate: ${gate.reason}`);
           }
+          report.deferred++;
         }
         continue;
       }
@@ -2839,18 +2887,23 @@ export class Engine {
       for (const m of msgs) {
         if (m.status === "running") {
           await this.store.updateMessageStatus(m.id, "pending");
+          report.requeued++;
         }
       }
 
       const first = msgs.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())[0]!;
 
-      // Check if AI already replied before the crash — skip re-running if so
+      // Strict recovery-time delivery check (ework#9 spec item 3): only a bot
+      // reply posted AFTER this message's promptTime — and not in-progress
+      // wording ("working on it…") — counts as delivery. When unsure, requeue:
+      // duplicate-run cost < lost-work cost.
       const ref = this.sessionToRef(session, issue);
       const tracker = this.getTracker(issue.trackerType);
       const comments = await tracker.listComments(ref).catch((): TrackerComment[] => []);
-      if (this.hasRecentBotReply(comments, tracker)) {
-        log.info(`engine: recovered msg ${first.id.slice(0, 8)} for ${k} — bot reply detected, marking done`);
+      if (hasRecoveryDelivery(comments, (a) => tracker.isBotUser(a), first.createdAt)) {
+        log.info(`engine: recovered msg ${first.id.slice(0, 8)} for ${k} — post-prompt delivery reply detected, marking done`);
         await this.store.updateMessageStatus(first.id, "done");
+        report.delivered++;
         const next = await this.store.getNextPendingMessage(session.id);
         if (next && this.running.size < this.maxConcurrent) { await this.dequeueOrIdle(k, session, issue, next); }
         else if (!next) { void tracker.updateStatus(ref, ""); }
@@ -2859,9 +2912,11 @@ export class Engine {
 
       if (this.running.size + reservedRecoverSlots >= this.maxConcurrent) {
         log.info(`engine: recover — deferring msg ${first.id.slice(0, 8)} for ${k} (concurrency ${this.running.size}+${reservedRecoverSlots}/${this.maxConcurrent}), stays pending`);
+        report.deferred++;
         continue;
       }
       reservedRecoverSlots++;
+      if (first.status !== "running") report.requeued++;
       try {
         log.info(`engine: recovering msg ${first.id.slice(0, 8)} for ${k}`);
         await this.dequeueOrIdle(k, session, issue, first);
@@ -2869,6 +2924,33 @@ export class Engine {
         reservedRecoverSlots--;
       }
     }
+    }
+
+    // Event-replay reconciliation (ework#9 spec item 2): the web comment stream
+    // is the source of truth. A comment whose webhook was consumed during the
+    // failure window but never persisted has no message row — requeue it here.
+    // Runs after the stuck-message pass so recovered in-flight work keeps
+    // priority over backfilled new work.
+    try {
+      const ownedIssues = await this.store.listOwnedIssues(this.daemonId);
+      for (const issue of ownedIssues) {
+        if (issue.state === "closed") continue;
+        const gate = await this.gateChecker(issue);
+        if (gate.unreachable || !gate.allowed) continue;
+        await this.reconcileWebComments(issue, report);
+      }
+    } catch (err) {
+      log.warn(`engine: restart reconciliation failed: ${(err as Error).message}`);
+    }
+
+    // Per-boot recovery report (ework#9 spec item 4). The [system] prefix marks
+    // it as a machine-generated admin notice in the log; WORK_RECOVERY_REPORT=0
+    // drops the prefix for quieter logs.
+    const queuedNow = (await this.store.getOwnedPendingOrRunningMessages(this.daemonId))
+      .filter((m) => m.status === "pending").length;
+    if (report.interrupted + report.requeued + report.delivered + report.backfilled + report.deferred > 0) {
+      const counts = `interrupted=${report.interrupted} requeued=${report.requeued} delivered=${report.delivered} backfilled=${report.backfilled} deferred=${report.deferred} queued_now=${queuedNow}`;
+      log.info(this.cfg.work.recoveryReport ? `[system] 🏷 ⚙️ restart recovery: ${counts}` : `restart recovery: ${counts}`);
     }
 
     // Converge orphaned web statuses: a hard daemon death (host reboot, OOM,
@@ -2892,6 +2974,71 @@ export class Engine {
         } catch { /* web unreachable — badge stays stale until next boot */ }
       }
     } catch { /* transient store error — reconcile is best-effort */ }
+  }
+
+  /**
+   * Event-replay reconciliation for one owned open issue (ework#9 spec item 2).
+   * Requeues human comments that exist on the web but have no daemon message
+   * record — i.e. consumed by the webhook handler during the failure window
+   * and lost when the process died before createMessage. Idempotent: deduped
+   * by source_comment_id, so a repeat pass is a no-op. Only comments newer
+   * than our newest recorded message for this issue qualify (the floor), so
+   * first-ever tracking never replays pre-tracking history. The live wake
+   * policy is mirrored so non-waking authors are not resurrected; the
+   * community-wake branch is deliberately omitted here because it needs the
+   * web-side issue author, which the tracker interface does not expose.
+   */
+  private async reconcileWebComments(issue: Issue, report: { backfilled: number }): Promise<void> {
+    const parts = issue.trackerScopeKey.split("/");
+    if (parts.length < 2) return;
+    const ref: TrackerRef = { trackerType: issue.trackerType, scope: { owner: parts[0]!, repo: parts[1]! }, issueId: String(issue.trackerIssueId) };
+    const tracker = this.getTracker(issue.trackerType);
+    const comments = await tracker.listComments(ref);
+
+    let floorMs = issue.createdAt.getTime();
+    const sessions = await this.store.getSessionsForIssue(issue.id);
+    for (const session of sessions) {
+      for (const m of await this.store.getMessagesForSession(session.id)) {
+        floorMs = Math.max(floorMs, m.createdAt.getTime());
+      }
+    }
+
+    const scopeKey = issue.trackerScopeKey;
+    for (const c of comments) {
+      if (!c.id || !c.createdAt) continue;
+      if (tracker.isBotUser(c.author)) continue;
+      if (isAiGeneratedComment(c.body)) continue;
+      const created = new Date(c.createdAt).getTime();
+      if (Number.isNaN(created) || created <= floorMs || created > Date.now()) continue;
+      if (await this.store.findMessageByCommentId(c.id)) continue;
+
+      // Mirror the live wake policy (base + project whitelist).
+      const kind = c.authorKind ?? "human";
+      let skip = wakePolicySkips(this.cfg.daemon, c.author, kind);
+      if (skip && skip.includes("not in wakeLogins")) {
+        const wc = await this.projectWakeConfig(scopeKey);
+        if (wc.logins.some((l) => l.toLowerCase() === c.author.toLowerCase())) {
+          skip = wakePolicySkips(this.cfg.daemon, c.author, kind, [c.author]);
+        }
+      }
+      if (skip) continue;
+
+      let session = pickLastActive(sessions);
+      if (!session) {
+        session = await this.store.createSession(issue.id, this.cfg.bot.username);
+        sessions.push(session);
+      }
+      const workdir = await this.resolveWorkdir(session, issue);
+      const instructions = tracker.getTrackerInstructions(ref);
+      const prompt = this.buildForwardPrompt(
+        session.name, this.handleLargeContent(workdir, c.body, `comment-${c.id}.txt`),
+        c.author, kind, issue.title, workdir, instructions,
+        this.wakeWhitelistCache.get(scopeKey)?.logins ?? []
+      );
+      await this.store.createMessage(session.id, prompt, c.id, undefined, undefined);
+      report.backfilled++;
+      log.info(`engine: restart reconciliation — backfilled missing comment ${c.id} for ${scopeKey}#${issue.trackerIssueId}`);
+    }
   }
 
   private async cleanupGlobalOrphans(): Promise<void> {
