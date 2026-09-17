@@ -174,10 +174,16 @@ describe("runHookScript", () => {
   });
 
   test("kills hung scripts within timeout bound", async () => {
-    const start = Date.now();
-    await runHookScript("sleep 30", "/tmp", "init", {}, 500);
-    const elapsed = Date.now() - start;
-    expect(elapsed).toBeLessThan(5000);
-    expect(elapsed).toBeGreaterThan(300);
+    // Writable cwd required: spawn fails outright on read-only mounts.
+    const dir = mkdtempSync(join(tmpdir(), "ewhook-hang-"));
+    try {
+      const start = Date.now();
+      await runHookScript("sleep 30", dir, "init", {}, 500);
+      const elapsed = Date.now() - start;
+      expect(elapsed).toBeLessThan(5000);
+      expect(elapsed).toBeGreaterThan(300);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

@@ -1647,6 +1647,20 @@ export class Engine {
       await this.applySessionReset(session, issue, gate.resetMs);
     }
     if (!gate.allowed) {
+      // Web unreachable is an infrastructure failure, not a policy block —
+      // the message never ran, so failing it loses user input (ework#5).
+      // Requeue with backoff; policy blocks below still fail immediately.
+      if (gate.unreachable && await this.requeueInfraFailure(k, session, issue, msg, "web unreachable")) {
+        this.running.delete(k);
+        this.currentMessage.delete(k);
+        this.currentModel.delete(k);
+        await this.store.updateSession(session.id, { state: "idle", opencodePid: undefined });
+        void this.getTracker(issue.trackerType)
+          .updateStatus(this.sessionToRef(session, issue), "queued")
+          .catch(() => { /* web is down by definition */ });
+        log.info(`engine: web unreachable for ${k} — requeued msg ${msg.id.slice(0, 8)} with backoff, idling until retry fires`);
+        return;
+      }
       log.info(`engine: execProcess blocked by web gate (${gate.reason}) for ${k}`);
       await this.store.updateMessageStatus(msg.id, "failed", `gate: ${gate.reason}`);
       this.running.delete(k);
@@ -1719,6 +1733,7 @@ export class Engine {
     }
 
     let exitCode: number | null = null;
+    let infraRequeued = false;
 
     try {
       const handle = await backend.spawn(
@@ -1790,7 +1805,12 @@ export class Engine {
       if (exitCode !== 0) {
         log.error(`engine: pid=${handle.pid} exited ${exitCode} for ${k}`);
         log.error(`  stderr: ${stderr.slice(0, 2000)}`);
-        await this.store.updateMessageStatus(msg.id, "failed", `exit ${exitCode}: ${stderr.slice(0, 500)}`);
+        const infraKind = this.classifyInfraFailure(undefined, exitCode);
+        if (infraKind && await this.requeueInfraFailure(k, session, issue, msg, infraKind)) {
+          infraRequeued = true;
+        } else {
+          await this.store.updateMessageStatus(msg.id, "failed", `exit ${exitCode}: ${stderr.slice(0, 500)}`);
+        }
       } else {
         log.info(`engine: pid=${handle.pid} completed for ${k}`);
         if (stderr) log.warn(`engine: pid=${handle.pid} stderr on exit 0: ${stderr.slice(0, 500)}`);
@@ -1799,10 +1819,15 @@ export class Engine {
       }
     } catch (err) {
       log.error(`engine: exec failed for ${k}:`, err);
-      await this.store.updateMessageStatus(msg.id, "failed", (err as Error).message);
+      const infraKind = this.classifyInfraFailure(err);
+      if (infraKind && await this.requeueInfraFailure(k, session, issue, msg, infraKind)) {
+        infraRequeued = true;
+      } else {
+        await this.store.updateMessageStatus(msg.id, "failed", (err as Error).message);
+      }
     }
 
-    await this.finishRun(k, session, issue, exitCode, gen);
+    await this.finishRun(k, session, issue, exitCode, gen, infraRequeued ? { infraRequeued: true } : undefined);
   }
 
   private static readonly STDERR_DRAIN_MS = 5_000;
@@ -1825,7 +1850,109 @@ export class Engine {
     }
   }
 
-  private async finishRun(k: string, session: OpSession, issue: Issue, exitCode: number | null, gen: number) {
+  /** Backoff timers for infra auto-retries; cleared on destroy(). */
+  private infraRetryTimers = new Set<ReturnType<typeof setTimeout>>();
+
+  /**
+   * Classify a failure as infrastructure (retryable) vs content (terminal).
+   * Returns a short human-readable label, or null for content failures.
+   * Signal-killed children surface as exit code 128+N (Bun convention), so
+   * "killed by signal" means the run never finished its work — unlike a
+   * non-zero exit that is the model's own outcome.
+   */
+  private classifyInfraFailure(err?: unknown, exitCode?: number | null): string | null {
+    if (typeof exitCode === "number" && exitCode !== 0 && exitCode >= 128) {
+      return `process killed by signal ${exitCode - 128}`;
+    }
+    const e = err instanceof Error ? err as Error & { code?: string } : null;
+    const text = e ? `${e.code ?? ""} ${e.message}` : String(err ?? "");
+    if (text.includes("ENOSPC") || text.includes("No space left")) return "disk full (ENOSPC)";
+    return null;
+  }
+
+  /**
+   * Requeue a message after an infrastructure failure with exponential backoff
+   * (infraRetryBaseMs * 2^(attempt-1)). Uses the dedicated infra_attempts
+   * budget; the content-failure budget (attempts) stays untouched. Returns
+   * false when the budget is exhausted or the message is no longer running —
+   * the caller then falls through to the terminal-failure path.
+   */
+  private async requeueInfraFailure(
+    k: string,
+    session: OpSession,
+    issue: Issue,
+    msg: Message,
+    kind: string,
+  ): Promise<boolean> {
+    const limit = this.cfg.work.infraRetryMax;
+    if (limit <= 0) return false;
+    const fresh = await this.store.getMessage(msg.id);
+    // Somebody resolved it meanwhile (force-stop, supersede, manual retry) —
+    // never steal a message out from under another decision.
+    if (!fresh || fresh.status !== "running") return false;
+    const attempt = (fresh.infraAttempts ?? 0) + 1;
+    if (attempt > limit) return false;
+
+    await this.store.bumpInfraAttempts(msg.id);
+    const delayMs = this.cfg.work.infraRetryBaseMs * 2 ** (attempt - 1);
+    const until = new Date(Date.now() + delayMs);
+    await this.store.updateMessageStatus(
+      msg.id,
+      "pending",
+      `infra: ${kind} (auto-retry ${attempt}/${limit} after ${Math.round(delayMs / 1000)}s)`,
+    );
+    await this.store.setRetryAfter(msg.id, until.toISOString());
+
+    if (attempt === 1) {
+      const ref = this.sessionToRef(session, issue);
+      const tracker = this.getTracker(issue.trackerType);
+      void tracker
+        .createComment(ref, `[system] 🏷 ⚡ **${session.name}** infrastructure failure (${kind}) — auto-retry scheduled (attempt ${attempt}/${limit}, backoff ${Math.round(delayMs / 1000)}s).`)
+        .catch((err) => log.error(`engine: infra-retry notice failed for ${k}:`, (err as Error).message));
+    }
+    log.warn(`engine: infra failure (${kind}) for ${k} — requeued msg ${msg.id.slice(0, 8)}, attempt ${attempt}/${limit}, backoff ${Math.round(delayMs / 1000)}s`);
+
+    if (!this.destroyed) {
+      const t = setTimeout(() => {
+        this.infraRetryTimers.delete(t);
+        if (this.destroyed) return;
+        void this.fireInfraRetry(k);
+      }, delayMs);
+      this.infraRetryTimers.add(t);
+    }
+    return true;
+  }
+
+  /** Backoff elapsed: pick the held message up again if it is still pending. */
+  private async fireInfraRetry(k: string) {
+    try {
+      const parsed = parseKey(k);
+      if (!parsed) return;
+      const issue = await this.store.findIssue(parsed.trackerType, parsed.scopeKey, parsed.issueId);
+      if (!issue || issue.state === "closed") return;
+      const session = await this.store.getSessionByName(issue.id, parsed.sessionName);
+      if (!session) return;
+      const pending = await this.store.getNextPendingMessage(session.id);
+      if (!pending) return;
+      if (!this.running.has(k) && this.running.size < this.maxConcurrent) {
+        await this.dequeueOrIdle(k, session, issue, pending);
+      } else {
+        // Busy elsewhere: stay pending; the observer cycle / next drain picks it up.
+        void this.drainGlobalPending();
+      }
+    } catch (err) {
+      log.error(`engine: infra-retry pickup failed for ${k}:`, (err as Error).message);
+    }
+  }
+
+  private async finishRun(
+    k: string,
+    session: OpSession,
+    issue: Issue,
+    exitCode: number | null,
+    gen: number,
+    opts: { infraRequeued?: boolean } = {},
+  ) {
     if (this.stopping.get(k) === gen && this.stopping.delete(k)) {
       log.info(`engine: finishRun skipped (force-stopped) for ${k}`);
       return;
@@ -1850,8 +1977,10 @@ export class Engine {
     // so users can always see whether a run completed, failed, or crashed.
     // For short runs with no progress comment, only post if >3 min.
     const duration = started ? this.formatDuration(Date.now() - started) : "unknown";
-    const emoji = exitCode === null ? "💥" : exitCode === 0 ? "✅" : "❌";
-    const label = exitCode === null ? "spawn failed" : exitCode === 0 ? "completed" : "failed";
+    const emoji = opts.infraRequeued ? "⚡" : exitCode === null ? "💥" : exitCode === 0 ? "✅" : "❌";
+    const label = opts.infraRequeued
+      ? "infrastructure failure — auto-retry scheduled"
+      : exitCode === null ? "spawn failed" : exitCode === 0 ? "completed" : "failed";
     const finalText = `[system] 🏷 ${emoji} **${session.name}** ${label} (${duration})`;
 
     if (progressId) {
@@ -1875,6 +2004,17 @@ export class Engine {
     this.currentPrompt.delete(k);
     await this.persistRuntimeState(session.id);
 
+    if (opts.infraRequeued) {
+      // The message is pending again behind a retry_after hold; its backoff
+      // timer (or a later drain/recover) picks it up. Idle the session and
+      // stop here — the completion/nudge logic below would treat a
+      // not-really-finished run as a terminal failure.
+      this.running.delete(k);
+      await this.store.updateSession(session.id, { state: "idle", opencodePid: undefined });
+      void tracker.updateStatus(ref, "queued").catch(() => { /* web may be the broken side */ });
+      log.info(`engine: infra-requeued msg for ${k}, session idling until backoff fires`);
+      return;
+    }
 
     // spawn failed (exitCode === null) → skip completion check
     if (exitCode === null) {
@@ -2088,7 +2228,10 @@ export class Engine {
     if (!opts.force) {
       let next: Message | undefined = msg;
       while (next) {
-        const age = Date.now() - next.createdAt.getTime();
+        // Age from pending_since (when it entered/last re-entered pending),
+        // NOT created_at: recover() shifts pending_since to now on restart,
+        // so time spent down never expires a queued message (ework#5).
+        const age = Date.now() - (next.pendingSince ?? next.createdAt).getTime();
         if (age <= Engine.MAX_PENDING_AGE_MS) break;
         log.warn(`engine: expiring stale pending msg ${next.id.slice(0, 8)} for ${k} (age ${Math.round(age / 60_000)}min > ${Math.round(Engine.MAX_PENDING_AGE_MS / 60_000)}min) — skipping replay`);
         await this.store.updateMessageStatus(next.id, "failed", "expired: stale pending message not replayed");
@@ -2590,6 +2733,19 @@ export class Engine {
 
     await this.cleanupGlobalOrphans();
 
+    // Downtime does not age pending messages: while this engine was down they
+    // could not be consumed, so replaying them on boot is always correct.
+    // Shift every owned pending clock to now before any dispatch below (the
+    // stale-pending guard in dequeueOrIdle would otherwise expire them).
+    try {
+      const shifted = await this.store.shiftPendingSinceForOwned(this.daemonId);
+      if (shifted > 0) {
+        log.info(`engine: restart recovery: reset pending clock for ${shifted} queued message(s) (downtime does not age pending)`);
+      }
+    } catch (err) {
+      log.error("engine: shiftPendingSinceForOwned at boot failed:", (err as Error).message);
+    }
+
     // Multi-machine: recover ONLY this daemon's sessions. Other daemons own
     // the rest; touching their state would race them.
     const ownedSessions = await this.store.listOwnedSessions(this.daemonId);
@@ -2911,5 +3067,7 @@ export class Engine {
     this.cloneUrls.clear();
     this.senders.clear();
     this.emptyResponseRounds.clear();
+    for (const t of this.infraRetryTimers) clearTimeout(t);
+    this.infraRetryTimers.clear();
   }
 }

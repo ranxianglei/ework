@@ -57,6 +57,10 @@ export const configSchema = z.object({
     maxConcurrentExplicit: z.boolean().default(false),
     heartbeatMs: z.coerce.number().int().positive().default(10_000),
     leaseTtlMs: z.coerce.number().int().positive().default(60_000),
+    // Infra-failure auto-retry budget (web unreachable / ENOSPC / signal-kill).
+    // Separate from content failures; 0 disables auto-retry.
+    infraRetryMax: z.coerce.number().int().nonnegative().default(3),
+    infraRetryBaseMs: z.coerce.number().int().positive().default(15_000),
   }),
   db: z.object({
     driver: z.enum(["sqlite", "mysql"]).default("sqlite"),
@@ -117,6 +121,10 @@ function readWorkSection() {
     maxConcurrentExplicit,
     heartbeatMs: process.env.WORK_DAEMON_HEARTBEAT_MS ? Number(process.env.WORK_DAEMON_HEARTBEAT_MS) : 10_000,
     leaseTtlMs: process.env.WORK_DAEMON_LEASE_TTL_MS ? Number(process.env.WORK_DAEMON_LEASE_TTL_MS) : 60_000,
+    infraRetryMax: process.env.WORK_INFRA_RETRY_MAX != null && process.env.WORK_INFRA_RETRY_MAX !== ""
+      ? Math.max(0, Math.trunc(Number(process.env.WORK_INFRA_RETRY_MAX)))
+      : 3,
+    infraRetryBaseMs: process.env.WORK_INFRA_RETRY_BASE_MS ? Math.max(1, Number(process.env.WORK_INFRA_RETRY_BASE_MS)) : 15_000,
   };
 }
 
