@@ -108,6 +108,19 @@ export interface OpSession {
   nudgeRounds?: number;
   stuckNudgeRounds?: number;
   generation?: number;
+  // Processing-badge TTL: instant by which this session must refresh its
+  // heartbeat (spawn / output / model traffic). Past due = badge stale.
+  expectedHeartbeatAt?: number;
+}
+
+/** A tracker-side issue currently carrying a given ai_status badge. */
+export interface BadgeEntry {
+  owner: string;
+  repo: string;
+  number: number;
+  aiStatus: string;
+  /** ISO timestamp of the status change, or null when unknown. */
+  since: number | null;
 }
 
 /** Message = a prompt enqueued for a session */
@@ -147,6 +160,12 @@ export interface IssueTracker {
   listComments(ref: TrackerRef): Promise<TrackerComment[]>;
   closeIssue(ref: TrackerRef): Promise<void>;
   updateStatus(ref: TrackerRef, status: string, detail?: string): Promise<void>;
+  /**
+   * Enumerate every issue fleet-wide carrying the given ai_status.
+   * Optional: backends without a global listing endpoint return undefined and
+   * the stuck-badge sweep degrades to per-issue verification only.
+   */
+  listBadges?(status: string): Promise<BadgeEntry[]>;
 
   setReaction(ref: TrackerRef, commentId: string, content: string, remove?: boolean): Promise<void>;
   setCommentModel(ref: TrackerRef, commentId: string, model: string): Promise<void>;

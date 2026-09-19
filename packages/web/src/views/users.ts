@@ -139,6 +139,7 @@ ${flashHtml}
   <a href="/admin/users">用户</a>
   <a href="/admin/tokens">所有 Token</a>
   <a href="/admin/deliveries">Webhook 投递</a>
+  <a href="/admin/badges">徽标监控</a>
 </div>
 
 <form class="card" method="POST" action="/admin/users/create">

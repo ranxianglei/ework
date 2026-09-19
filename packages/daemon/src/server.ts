@@ -120,6 +120,9 @@ export function createServer(
     if (pathname === "/api/processes") {
       return json(engine.getProcesses());
     }
+    if (pathname === "/api/badges") {
+      return json(engine.getBadgeSweepState());
+    }
 
     const sessionMsgsMatch = pathname.match(/^\/api\/sessions\/([0-9a-f-]+)\/messages$/);
     if (sessionMsgsMatch) {

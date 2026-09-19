@@ -8,6 +8,7 @@ import type { Config } from "./config";
 import type { Store } from "./op";
 import type { IssueTracker, TrackerRef, TrackerEvent, TrackerComment, Issue, OpSession, Message } from "./trackers/types";
 import { formatKey, parseKey } from "./trackers/types";
+import type { BadgeEntry } from "./trackers/types";
 import type { RuntimeBackend, RuntimeHandle } from "./runtime/types";
 import { OpencodeBackend } from "./runtime/opencode-backend";
 import { PiBackend } from "./runtime/pi-backend";
@@ -172,6 +173,80 @@ export function hasRecoveryDelivery(
     if (Number.isNaN(created) || created <= pt) return false;
     return !looksLikeInProgress(c.body);
   });
+}
+
+// ─── Stuck-badge sweep pure helpers (ework#12) ───
+
+export interface BadgeSignals {
+  pidAlive: boolean;
+  /** ms since last session output; null = no output ever recorded */
+  outputAgeMs: number | null;
+  /** ms since last model traffic (token delta); null = none observed */
+  modelAgeMs: number | null;
+}
+
+export interface BadgeSignalLimits {
+  outputTtlMs: number;
+  modelTtlMs: number;
+}
+
+/**
+ * Three-signal liveness verdict (ework#12 spec item 1): a session counts as
+ * alive when ANY of pid-alive / fresh-output / fresh-model-traffic holds AND
+ * its heartbeat TTL has not expired. TTL expiry alone forces stale — that is
+ * what catches "wrote the badge and never managed it" paths where no signal
+ * source exists at all. Exported for unit testing.
+ */
+export function evaluateBadgeSignals(
+  signals: BadgeSignals,
+  limits: BadgeSignalLimits,
+  heartbeatExpired: boolean,
+): { alive: boolean; reasons: string[] } {
+  const reasons: string[] = [];
+  const outputFresh = signals.outputAgeMs !== null && signals.outputAgeMs < limits.outputTtlMs;
+  const modelFresh = signals.modelAgeMs !== null && signals.modelAgeMs < limits.modelTtlMs;
+  if (!signals.pidAlive) reasons.push("pid-dead");
+  if (!outputFresh) reasons.push("no-recent-output");
+  if (!modelFresh) reasons.push("no-recent-model");
+  if (heartbeatExpired) reasons.push("heartbeat-expired");
+  return { alive: !heartbeatExpired && (signals.pidAlive || outputFresh || modelFresh), reasons };
+}
+
+export type BadgeAction = "keep" | "grace" | "complete" | "reset";
+
+/**
+ * Arbitration for a stale processing badge (ework#12 spec items 2+3):
+ * younger than the badge TTL → grace period (re-check next cycle); stale +
+ * bot delivery found in the comment stream → completed; stale without
+ * delivery → reset to idle with a [system] notice. Exported for unit testing.
+ */
+export function decideBadgeAction(badgeAgeMs: number | null, badgeTtlMs: number, delivered: boolean): BadgeAction {
+  if (badgeAgeMs !== null && badgeAgeMs < badgeTtlMs) return "grace";
+  return delivered ? "complete" : "reset";
+}
+
+/** Marker so the reset notice is posted at most once per badge generation. */
+export const BADGE_RESET_MARKER = "<!-- badge-reset -->";
+
+export function buildBadgeResetNotice(): string {
+  return `[system] 🏷 ⚠️ 状态已复位：AI 处理徽标长时间无响应（进程已死且无输出/模型流量），已重置为空闲。如需继续处理请回复本 issue。${BADGE_RESET_MARKER}`;
+}
+
+export interface BadgeSweepEntry {
+  owner: string;
+  repo: string;
+  number: number;
+  aiStatus: string;
+  since: number | null;
+  /** Whether this daemon has an issue row for the badge (false = orphan). */
+  engineRecord: boolean;
+  ownedByMe: boolean;
+  sessions: number;
+  pidAlive: boolean;
+  outputAgeSec: number | null;
+  modelAgeSec: number | null;
+  verdict: "alive" | "stale" | "orphan" | "skipped";
+  action?: string;
 }
 
 /**
@@ -437,6 +512,8 @@ export interface EngineOptions {
   replyBurst?: { max: number; windowMs: number };
   /** Set false in tests to drive recover() explicitly instead of fire-and-forget from the constructor. */
   recoverOnBoot?: boolean;
+  /** Set false in tests that drive sweepStuckBadges() manually. */
+  badgeSweep?: boolean;
 }
 
 function createDefaultBackend(cfg: Config): RuntimeBackend {
@@ -587,6 +664,14 @@ export class Engine {
   private lastWorkdirGcAt = 0;
   private badgeWrites = new Map<string, string>();
   private observerTimer?: ReturnType<typeof setInterval>;
+  // Stuck-badge sweep state (ework#12)
+  private badgeSweepTimer?: ReturnType<typeof setInterval>;
+  private badgeSweepRunning = false;
+  private lastModelAt = new Map<string, number>();
+  private lastModelTokens = new Map<string, number>();
+  private lastHeartbeatRefreshAt = new Map<string, number>();
+  private lastBadgeSweepAt = 0;
+  private lastBadgeSweepEntries: BadgeSweepEntry[] = [];
 
   private groupConfigs = new Map<string, GroupConfig>();
   private cloneUrls = new Map<string, string>();
@@ -637,6 +722,7 @@ export class Engine {
     this.maxConcurrent = cfg.work.maxConcurrent;
     this.maxConcurrentExplicit = cfg.work.maxConcurrentExplicit;
     this.startGlobalObserver();
+    if (opts.badgeSweep !== false) this.startBadgeSweep();
     if (opts.recoverOnBoot !== false) void this.recover();
   }
 
@@ -1243,6 +1329,9 @@ export class Engine {
       () => {},
     );
     void tracker.updateStatus(ref, "processing");
+    // Every processing write arms the badge heartbeat (ework#12 item 3): if no
+    // subsequent activity refreshes it, the sweep treats the badge as stale.
+    void this.refreshHeartbeat(session.id);
     const workdir = await this.resolveWorkdir(session, issue);
     log.info(`engine: session "${session.name}" created for ${k}, workdir=${workdir}`);
 
@@ -1812,7 +1901,15 @@ export class Engine {
           env: childEnv,
         },
         {
-          onOutput: () => { this.lastOutputAt.set(k, Date.now()); },
+          onOutput: () => {
+            const n = Date.now();
+            this.lastOutputAt.set(k, n);
+            // Throttled heartbeat refresh so long chatty runs never expire.
+            if (n - (this.lastHeartbeatRefreshAt.get(k) ?? 0) > 30_000) {
+              this.lastHeartbeatRefreshAt.set(k, n);
+              void this.refreshHeartbeat(session.id);
+            }
+          },
           onSessionId: async (id: string) => {
             if (!session.opencodeSessionId) {
               await this.store.updateSession(session.id, { opencodeSessionId: id });
@@ -1853,6 +1950,8 @@ export class Engine {
 
       await this.store.updateSession(session.id, { opencodePid: handle.pid });
       await this.persistRuntimeState(session.id);
+      this.lastHeartbeatRefreshAt.set(k, Date.now());
+      void this.refreshHeartbeat(session.id);
 
       log.info(`engine: spawned pid=${handle.pid} for ${k} (backend=${backend.name})`);
 
@@ -2332,6 +2431,7 @@ export class Engine {
     this.running.add(k);
     this.currentMessage.set(k, msg.id);
     await this.store.updateSession(session.id, { state: "running" });
+    void this.refreshHeartbeat(session.id);
     void this.execProcess(k, session, issue, msg);
   }
 
@@ -2629,7 +2729,12 @@ export class Engine {
           const ref = { trackerType: issue.trackerType, scope: { owner: scopeParts[0]!, repo: scopeParts[1]! }, issueId: String(issue.trackerIssueId) };
           // cache only after success — a failed write must retry next cycle, not be skipped forever
           await this.getTracker(issue.trackerType).updateStatus(ref, desired).then(
-            () => { this.badgeWrites.set(issue.id, desired); },
+            () => {
+              this.badgeWrites.set(issue.id, desired);
+              if (desired === "processing") {
+                for (const s of sessions) if (s.state === "running") void this.refreshHeartbeat(s.id);
+              }
+            },
             () => { /* best-effort; retried next cycle */ },
           );
         } catch { /* badge convergence is best-effort */ }
@@ -3285,10 +3390,218 @@ export class Engine {
     return !!proc;
   }
 
+  // ─── Stuck-Badge Sweep (ework#12) ───
+
+  private startBadgeSweep() {
+    this.badgeSweepTimer = setInterval(() => { void this.sweepStuckBadges(); }, this.cfg.work.badgeSweepIntervalMs);
+  }
+
+  private allTrackers(): IssueTracker[] {
+    const reg = this.trackers;
+    if (reg instanceof Map) return [...reg.values()];
+    return [reg.get("gitea")].filter((t): t is IssueTracker => !!t);
+  }
+
+  private pidAlive(pid: number): boolean {
+    try { process.kill(pid, 0); return true; } catch (err) {
+      return (err as NodeJS.ErrnoException).code === "EPERM";
+    }
+  }
+
+  /** Arm/refresh a session's badge-heartbeat deadline (spec item 3). Best-effort. */
+  private async refreshHeartbeat(sessionId: string): Promise<void> {
+    try { await this.store.setExpectedHeartbeat(sessionId, Date.now() + this.cfg.work.badgeTtlMs); } catch { /* best-effort */ }
+  }
+
+  private async fetchWebAiStatus(owner: string, repo: string, number: number): Promise<string> {
+    const url = `${this.cfg.gitea.url}/api/v1/dispatch-state?owner=${encodeURIComponent(owner)}&repo=${encodeURIComponent(repo)}&number=${number}`;
+    const resp = await fetch(url, { signal: AbortSignal.timeout(5000), headers: { Authorization: `token ${this.cfg.gitea.token}` } });
+    if (!resp.ok) throw new Error(`web returned ${resp.status}`);
+    const data = await resp.json() as { aiStatus?: string };
+    return data.aiStatus ?? "";
+  }
+
+  /**
+   * Continuous stuck-badge detector (ework#12 spec items 2+3+4). Enumerates every
+   * fleet-wide "processing" badge through the web listing endpoint. Badges whose
+   * issue this daemon knows about are verified with three signals (pid alive /
+   * recent output / recent model traffic + heartbeat TTL); orphan badges — the
+   * engine has ZERO records — go straight to arbitration: bot delivery found in
+   * the comment stream → completed, otherwise → idle + [system] notice. Every
+   * action is logged and recorded for GET /api/badges. Public so tests can drive
+   * it directly.
+   */
+  async sweepStuckBadges(): Promise<void> {
+    if (this.destroyed || this.badgeSweepRunning) return;
+    this.badgeSweepRunning = true;
+    try {
+      try { await this.store.releaseDeadOwners(this.cfg.work.leaseTtlMs); } catch { /* lease reaping retried next cycle */ }
+      const entries: BadgeSweepEntry[] = [];
+      const seen = new Set<string>();
+      for (const tracker of this.allTrackers()) {
+        if (!tracker.listBadges) continue;
+        let badges: BadgeEntry[];
+        try { badges = await tracker.listBadges("processing"); } catch { continue; }
+        for (const b of badges) {
+          const dedupeKey = `${b.owner}/${b.repo}#${b.number}`;
+          if (seen.has(dedupeKey)) continue;
+          seen.add(dedupeKey);
+          try {
+            entries.push(await this.sweepOneBadge(tracker, b));
+          } catch (err) {
+            log.warn(`engine: badge-sweep failed for ${dedupeKey}: ${(err as Error).message}`);
+          }
+        }
+      }
+      this.lastBadgeSweepAt = Date.now();
+      this.lastBadgeSweepEntries = entries.slice(0, 200);
+      const acted = entries.filter((e) => e.action && !e.action.startsWith("grace") && e.action !== "owned-by-other-daemon");
+      if (acted.length > 0) {
+        log.info(`engine: badge-sweep: ${entries.length} badge(s) checked, actions: ${acted.map((e) => `${e.owner}/${e.repo}#${e.number}→${e.action}`).join("; ")}`);
+      }
+    } finally {
+      this.badgeSweepRunning = false;
+    }
+  }
+
+  private async sweepOneBadge(tracker: IssueTracker, b: BadgeEntry): Promise<BadgeSweepEntry> {
+    const now = Date.now();
+    const ref: TrackerRef = { trackerType: tracker.type, scope: { owner: b.owner, repo: b.repo }, issueId: String(b.number) };
+    const entry: BadgeSweepEntry = {
+      owner: b.owner, repo: b.repo, number: b.number, aiStatus: b.aiStatus, since: b.since,
+      engineRecord: false, ownedByMe: false, sessions: 0,
+      pidAlive: false, outputAgeSec: null, modelAgeSec: null, verdict: "skipped",
+    };
+
+    let issue: Issue | undefined;
+    try { issue = await this.store.findIssue(tracker.type, `${b.owner}/${b.repo}`, String(b.number)); } catch { /* store blip — skip this round */ }
+    if (issue && issue.ownerDaemonId !== null && issue.ownerDaemonId !== this.daemonId) {
+      entry.action = "owned-by-other-daemon";
+      log.info(`engine: badge-sweep skip ${b.owner}/${b.repo}#${b.number}: owned by daemon #${issue.ownerDaemonId}`);
+      return entry;
+    }
+    entry.engineRecord = !!issue;
+    entry.ownedByMe = !!issue && (issue.ownerDaemonId === null || issue.ownerDaemonId === this.daemonId);
+
+    let sessions: OpSession[] = [];
+    if (issue) sessions = await this.store.getSessionsForIssue(issue.id).catch(() => [] as OpSession[]);
+    entry.sessions = sessions.length;
+
+    // Three-signal verification over every engine-known session
+    let anyLive = false;
+    for (const s of sessions) {
+      const k = this.sessionKey(s, issue!);
+      const handle = this.processes.get(k);
+      const pid = handle?.pid ?? s.opencodePid;
+      const pidAlive = pid != null ? this.pidAlive(pid) : false;
+      const outTs = this.lastOutputAt.get(k) ?? s.lastOutputAt;
+      const outputAgeMs = outTs != null ? now - outTs : null;
+      let modelAgeMs = this.lastModelAt.has(k) ? now - this.lastModelAt.get(k)! : null;
+      // Model-traffic probe only when the other two signals are both dead (cheap-first)
+      if (!pidAlive && (outputAgeMs === null || outputAgeMs >= this.cfg.work.badgeOutputTtlMs) && s.opencodeSessionId) {
+        const backend = this.backendFor(k, s.opencodeSessionId);
+        try {
+          const res = await backend.getSessionOutputTokens(s.opencodeSessionId);
+          const prev = this.lastModelTokens.get(k);
+          if (prev !== undefined && res.tokenCount > prev) this.lastModelAt.set(k, now);
+          this.lastModelTokens.set(k, res.tokenCount);
+          modelAgeMs = this.lastModelAt.has(k) ? now - this.lastModelAt.get(k)! : null;
+        } catch { /* probe failed — signal stays unknown */ }
+      }
+      const heartbeatExpired = s.state === "running" && s.expectedHeartbeatAt != null && now > s.expectedHeartbeatAt;
+      const verdict = evaluateBadgeSignals(
+        { pidAlive, outputAgeMs, modelAgeMs },
+        { outputTtlMs: this.cfg.work.badgeOutputTtlMs, modelTtlMs: this.cfg.work.badgeModelTtlMs },
+        heartbeatExpired,
+      );
+      if (verdict.alive) {
+        anyLive = true;
+        entry.pidAlive = true;
+        void this.refreshHeartbeat(s.id);
+      }
+      if (outputAgeMs !== null) {
+        const sec = Math.round(outputAgeMs / 1000);
+        entry.outputAgeSec = entry.outputAgeSec === null ? sec : Math.min(entry.outputAgeSec, sec);
+      }
+      if (modelAgeMs !== null) {
+        const sec = Math.round(modelAgeMs / 1000);
+        entry.modelAgeSec = entry.modelAgeSec === null ? sec : Math.min(entry.modelAgeSec, sec);
+      }
+    }
+
+    if (sessions.length > 0 && anyLive) {
+      entry.verdict = "alive";
+      return entry;
+    }
+
+    // Stale (all known sessions dead) or orphan (zero engine records)
+    entry.verdict = sessions.length === 0 ? "orphan" : "stale";
+    const age = b.since !== null ? now - b.since : null;
+    if (decideBadgeAction(age, this.cfg.work.badgeTtlMs, false) === "grace") {
+      entry.action = "grace period (badge younger than ttl)";
+      return entry;
+    }
+
+    // Re-verify the web still shows processing — never clobber a concurrent fixup
+    let current = "processing";
+    try { current = await this.fetchWebAiStatus(b.owner, b.repo, b.number); } catch { current = ""; }
+    if (current !== "processing") {
+      entry.action = `web already shows "${current}" — no-op`;
+      return entry;
+    }
+
+    // Arbitration: the web comment stream is the truth source for delivery
+    let comments: TrackerComment[];
+    try { comments = await tracker.listComments(ref); } catch (err) {
+      entry.action = `listComments failed: ${(err as Error).message}`;
+      return entry;
+    }
+    const promptTime = await this.arbitrationPromptTime(issue, sessions, b.since);
+    const delivered = hasRecoveryDelivery(comments, (a) => tracker.isBotUser(a), promptTime);
+    const decision = decideBadgeAction(age, this.cfg.work.badgeTtlMs, delivered);
+
+    if (decision === "complete") {
+      try { await tracker.updateStatus(ref, "completed"); } catch (err) { entry.action = `updateStatus(completed) failed: ${(err as Error).message}`; return entry; }
+      entry.action = "flipped→completed (bot delivery found)";
+      log.info(`engine: badge-sweep ${b.owner}/${b.repo}#${b.number} flipped to completed: bot delivery found in comment stream`);
+    } else {
+      try { await tracker.updateStatus(ref, ""); } catch (err) { entry.action = `updateStatus(idle) failed: ${(err as Error).message}`; return entry; }
+      const alreadyNotified = comments.some((c) => c.body.includes(BADGE_RESET_MARKER));
+      if (!alreadyNotified) void tracker.createComment(ref, buildBadgeResetNotice()).catch(() => {});
+      entry.action = alreadyNotified ? "flipped→idle (notice already posted)" : "flipped→idle + [system] notice (no delivery)";
+      log.warn(`engine: badge-sweep ${b.owner}/${b.repo}#${b.number} reset to idle: ${sessions.length === 0 ? "orphan badge, no engine record" : "all sessions dead"} and no bot delivery`);
+    }
+    return entry;
+  }
+
+  /** Delivery-arbitration baseline: oldest non-terminal message (same rule as
+   * restart recovery), falling back to the badge write time, then epoch 0. */
+  private async arbitrationPromptTime(issue: Issue | undefined, sessions: OpSession[], sinceMs: number | null): Promise<Date> {
+    let oldestMs: number | null = null;
+    if (issue) {
+      for (const s of sessions) {
+        const msgs = await this.store.getMessagesForSession(s.id).catch(() => [] as Message[]);
+        for (const m of msgs) {
+          if (m.status !== "pending" && m.status !== "running" && m.status !== "interrupted") continue;
+          const t = new Date(m.createdAt).getTime();
+          if (!Number.isNaN(t) && (oldestMs === null || t < oldestMs)) oldestMs = t;
+        }
+      }
+    }
+    if (oldestMs !== null) return new Date(oldestMs);
+    if (sinceMs !== null) return new Date(sinceMs);
+    return new Date(0);
+  }
+
+  getBadgeSweepState(): { checkedAt: number; intervalMs: number; entries: BadgeSweepEntry[] } {
+    return { checkedAt: this.lastBadgeSweepAt, intervalMs: this.cfg.work.badgeSweepIntervalMs, entries: this.lastBadgeSweepEntries };
+  }
+
   destroy() {
     this.destroyed = true;
     this.stopHeartbeat();
     if (this.observerTimer) clearInterval(this.observerTimer);
+    if (this.badgeSweepTimer) clearInterval(this.badgeSweepTimer);
     this.observedIssues.clear();
     for (const [, proc] of this.processes) {
       try { process.kill(proc.pid, "SIGKILL"); } catch { /* dead */ }
@@ -3304,6 +3617,9 @@ export class Engine {
     this.stuckNudgeRounds.clear();
     this.currentPrompt.clear();
     this.generation.clear();
+    this.lastModelAt.clear();
+    this.lastModelTokens.clear();
+    this.lastHeartbeatRefreshAt.clear();
     this.groupConfigs.clear();
     this.cloneUrls.clear();
     this.senders.clear();
