@@ -140,7 +140,7 @@ describe("stale pending expiry", () => {
     const issue = await store.findOrCreateIssue(REF, "ranxianglei/billion-context", "t");
     const session = await store.createSession(issue.id, "ework-daemon");
     const msg = await store.createMessage(session.id, "[SYSTEM FORWARD] storm leftover");
-    await backdate(msg.id, 45);
+    await backdate(msg.id, 390);
 
     await (engine as unknown as { deactivateIfIdle: (k: string, s: OpSession, i: Issue) => Promise<void> }).deactivateIfIdle(KEY, session, issue);
 
@@ -151,6 +151,7 @@ describe("stale pending expiry", () => {
     expect((await engine.getStatus()).runningCount).toBe(0);
     const after = await store.getSession(session.id);
     expect(after?.state).toBe("idle");
+    expect(tracker.comments.some((c) => c.includes("排队超时") && c.includes("1 条"))).toBe(true);
   });
 
   test("fresh pending message still runs", async () => {
@@ -176,8 +177,8 @@ describe("stale pending expiry", () => {
     const stale1 = await store.createMessage(session.id, "[SYSTEM FORWARD] storm a");
     const stale2 = await store.createMessage(session.id, "[SYSTEM FORWARD] storm b");
     const fresh = await store.createMessage(session.id, "[SYSTEM FORWARD] fresh");
-    await backdate(stale1.id, 60);
-    await backdate(stale2.id, 45);
+    await backdate(stale1.id, 400);
+    await backdate(stale2.id, 390);
     await backdate(fresh.id, 2);
 
     await (engine as unknown as { deactivateIfIdle: (k: string, s: OpSession, i: Issue) => Promise<void> }).deactivateIfIdle(KEY, session, issue);
@@ -188,6 +189,8 @@ describe("stale pending expiry", () => {
       const freshRow = await store.getMessage(fresh.id);
       if (freshRow?.status !== "running") throw new Error(`fresh=${freshRow?.status}`);
     });
+    expect(tracker.comments.filter((c) => c.includes("排队超时")).length).toBe(1);
+    expect(tracker.comments.some((c) => c.includes("排队超时") && c.includes("2 条"))).toBe(true);
   });
 
   test("explicit retry (force) bypasses the age limit", async () => {
@@ -195,7 +198,7 @@ describe("stale pending expiry", () => {
     const issue = await store.findOrCreateIssue(REF, "ranxianglei/billion-context", "t");
     const session = await store.createSession(issue.id, "ework-daemon");
     const msg = await store.createMessage(session.id, "operator wants this re-run");
-    await backdate(msg.id, 45);
+    await backdate(msg.id, 390);
     await store.updateMessageStatus(msg.id, "failed", "old failure");
     // retryMessage only retries failed rows
     const ok = await engine.retryMessage(msg.id);
@@ -256,7 +259,7 @@ describe("restart recovery (downtime does not age pending)", () => {
     await store.claimIssue(issue.id, daemonId);
     const session = await store.createSession(issue.id, "ework-daemon");
     const msg = await store.createMessage(session.id, "[SYSTEM FORWARD] queued while the engine was down");
-    await backdate(msg.id, 45);
+    await backdate(msg.id, 390);
 
     await (engine as unknown as { recover: () => Promise<void> }).recover();
 
@@ -279,7 +282,7 @@ describe("restart recovery (downtime does not age pending)", () => {
     await store.claimIssue(otherIssue.id, otherDaemonId);
     const otherSession = await store.createSession(otherIssue.id, "ework-daemon");
     const otherMsg = await store.createMessage(otherSession.id, "neighbor's queued work");
-    await backdate(otherMsg.id, 45);
+    await backdate(otherMsg.id, 390);
 
     await (engine as unknown as { recover: () => Promise<void> }).recover();
 
@@ -287,7 +290,7 @@ describe("restart recovery (downtime does not age pending)", () => {
     expect(row?.status).toBe("pending");
     // Still aged from its original instant — a live neighbor's queue must not
     // have its clock reset by our restart.
-    expect((row?.pendingSince ?? new Date(0)).getTime()).toBeLessThan(Date.now() - 30 * 60_000);
+    expect((row?.pendingSince ?? new Date(0)).getTime()).toBeLessThan(Date.now() - 6 * 60 * 60_000);
   });
 });
 

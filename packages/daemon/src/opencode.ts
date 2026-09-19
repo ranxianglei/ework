@@ -611,7 +611,12 @@ export class Engine {
   // nudges ("reply → done → drain next stale → nudge → reply …"), observed on
   // dog/tasks#3: 17:24 storm forwards replayed at 20:09–20:11. Expire instead
   // of replay; explicit retryMessage bypasses this via { force: true }.
-  private static MAX_PENDING_AGE_MS = 30 * 60_000;
+  // 6h, not 30min: a LIVE daemon at full concurrency holds messages queued for
+  // hours (upstream-sync backfill storms of 10+ issues × ~1h runs ≈ 2h+ drain;
+  // ework#957 lost 70 queued messages fleet-wide to a 30min cap that only
+  // meant to reap downtime zombies — restart already resets pending_since,
+  // so live saturation was the ONLY thing the short cap could still hit).
+  private static MAX_PENDING_AGE_MS = 6 * 60 * 60_000;
   private static MAX_STUCK_NUDGE_ROUNDS = 1;
   private static MAX_RUNTIME_MS = 3 * 60 * 60 * 1000;
   private static OBSERVER_INTERVAL_MS = 5 * 60 * 1000;
@@ -2288,6 +2293,11 @@ export class Engine {
     this.startObserver(issue);
     if (!opts.force) {
       let next: Message | undefined = msg;
+      let expiredCount = 0;
+      const scopeParts = issue.trackerScopeKey.split("/");
+      const ref = scopeParts.length === 2
+        ? { trackerType: issue.trackerType, scope: { owner: scopeParts[0]!, repo: scopeParts[1]! }, issueId: String(issue.trackerIssueId) }
+        : undefined;
       while (next) {
         // Age from pending_since (when it entered/last re-entered pending),
         // NOT created_at: recover() shifts pending_since to now on restart,
@@ -2296,13 +2306,18 @@ export class Engine {
         if (age <= Engine.MAX_PENDING_AGE_MS) break;
         log.warn(`engine: expiring stale pending msg ${next.id.slice(0, 8)} for ${k} (age ${Math.round(age / 60_000)}min > ${Math.round(Engine.MAX_PENDING_AGE_MS / 60_000)}min) — skipping replay`);
         await this.store.updateMessageStatus(next.id, "failed", "expired: stale pending message not replayed");
+        expiredCount++;
         const follow = await this.store.getNextPendingMessage(session.id);
-        const scopeParts = issue.trackerScopeKey.split("/");
-        if (scopeParts.length === 2) {
-          const ref = { trackerType: issue.trackerType, scope: { owner: scopeParts[0]!, repo: scopeParts[1]! }, issueId: String(issue.trackerIssueId) };
+        if (ref) {
           void this.getTracker(issue.trackerType).updateStatus(ref, follow ? "queued" : "failed");
         }
         next = follow;
+      }
+      if (expiredCount > 0 && ref) {
+        // Silent drops read as "no one picked this up" (ework#957) — the user
+        // must see that work was discarded and how to re-trigger it.
+        const hoursCap = Math.round(Engine.MAX_PENDING_AGE_MS / 3_600_000);
+        void this.getTracker(issue.trackerType).createComment(ref, `[system] 🏷 ${this.sessionRef(session)} ⚡ 排队超时：${expiredCount} 条消息在繁忙队列中等待超过 ${hoursCap} 小时，已被丢弃（未执行）。如仍需处理，请回复"继续"重新触发。`).catch((err) => log.warn(`engine: queue-timeout notice failed for ${k}:`, (err as Error).message));
       }
       if (!next) {
         this.clearRuntimeState(k);
