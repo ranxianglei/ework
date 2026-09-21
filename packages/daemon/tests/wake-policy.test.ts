@@ -105,3 +105,101 @@ describe("externalWakeAllotment", () => {
     expect(r.kept.length).toBe(1);
   });
 });
+
+describe("communityWakeAdmitted (opencode-acp#435)", () => {
+  const { communityWakeAdmitted } = require("../src/opencode") as { communityWakeAdmitted: typeof import("../src/opencode").communityWakeAdmitted };
+
+  test("message-board shape: opted-in project serves external human commenters", () => {
+    expect(communityWakeAdmitted(true, "comment_created", "ranxianglei", "Bunny4Don", "human")).toBe(true);
+  });
+
+  test("issue author still admitted (own-issue trust)", () => {
+    expect(communityWakeAdmitted(true, "comment_created", "Bunny4Don", "Bunny4Don", "human")).toBe(true);
+    expect(communityWakeAdmitted(true, "issue_opened", "Bunny4Don", "Bunny4Don", "human")).toBe(true);
+  });
+
+  test("bots excluded by kind and by [bot] suffix", () => {
+    expect(communityWakeAdmitted(true, "comment_created", "x", "github-actions[bot]", "bot")).toBe(false);
+    expect(communityWakeAdmitted(true, "comment_created", "x", "github-actions[bot]", "human")).toBe(false);
+    expect(communityWakeAdmitted(true, "issue_opened", "x", "renovate[bot]", "human")).toBe(false);
+  });
+
+  test("opted-out project and foreign issue_opened stay skipped", () => {
+    expect(communityWakeAdmitted(false, "comment_created", "a", "b", "human")).toBe(false);
+    expect(communityWakeAdmitted(true, "issue_opened", "a", "b", "human")).toBe(false);
+  });
+});
+
+describe("collectUnansweredBacklog (opencode-acp#435)", () => {
+  const { collectUnansweredBacklog } = require("../src/opencode") as { collectUnansweredBacklog: typeof import("../src/opencode").collectUnansweredBacklog };
+  type C = Parameters<typeof collectUnansweredBacklog>[0][number];
+  const mk = (id: string, author: string, body: string, createdAt?: string): C =>
+    ({ id, author, body, createdAt }) as C;
+
+  test("surfaces comments skipped since the last [bot] reply (#435 shape)", () => {
+    const out = collectUnansweredBacklog([
+      mk("1", "ework-daemon", "[system] 🏷 session started"),
+      mk("2", "ework-daemon", "[bot] 🏷 留言板已就位"),
+      mk("3", "Bunny4Don", "opencode-acp 失效了。如何排查", "2026-09-21T08:53:58Z"),
+      mk("4", "dog", "继续", "2026-09-21T13:02:40Z"),
+    ], "4");
+    expect(out.length).toBe(1);
+    expect(out[0]!.author).toBe("Bunny4Don");
+    expect(out[0]!.body).toContain("如何排查");
+    expect(out[0]!.createdAt).toBe("2026-09-21T08:53:58Z");
+  });
+
+  test("platform plumbing never anchors as an answer", () => {
+    const out = collectUnansweredBacklog([
+      mk("1", "ework-daemon", "[bot] 🏷 done"),
+      mk("2", "stranger", "question A"),
+      mk("3", "ework-daemon", "[system] 🏷 ✓ Message forwarded"),
+      mk("4", "dog", "继续"),
+    ], "4");
+    expect(out.length).toBe(1);
+    expect(out[0]!.body).toBe("question A");
+  });
+
+  test("no backlog once the agent replied after the question", () => {
+    const out = collectUnansweredBacklog([
+      mk("1", "stranger", "question A"),
+      mk("2", "ework-daemon", "[bot] 🏷 answered it"),
+      mk("3", "dog", "继续"),
+    ], "3");
+    expect(out.length).toBe(0);
+  });
+
+  test("truncates long bodies and caps at five entries", () => {
+    const long = "x".repeat(1500);
+    const many = Array.from({ length: 8 }, (_, i) => mk(`q${i}`, `u${i}`, long));
+    const out = collectUnansweredBacklog([...many, mk("trig", "dog", "继续")], "trig");
+    expect(out.length).toBe(5);
+    expect(out[0]!.author).toBe("u3");
+    expect(out[0]!.body.length).toBeLessThanOrEqual(1215);
+    expect(out[0]!.body).toContain("(truncated)");
+  });
+});
+
+describe("buildForwardPrompt backlog rendering", () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const { Engine } = require("../src/opencode") as { Engine: any };
+  const self = Object.create(Engine.prototype) as { cfg: unknown };
+  self.cfg = { daemon: { wakeLogins: ["dog"], noWakeLogins: [], nonWakingAuthors: [] } };
+
+  test("backlog entries render with per-author trust framing", () => {
+    const p = Engine.prototype.buildForwardPrompt.call(
+      self, "fwd", "继续", "dog", "human", "T", "/w", { issueRef: "o/r#1" }, [],
+      [{ author: "Bunny4Don", authorKind: "human", body: "如何排查", createdAt: "2026-09-21T08:53:58Z" }],
+    ) as string;
+    expect(p).toContain("not been answered yet");
+    expect(p).toContain("@Bunny4Don (user) (unverified outside user");
+    expect(p).toContain("如何排查");
+  });
+
+  test("empty backlog keeps the prompt identical in shape", () => {
+    const p = Engine.prototype.buildForwardPrompt.call(self, "fwd", "hi", "dog", "human", "T", "/w", { issueRef: "o/r#1" }, [], []) as string;
+    expect(p).not.toContain("not been answered yet");
+    expect(p).toContain("Reply using the `reply` tool.");
+  }
+);
+});
