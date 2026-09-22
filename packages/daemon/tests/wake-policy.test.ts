@@ -178,6 +178,37 @@ describe("collectUnansweredBacklog (opencode-acp#435)", () => {
     expect(out[0]!.body.length).toBeLessThanOrEqual(1215);
     expect(out[0]!.body).toContain("(truncated)");
   });
+
+  test("prefix-less bot comment is not backlogged (dog/tasks#18)", () => {
+    const out = collectUnansweredBacklog([
+      mk("1", "dog", "帮忙搞下"),
+      mk("2", "awork", "## 结论先行：不建议走反编译这条路"),
+      mk("trig", "dog", "还是反编译比较好 麻烦帮忙搞下吧"),
+    ], "trig", (login) => login === "awork");
+    expect(out.length).toBe(0);
+  });
+
+  test("prefix-less bot comment anchors the window for earlier human comments", () => {
+    const out = collectUnansweredBacklog([
+      mk("1", "dog", "旧问题"),
+      mk("2", "awork", "## 已回答旧问题"),
+      mk("3", "cat", "新问题"),
+      mk("trig", "dog", "继续"),
+    ], "trig", (login) => login === "awork");
+    expect(out.length).toBe(1);
+    expect(out[0]!.author).toBe("cat");
+    expect(out[0]!.body).toBe("新问题");
+  });
+
+  test("without the bot predicate only prefixes count (old buggy behavior)", () => {
+    const out = collectUnansweredBacklog([
+      mk("1", "dog", "问题"),
+      mk("2", "awork", "## 无前缀回复"),
+      mk("trig", "dog", "继续"),
+    ], "trig");
+    expect(out.length).toBe(2);
+    expect(out.map((e) => e.author)).toEqual(["dog", "awork"]);
+  });
 });
 
 describe("buildForwardPrompt backlog rendering", () => {

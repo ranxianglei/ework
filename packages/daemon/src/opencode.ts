@@ -529,13 +529,30 @@ export function communityWakeAdmitted(
 // skipped question); surfacing them in the forward prompt makes every skip
 // recoverable instead of permanent. Platform plumbing ([system]/🏷) never
 // counts as an answer anchor; the backlog caps at the 5 most recent.
+// A comment ANCHORS the unanswered window only when it is an actual agent
+// answer — a `[bot]`-prefixed reply, or any comment posted under the bot login
+// (an agent that forgot the prefix still answered, cf. dog/tasks#18 where a
+// prefix-less bot reply was re-carried on every forward). Plumbing
+// (`[system]`/🏷 badges) is machine content — excluded from the backlog but
+// never an answer, else a badge would silently erase pending user questions.
+function isAgentAnswer(
+  body: string,
+  author: string,
+  isBotAuthor?: (login: string) => boolean,
+): boolean {
+  if (/^\[bot\]/i.test(body.trimStart())) return true;
+  return isBotAuthor ? isBotAuthor(author) : false;
+}
+
 export function collectUnansweredBacklog(
   comments: Pick<TrackerComment, "id" | "body" | "author" | "authorKind" | "createdAt">[],
   triggerId: string,
+  isBotAuthor?: (login: string) => boolean,
 ): { author: string; authorKind?: string; body: string; createdAt?: string }[] {
   let anchor = -1;
   for (let i = comments.length - 1; i >= 0; i--) {
-    if (/^\[bot\]/i.test(comments[i]!.body.trimStart())) {
+    const c = comments[i]!;
+    if (isAgentAnswer(c.body, c.author, isBotAuthor)) {
       anchor = i;
       break;
     }
@@ -543,6 +560,7 @@ export function collectUnansweredBacklog(
   const out: { author: string; authorKind?: string; body: string; createdAt?: string }[] = [];
   for (const c of comments.slice(anchor + 1)) {
     if (c.id === triggerId) continue;
+    if (isAgentAnswer(c.body, c.author, isBotAuthor)) continue;
     if (isAiGeneratedComment(c.body)) continue;
     out.push({
       author: c.author,
@@ -2393,7 +2411,7 @@ export class Engine {
 
   private async fetchUnansweredBacklog(ref: TrackerRef, tracker: IssueTracker, triggerId: string) {
     const comments = await tracker.listComments(ref).catch((): TrackerComment[] => []);
-    return collectUnansweredBacklog(comments, triggerId);
+    return collectUnansweredBacklog(comments, triggerId, (login) => tracker.isBotUser(login));
   }
 
   private buildInitialPrompt(
