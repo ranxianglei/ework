@@ -411,6 +411,7 @@ All source changes (`src/**`) require review before merge:
 | Category | Check |
 | --- | --- |
 | Correctness | Queue invariants hold; off-by-ones in floor numbering; serialization per-issue. |
+| Regression | Reviewer builds a behavior inventory of touched paths from PRE-change code (not the diff alone) and verifies each: preserved / intentionally changed (disclosed old→new + why) / unintentional drift — drift BLOCKS merge. Watch for fix-A-breaks-B semantics shifts: fail-fast → swallow, default/threshold drift, timing/format changes, silently disabled retries/updates. |
 | Type safety | No `as any`, no `@ts-ignore`. Zod validation on inputs. |
 | Process safety | No orphan processes; SIGKILL scope correct; stdin/stdout drained. |
 | Anti-recursion | Bot-username check still triggers on `comment.user.login === BOT_USERNAME`. |
