@@ -2121,11 +2121,31 @@ export class Engine {
       : exitCode === null ? "spawn failed" : exitCode === 0 ? "completed" : "failed";
     const finalText = `[system] 🏷 ${emoji} **${session.name}** ${label} (${duration})`;
 
+    // The ⏳ progress comment is created mid-run by the observer; if the
+    // thread has moved past it (late agent replies, user comments), an
+    // in-place edit would park the terminal marker out of chronological
+    // order (dog/tasks#18: the ✅ sat above three later replies and the
+    // thread looked like it never ended). When anything follows the ⏳ — or
+    // it no longer exists — drop the stale plumbing comment and post the
+    // terminal state as a fresh comment at the end of the thread instead.
     if (progressId) {
-      try {
-        await tracker.editComment(ref, progressId, finalText);
-      } catch (err) {
-        log.error(`engine: failed to update progress comment for ${k}:`, (err as Error).message);
+      const threadNow = await tracker.listComments(ref).catch((): TrackerComment[] => []);
+      const idx = threadNow.findIndex((c) => String(c.id) === String(progressId));
+      if (idx >= 0 && idx === threadNow.length - 1) {
+        try {
+          await tracker.editComment(ref, progressId, finalText);
+        } catch (err) {
+          log.error(`engine: failed to update progress comment for ${k}:`, (err as Error).message);
+        }
+      } else {
+        if (idx >= 0) {
+          await tracker.deleteComment(ref, progressId).catch(
+            (err) => log.warn(`engine: failed to drop stale progress comment for ${k}:`, (err as Error).message)
+          );
+        }
+        await tracker.createComment(ref, finalText).catch(
+          err => log.error("engine: completion report failed:", (err as Error).message)
+        );
       }
     } else if (started && Date.now() - started > 180_000) {
       await tracker.createComment(ref, finalText).catch(
