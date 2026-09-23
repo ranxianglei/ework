@@ -410,8 +410,10 @@ All source changes (`src/**`) require review before merge:
 
 | Category | Check |
 | --- | --- |
+| Issue alignment | Reviewer read the ORIGINAL issue: what was broken, fix direction sound, root cause vs surface symptom? Issue-Triage three steps (repro / layering / solution assessment) apply in review posture. Wrong direction blocks regardless of code quality. |
+| Regression | Behavior inventory of touched paths built from PRE-change code (not the diff alone); per item: preserved / intentionally changed (disclosed old→new+why) / unintentional drift — drift BLOCKS. Independent of tests. Fix-A-breaks-B semantics shifts: fail-fast→swallow, default/threshold/timing drift, output-format changes, silently disabled retries/updates. |
 | Correctness | Queue invariants hold; off-by-ones in floor numbering; serialization per-issue. |
-| Regression | Reviewer builds a behavior inventory of touched paths from PRE-change code (not the diff alone) and verifies each: preserved / intentionally changed (disclosed old→new + why) / unintentional drift — drift BLOCKS merge. Watch for fix-A-breaks-B semantics shifts: fail-fast → swallow, default/threshold drift, timing/format changes, silently disabled retries/updates. |
+| Test validity | Tests reviewed for VALIDITY, not pass/fail (CI owns execution — don't re-run suites locally): assertions with teeth (would they catch this bug?), no tautologies/mock-only tests; changed behavior pinned by ≥1 test; behavior-changing features assessed for needed fake/sim e2e coverage. |
 | Type safety | No `as any`, no `@ts-ignore`. Zod validation on inputs. |
 | Process safety | No orphan processes; SIGKILL scope correct; stdin/stdout drained. |
 | Anti-recursion | Bot-username check still triggers on `comment.user.login === BOT_USERNAME`. |
