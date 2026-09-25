@@ -107,7 +107,7 @@ describe("upstream-sync github adapter", () => {
     mockFetch();
     await engine(sync, project).pollOnce();
     expect(calledUrls[0]).toBe(
-      "https://api.github.com/repos/acme/widget/issues?state=open&per_page=50&page=1&sort=created&direction=asc"
+      "https://api.github.com/repos/acme/widget/issues?state=all&per_page=50&page=1&sort=created&direction=asc"
     );
     expect(calledUrls.some((u) => u.includes("?per_page=50"))).toBe(true);
     expect(calledUrls.every((u) => !u.includes("/api/v1"))).toBe(true);

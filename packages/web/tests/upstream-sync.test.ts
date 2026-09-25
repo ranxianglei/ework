@@ -28,6 +28,7 @@ let hookCalls: { url: string; body: any }[] = [];
 let issuePages: any[][] = [];
 let repoComments: any[] = [];
 let issueComments: Record<number, any[]> = {};
+let listUrls: string[] = [];
 
 beforeAll(async () => {
   await initDB();
@@ -41,6 +42,7 @@ afterEach(async () => {
   issuePages = [];
   repoComments = [];
   issueComments = {};
+  listUrls = [];
   const db = getDB();
   const mysql = db.dialect === "mysql";
   await db.exec(mysql ? "SET FOREIGN_KEY_CHECKS = 0" : "PRAGMA foreign_keys = OFF");
@@ -100,6 +102,7 @@ function mockFetch() {
       return Response.json(issueComments[Number(perIssue[1])] ?? []);
     }
     if (url.startsWith(`${UPSTREAM}/api/v1/repos/acme/widget/issues`)) {
+      listUrls.push(url);
       return Response.json(issuePages.shift() ?? []);
     }
     return new Response("not found", { status: 404 });
@@ -286,6 +289,61 @@ describe("live poll (emits webhooks)", () => {
     expect(r.commentsImported).toBe(1);
     expect(await getCommentByUpstreamId(777)).toBeTruthy();
     expect(hookCalls.some((c) => c.body?.action === "created")).toBe(true);
+  });
+
+  test("imports a listing-lagged issue even when its updated_at is below the cursor (billion-context#1306)", async () => {
+    const { sync } = await setup();
+    issuePages = [[giteaIssue(1)]];
+    issueComments = { 1: [] };
+    mockFetch();
+    await makeSyncer(sync).pollOnce();
+    await settle();
+    const cursor = (await getUpstreamSync(projectId))!.issue_cursor!;
+    expect(cursor).toBe("2026-08-01T00:00:11Z");
+    hookCalls = [];
+
+    issuePages = [[giteaIssue(2, { created_at: "2026-08-01T00:00:05Z", updated_at: "2026-08-01T00:00:05Z" })]];
+    issueComments = { 2: [] };
+    repoComments = [];
+    const r = await makeSyncer((await getUpstreamSync(projectId))!).pollOnce();
+    await settle();
+
+    expect(r.issuesImported).toBe(1);
+    expect(await getIssueByUpstreamNumber(projectId, 2)).toBeTruthy();
+    expect(hookCalls.some((c) => c.body?.action === "opened")).toBe(true);
+  });
+
+  test("cursor still dedupes state syncs of already-mirrored rows", async () => {
+    const { sync } = await setup();
+    issuePages = [[giteaIssue(1)]];
+    issueComments = { 1: [] };
+    mockFetch();
+    await makeSyncer(sync).pollOnce();
+    await settle();
+    hookCalls = [];
+
+    issuePages = [[giteaIssue(1, { updated_at: "2026-08-01T00:00:11Z" })]];
+    repoComments = [];
+    const r = await makeSyncer((await getUpstreamSync(projectId))!).pollOnce();
+    await settle();
+
+    expect(r.issuesImported).toBe(0);
+    expect(r.issuesUpdated).toBe(0);
+    expect(hookCalls.length).toBe(0);
+  });
+
+  test("backfill lists all states, not just open, and imports closed history", async () => {
+    const { sync } = await setup();
+    issuePages = [[giteaIssue(1), giteaIssue(2, { state: "closed" })]];
+    issueComments = { 1: [], 2: [] };
+    mockFetch();
+
+    const r = await makeSyncer(sync).pollOnce();
+    await settle();
+
+    expect(listUrls[0]).toContain("state=all");
+    expect(r.issuesImported).toBe(2);
+    expect((await getIssueByUpstreamNumber(projectId, 2))?.state).toBe("closed");
   });
 });
 

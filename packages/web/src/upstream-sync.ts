@@ -205,8 +205,8 @@ export class UpstreamSync {
     for (let page = 1; page <= 20; page++) {
       const issues = await this.fetchJson<GiteaIssue[]>(
         this.isGithub
-          ? `/issues?state=open&per_page=50&page=${page}&sort=created&direction=asc`
-          : `/issues?state=open&type=issues&limit=50&page=${page}&sort=created&order=asc`
+          ? `/issues?state=all&per_page=50&page=${page}&sort=created&direction=asc`
+          : `/issues?state=all&type=issues&limit=50&page=${page}&sort=created&order=asc`
       );
       if (!issues || issues.length === 0) break;
       for (const gi of issues) {
@@ -237,8 +237,14 @@ export class UpstreamSync {
     let issueCursor = this.sync.issue_cursor;
     if (issues) {
       for (const gi of issues) {
-        if (this.sync.issue_cursor && gi.updated_at <= this.sync.issue_cursor) continue;
         const existing = await getIssueByUpstreamNumber(this.project.id, gi.number);
+        // Identity beats the cursor for imports: GitHub's sort=updated listing
+        // lags seconds behind creation, so a fresh issue can sit below a cursor
+        // another issue's later update already pushed past it — an issue absent
+        // locally must always import or that lag loses it forever
+        // (ranxianglei/billion-context#1306). The cursor only dedupes state
+        // syncs of rows we already mirror.
+        if (existing && this.sync.issue_cursor && gi.updated_at <= this.sync.issue_cursor) continue;
         if (!existing) {
           await this.importIssue(gi, true);
           result.issuesImported++;
