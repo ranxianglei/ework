@@ -24,6 +24,7 @@ import type {
 
 const FAKE_BIN_KILL = join(tmpdir(), "fake-opencode-infra-kill.sh"); // SIGKILLs itself -> exit 137
 const FAKE_BIN_OK = join(tmpdir(), "fake-opencode-infra-ok.sh"); // exits 0 after a short sleep
+const FAKE_BIN_EXIT1 = join(tmpdir(), "fake-opencode-infra-exit1.sh"); // exits 1 instantly -> startup crash
 
 let workdirBase: string;
 let flakyBin: string; // fails once with SIGKILL, then exits 0 (counter-file driven)
@@ -121,6 +122,8 @@ type EnginePriv = {
 beforeAll(async () => {
   writeFileSync(FAKE_BIN_KILL, "#!/bin/sh\nkill -9 $$\n");
   chmodSync(FAKE_BIN_KILL, 0o755);
+  writeFileSync(FAKE_BIN_EXIT1, "#!/bin/sh\nexit 1\n");
+  chmodSync(FAKE_BIN_EXIT1, 0o755);
   writeFileSync(FAKE_BIN_OK, "#!/bin/sh\nsleep 0.1\nexit 0\n");
   chmodSync(FAKE_BIN_OK, 0o755);
   await initDB();
@@ -207,6 +210,56 @@ describe("infra failure auto-retry (ework#5)", () => {
     expect(row?.attempts).toBe(0); // never touched by the infra path
     // The first requeue posts a visible notice to the issue thread.
     expect(tracker.comments.some((c) => c.includes("infrastructure failure"))).toBe(true);
+  });
+
+  // billion-context-pi#531: the opencode DB failed `PRAGMA journal_mode = WAL`
+  // right after an OOM restart and the spawn died in ~1s with exit 1 — the
+  // work item was consumed as terminal with no retry. A fast crash never
+  // reached the model, so it must ride the infra budget instead.
+  test("a startup crash (instant exit 1) retries on the infra budget and completes when the environment recovers", async () => {
+    const startupFlakyBin = join(workdirBase, "fake-opencode-startup-flaky.sh");
+    const counterFile = join(workdirBase, "startup-count");
+    writeFileSync(startupFlakyBin, [
+      "#!/bin/sh",
+      `n=$(cat "${counterFile}" 2>/dev/null || echo 0)`,
+      "n=$((n+1))",
+      `echo "$n" > "${counterFile}"`,
+      'if [ "$n" -lt 2 ]; then exit 1; fi',
+      "sleep 0.1",
+      "exit 0",
+    ].join("\n"));
+    chmodSync(startupFlakyBin, 0o755);
+
+    const { engine, store, daemonId } = await bootEngine({ bin: startupFlakyBin, work: { infraRetryMax: 3, infraRetryBaseMs: 50 } });
+    const { issue, session, msg } = await seed(store, daemonId);
+
+    await (engine as unknown as EnginePriv).deactivateIfIdle(KEY, session, issue);
+
+    await eventually(async () => {
+      const row = await store.getMessage(msg.id);
+      if (row?.status !== "done") throw new Error(`status=${row?.status} error=${row?.error}`);
+    });
+
+    const row = await store.getMessage(msg.id);
+    expect(row?.infraAttempts).toBe(1);
+    expect(row?.attempts).toBe(0);
+  });
+
+  test("persistent startup crashes end terminal failed only after the infra budget", async () => {
+    const { engine, store, daemonId } = await bootEngine({ bin: FAKE_BIN_EXIT1, work: { infraRetryMax: 2, infraRetryBaseMs: 50 } });
+    const { issue, session, msg } = await seed(store, daemonId);
+
+    await (engine as unknown as EnginePriv).deactivateIfIdle(KEY, session, issue);
+
+    await eventually(async () => {
+      const row = await store.getMessage(msg.id);
+      if (row?.status !== "failed") throw new Error(`status=${row?.status}`);
+    });
+
+    const row = await store.getMessage(msg.id);
+    expect(row?.error).toMatch(/^exit 1:/);
+    expect(row?.infraAttempts).toBe(2);
+    expect((await engine.getStatus()).runningCount).toBe(0);
   });
 
   test("infraRetryMax=0 disables auto-retry: immediate terminal failure", async () => {

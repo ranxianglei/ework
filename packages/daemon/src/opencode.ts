@@ -1944,7 +1944,8 @@ export class Engine {
       if (exitCode !== 0) {
         log.error(`engine: pid=${handle.pid} exited ${exitCode} for ${k}`);
         log.error(`  stderr: ${stderr.slice(0, 2000)}`);
-        const infraKind = this.classifyInfraFailure(undefined, exitCode);
+        const infraKind = this.classifyInfraFailure(undefined, exitCode)
+          ?? this.classifyStartupFailure(k, exitCode);
         if (infraKind && await this.requeueInfraFailure(k, session, issue, msg, infraKind)) {
           infraRequeued = true;
         } else {
@@ -2007,6 +2008,23 @@ export class Engine {
     const text = e ? `${e.code ?? ""} ${e.message}` : String(err ?? "");
     if (text.includes("ENOSPC") || text.includes("No space left")) return "disk full (ENOSPC)";
     return null;
+  }
+
+  // A child that dies within STARTUP_FAILURE_WINDOW_MS never reached the
+  // model: it is a launcher/environment failure (billion-context-pi#531: the
+  // opencode DB threw `PRAGMA journal_mode = WAL` in the OOM aftermath and the
+  // spawn died in 1.2s). Consuming the message as terminal there loses the
+  // work item on a transient — treat it as infra and requeue with backoff.
+  // Runs that survive the window and then exit non-zero keep the old
+  // terminal semantics (the exit is then the run's own outcome).
+  private static readonly STARTUP_FAILURE_WINDOW_MS = 10_000;
+
+  private classifyStartupFailure(k: string, exitCode: number): string | null {
+    const started = this.startedAt.get(k);
+    if (started == null) return null;
+    const runtime = Date.now() - started;
+    if (runtime >= Engine.STARTUP_FAILURE_WINDOW_MS) return null;
+    return `startup failure (exit ${exitCode} after ${Math.round(runtime)}ms, never reached the model)`;
   }
 
   /**

@@ -10,5 +10,10 @@ EnvironmentFile=/var/lib/ework-daemon/share/ework-daemon/.env
 ExecStart=/usr/bin/bun /usr/lib/node_modules/ework-aio/node_modules/ework-daemon/bin/ework-daemon-server.js
 Restart=on-failure
 RestartSec=3
+# An agent child ballooning must not take the whole daemon down: with the
+# default OOMPolicy=stop, systemd stops the entire service when the kernel
+# OOM-kills one child (2026-09-25 06:40 VM incident). `continue` keeps the
+# daemon alive; only the offending child dies.
+OOMPolicy=continue
 [Install]
 WantedBy=multi-user.target
