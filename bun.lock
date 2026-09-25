@@ -7,14 +7,14 @@
     },
     "packages/aio": {
       "name": "ework-aio",
-      "version": "0.5.89",
+      "version": "0.5.90",
       "bin": {
         "ework-aio": "./bin/ework-aio",
       },
       "dependencies": {
         "ework-daemon": "^0.4.106",
         "ework-router": "^0.1.12",
-        "ework-web": "^0.10.136",
+        "ework-web": "^0.10.137",
         "opencode-ework": "^0.1.0",
         "zod": "^3.23.0",
       },
@@ -100,7 +100,7 @@
     },
     "packages/web": {
       "name": "ework-web",
-      "version": "0.10.136",
+      "version": "0.10.137",
       "bin": {
         "ework-web": "./bin/ework-web.js",
       },
