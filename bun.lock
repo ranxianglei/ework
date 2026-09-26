@@ -7,12 +7,12 @@
     },
     "packages/aio": {
       "name": "ework-aio",
-      "version": "0.5.90",
+      "version": "0.5.92",
       "bin": {
         "ework-aio": "./bin/ework-aio",
       },
       "dependencies": {
-        "ework-daemon": "^0.4.106",
+        "ework-daemon": "^0.4.107",
         "ework-router": "^0.1.12",
         "ework-web": "^0.10.137",
         "opencode-ework": "^0.1.0",
@@ -39,7 +39,7 @@
     },
     "packages/daemon": {
       "name": "ework-daemon",
-      "version": "0.4.106",
+      "version": "0.4.107",
       "bin": {
         "ework-daemon": "./src/cli.ts",
         "ework-daemon-server": "./bin/ework-daemon-server.js",

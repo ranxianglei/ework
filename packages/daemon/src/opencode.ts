@@ -491,6 +491,17 @@ export function wakePolicySkips(
   return null;
 }
 
+// Release PRs are machine-authored (release workflow bots) yet MUST wake an
+// agent: the release-audit discipline treats every publish as a reviewable
+// event (VM global AGENTS.md §PR Review ②b). Bots are otherwise excluded
+// from waking, so this carve-out is title-gated to release-shaped PR mirrors
+// only — a bot's ordinary "[PR] fix: …" still never wakes anyone
+// (billion-context#1313/#1427 incident pattern).
+export function releasePrAdmitted(title: string | undefined, enabled: boolean): boolean {
+  if (!enabled) return false;
+  return /^\[PR\]\s*(chore:\s*)?release\s/i.test(title ?? "");
+}
+
 // Community-wake daily quota: prune stamps older than a day, admit while the
 // retained count stays under the limit. Pure for testability.
 export function externalWakeAllotment(
@@ -1164,6 +1175,10 @@ export class Engine {
     if (wakeAuthor) {
       let skip = wakePolicySkips(this.cfg.daemon, wakeAuthor, wakeKind);
       let whitelisted = false;
+      if (skip && releasePrAdmitted(event.issue?.title, this.cfg.daemon.releaseWake)) {
+        skip = null;
+        log.info(`engine: release-PR wake — bot-authored release mirror admitted for ${ref.trackerType}:${scopeKey}#${ref.issueId} (title: ${event.issue?.title})`);
+      }
       if (skip && skip.includes("not in wakeLogins")) {
         // GitHub logins are case-insensitive; match the project whitelist that
         // way, then inject the exact author string for the exact-match check.

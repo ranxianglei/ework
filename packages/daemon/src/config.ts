@@ -30,6 +30,7 @@ export const configSchema = z.object({
     wakeLogins: z.array(z.string()).default([]),
     noWakeLogins: z.array(z.string()).default([]),
     externalWakeLimit: z.coerce.number().default(5),
+    releaseWake: z.boolean().default(true),
   }),
   opencode: z.object({
     binary: z.string().default("opencode"),
@@ -173,6 +174,7 @@ export function loadConfig(): Config {
         wakeLogins: (process.env.WORK_WAKE_LOGINS ?? "").split(",").map((s) => s.trim()).filter(Boolean),
         noWakeLogins: (process.env.WORK_NO_WAKE_LOGINS ?? "").split(",").map((s) => s.trim()).filter(Boolean),
         externalWakeLimit: Number(process.env.WORK_EXTERNAL_WAKE_LIMIT ?? 5),
+        releaseWake: (process.env.WORK_RELEASE_WAKE ?? "true") !== "false",
       },
       opencode: {
         binary: process.env.OPENCODE_BINARY ?? TEST_DEFAULTS.opencode.binary,
