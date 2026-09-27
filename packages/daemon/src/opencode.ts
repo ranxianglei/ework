@@ -967,10 +967,20 @@ export class Engine {
   private async ensureOwned(issue: Issue): Promise<boolean> {
     if (issue.ownerDaemonId === this.daemonId) return true;
     const won = await this.store.claimIssue(issue.id, this.daemonId);
-    if (!won) {
+    if (won) return true;
+    // The row is held by another daemon. If that owner went silent (crashed
+    // without releasing), failover must not wait for the next observer
+    // cycle: clear stale leases and retry the claim inline.
+    // releaseDeadOwners is a heartbeat-gated no-op for live owners, so the
+    // lost-claim semantics below are unchanged for healthy peers
+    // (e2e Phase 7 failover race, 2026-09-27).
+    await this.store.releaseDeadOwners(this.cfg.work.leaseTtlMs);
+    const reclaimed = await this.store.claimIssue(issue.id, this.daemonId);
+    if (!reclaimed) {
       log.info(`engine: lost claim on issue ${issue.id} to another daemon (owner=${issue.ownerDaemonId})`);
       return false;
     }
+    log.info(`engine: reclaimed issue ${issue.id} from stale owner (lease ttl ${Math.round(this.cfg.work.leaseTtlMs / 1000)}s)`);
     return true;
   }
 

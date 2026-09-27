@@ -361,9 +361,46 @@ describe("multi-engine: failover", () => {
 
     await store.close();
   });
-});
 
-// Harness sanity: when nothing is contested, the spawn count is deterministic.
+  it("survivor reclaims a dead owner's issue inline on dispatch, without releaseDeadOwners or observer", async () => {
+    const store = new Store();
+    const cfg = makeConfig();
+
+    const A = await bootEngine("A", store, cfg, 7015);
+    const B = await bootEngine("B", store, cfg, 7016);
+
+    await A.engine.handleEvent(openedEvent("310", "inline failover target"));
+    const setupCount = await waitForSettled();
+    expect(setupCount).toBe(2);
+    const issue = (await store.listAllIssues())[0]!;
+    expect(issue.ownerDaemonId).toBe(A.daemonId);
+    const session = (await store.getSessionsForIssue(issue.id))[0]!;
+    const baselineCounter = readCounter();
+
+    // Simulate engineA dying hard: heartbeat stops and NOTHING releases the
+    // lease (no observer cycle, no store.releaseDeadOwners call). The row
+    // still names A as owner after the lease TTL lapses.
+    A.engine.stopHeartbeat();
+    await sleep(LEASE_TTL_MS + 150);
+    const stillOwned = await store.getIssue(issue.id);
+    expect(stillOwned?.ownerDaemonId).toBe(A.daemonId);
+
+    // engineB dispatches a new comment → ensureOwned must clear the stale
+    // lease itself and win the claim inline (e2e Phase 7 failover race,
+    // 2026-09-27: waiting for the 5-min observer made takeover timing
+    // observer-phase-dependent).
+    await B.engine.handleEvent(commentedEvent("310", "comment-inline-failover", "take over"));
+    await waitForSettled();
+
+    const finalIssue = await store.getIssue(issue.id);
+    expect(finalIssue?.ownerDaemonId).toBe(B.daemonId);
+    const ownedByB = await store.listOwnedSessions(B.daemonId);
+    expect(ownedByB.map((s) => s.id)).toContain(session.id);
+    expect(readCounter() - baselineCounter).toBeGreaterThanOrEqual(2);
+
+    await store.close();
+  });
+});
 // This guards against false negatives in the scenarios above (e.g., if the
 // fake binary stopped working, the no-double-spawn assertions would trivially
 // pass at counter=0).
