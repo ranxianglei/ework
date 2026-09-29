@@ -56,7 +56,7 @@ trackers.set("gitea", giteaTracker);
 async function boot() {
   await initDB();
 
-  const store = new Store();
+  const store = new Store(config.work.projectPriorities);
 
   // Multi-machine coordination boot:
   // 1. Release any stale owners (dead-daemon cleanup) so we can adopt orphans.

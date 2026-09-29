@@ -65,6 +65,7 @@ export const configSchema = z.object({
     infraRetryMax: z.coerce.number().int().nonnegative().default(3),
     infraRetryBaseMs: z.coerce.number().int().positive().default(15_000),
     recoveryReport: z.boolean().default(true),
+    projectPriorities: z.array(z.object({ scope: z.string().min(1), priority: z.number().int().min(0).max(1000) })).default([]),
   }),
   db: z.object({
     driver: z.enum(["sqlite", "mysql"]).default("sqlite"),
@@ -130,7 +131,31 @@ function readWorkSection() {
       : 3,
     infraRetryBaseMs: process.env.WORK_INFRA_RETRY_BASE_MS ? Math.max(1, Number(process.env.WORK_INFRA_RETRY_BASE_MS)) : 15_000,
     recoveryReport: !(process.env.WORK_RECOVERY_REPORT === "false" || process.env.WORK_RECOVERY_REPORT === "0"),
+    projectPriorities: parseProjectPriorities(process.env.WORK_PROJECT_PRIORITIES),
   };
+}
+
+/**
+ * WORK_PROJECT_PRIORITIES="owner/repo=100,owner2/repo2=10" — queue pickup
+ * order becomes (priority DESC, created_at ASC); unset/empty keeps pure FIFO.
+ * Malformed entries throw at boot: a typo silently leaving a project at
+ * default priority is worse than a failed start.
+ */
+export function parseProjectPriorities(raw: string | undefined): { scope: string; priority: number }[] {
+  const out: { scope: string; priority: number }[] = [];
+  if (!raw || !raw.trim()) return out;
+  for (const part of raw.split(",")) {
+    const entry = part.trim();
+    if (!entry) continue;
+    const eq = entry.lastIndexOf("=");
+    const scope = eq > 0 ? entry.slice(0, eq).trim() : "";
+    const num = eq > 0 && eq < entry.length - 1 ? Number(entry.slice(eq + 1).trim()) : NaN;
+    if (!scope.includes("/") || !Number.isInteger(num) || num < 0 || num > 1000) {
+      throw new Error(`WORK_PROJECT_PRIORITIES: invalid entry "${entry}" — expected owner/repo=<integer 0-1000>`);
+    }
+    out.push({ scope, priority: num });
+  }
+  return out;
 }
 
 function readDbSection(fallbackPath: string) {

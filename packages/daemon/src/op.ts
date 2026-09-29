@@ -123,8 +123,11 @@ export function sessionToTrackerRef(session: OpSession, issue: Issue): TrackerRe
 // ─── Store (async DAO over the global AsyncDatabase from db.ts) ───
 
 export class Store {
-  // No constructor work: the DB is opened globally by initDB() at boot.
+  // No constructor IO: the DB is opened globally by initDB() at boot.
   // Tests rely on tests/setup.ts to call initDB() in beforeAll.
+  // projectPriorities (from WORK_PROJECT_PRIORITIES) only steers queue
+  // pickup order in getGlobalPendingMessages; default [] = pure FIFO.
+  constructor(private readonly projectPriorities: { scope: string; priority: number }[] = []) {}
 
   // ─── Issues ───
 
@@ -323,11 +326,39 @@ export class Store {
   }
 
   async getGlobalPendingMessages(limit: number): Promise<Message[]> {
-    const rows = await getDB().all<MessageRow>(
-      `SELECT * FROM {{messages}} WHERE status = 'pending' AND ${Store.RETRY_HOLD_SQL} ORDER BY created_at ASC LIMIT ?`,
-      [new Date().toISOString(), limit]
-    );
+    const now = new Date().toISOString();
+    const rows = this.projectPriorities.length > 0
+      ? await this.priorityOrderedPending(now, limit)
+      : await getDB().all<MessageRow>(
+          `SELECT * FROM {{messages}} WHERE status = 'pending' AND ${Store.RETRY_HOLD_SQL} ORDER BY created_at ASC LIMIT ?`,
+          [now, limit]
+        );
     return rows.map(rowToMessage);
+  }
+
+  /**
+   * WORK_PROJECT_PRIORITIES pickup: (priority DESC, created_at ASC). The
+   * no-config path above keeps the original single-table query byte-for-byte;
+   * this joined variant only runs when priorities are configured. Values are
+   * bound parameters (never interpolated), and scope keys are matched exactly
+   * against issues.tracker_scope_key ("owner/repo" form).
+   */
+  private async priorityOrderedPending(nowIso: string, limit: number): Promise<MessageRow[]> {
+    const whens: string[] = [];
+    const caseParams: unknown[] = [];
+    for (const { scope, priority } of this.projectPriorities) {
+      whens.push("WHEN i.tracker_scope_key = ? THEN ?");
+      caseParams.push(scope, priority);
+    }
+    return getDB().all<MessageRow>(
+      `SELECT m.* FROM {{messages}} m
+       JOIN {{op_sessions}} s ON s.uid = m.session_id
+       JOIN {{issues}} i ON i.uid = s.issue_id
+       WHERE m.status = 'pending' AND (m.retry_after IS NULL OR m.retry_after <= ?)
+       ORDER BY CASE ${whens.join(" ")} ELSE 0 END DESC, m.created_at ASC
+       LIMIT ?`,
+      [nowIso, ...caseParams, limit]
+    );
   }
 
   async bumpMessageAttempts(id: string): Promise<void> {
