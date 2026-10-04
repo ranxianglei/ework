@@ -1869,6 +1869,8 @@ export class Engine {
 
     if (msg.sourceCommentId) {
       try { await tracker.setReaction(ref, msg.sourceCommentId, "eyes"); } catch { /* non-critical */ }
+    } else {
+      try { await tracker.setIssueReaction(ref, "eyes"); } catch { /* non-critical */ }
     }
 
     const childEnv = spawnEnvFor(process.env, this.hookEnvFor(issue, session, workdir), workdir);
@@ -2315,19 +2317,22 @@ export class Engine {
       }
     }
 
-    // Remove eyes on source comment; react +1/-1 on the bot's last reply (fallback: source)
     const recentMsgs = await this.store.getRecentMessages(session.id, 1);
     const lastMsg = recentMsgs[0];
-    if (lastMsg?.sourceCommentId) {
+    if (lastMsg) {
       // Check if any other session is still running on this issue
       const prefix = `${issue.trackerType}:${issue.trackerScopeKey}#${issue.trackerIssueId}@`;
       const stillRunning = [...this.running].some(rk => rk.startsWith(prefix) && rk !== k);
       if (!stillRunning) {
+        const reaction = exitCode === 0 ? "+1" : "-1";
         try {
-          await tracker.setReaction(ref, lastMsg.sourceCommentId, "eyes", true);
-          const reaction = exitCode === 0 ? "+1" : "-1";
-          const targetId = lastMsg.sourceCommentId;
-          await tracker.setReaction(ref, targetId, reaction);
+          if (lastMsg.sourceCommentId) {
+            await tracker.setReaction(ref, lastMsg.sourceCommentId, "eyes", true);
+            await tracker.setReaction(ref, lastMsg.sourceCommentId, reaction);
+          } else {
+            await tracker.setIssueReaction(ref, "eyes", true);
+            await tracker.setIssueReaction(ref, reaction);
+          }
         } catch { /* non-critical */ }
       }
     }

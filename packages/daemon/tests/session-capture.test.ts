@@ -107,6 +107,7 @@ class FakeTracker implements IssueTracker {
   }
   async setCommentModel(_ref: unknown, _commentId: string, _model: string): Promise<void> {}
   async setReaction(): Promise<void> {}
+  async setIssueReaction(): Promise<void> {}
 
   getTrackerInstructions(_ref: TrackerRef): TrackerInstructions {
     return { clone: "git clone fake", issueRef: "fake/ref" };

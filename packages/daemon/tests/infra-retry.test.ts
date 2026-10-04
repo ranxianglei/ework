@@ -53,6 +53,7 @@ class RecordingTracker implements IssueTracker {
   }
   async setCommentModel(): Promise<void> {}
   async setReaction(): Promise<void> {}
+  async setIssueReaction(): Promise<void> {}
   getTrackerInstructions(): TrackerInstructions { return { clone: "git clone fake", issueRef: "fake/ref" }; }
   verifyWebhookSignature(): boolean { return true; }
   parseWebhookEvent(): TrackerEvent | null { return null; }

@@ -89,6 +89,18 @@ export class GiteaTracker implements IssueTracker {
     }
   }
 
+  async setIssueReaction(ref: TrackerRef, content: string, remove = false) {
+    if (remove) {
+      await this.client.removeReaction(
+        this.owner(ref), this.repo(ref), Number(ref.issueId), content
+      );
+    } else {
+      await this.client.addReaction(
+        this.owner(ref), this.repo(ref), Number(ref.issueId), content
+      );
+    }
+  }
+
   getTrackerInstructions(ref: TrackerRef): TrackerInstructions {
     const owner = this.owner(ref);
     const repo = this.repo(ref);
