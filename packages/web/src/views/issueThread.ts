@@ -3,7 +3,7 @@ import { classifyActor, renderCommentCard, relTime, type CommentView } from "../
 import { renderMarkdown } from "../render/markdown";
 import { renderLayout, escapeHtml, escapeAttr } from "../render/layout";
 import { runIssueActionsHook, type IssueActionContext, type IssueAction } from "../issue-actions-hook";
-import { hydrateReactions } from "../reactions";
+import { hydrateReactions, REACTION_EMOJI } from "../reactions";
 import {
   StoreError,
   countComments,
@@ -12,6 +12,7 @@ import {
   listCommentsPage,
   listCommentsSince,
   getDefaultUpstreamUrl,
+  listIssueReactionsFor,
   listLabelsForIssue,
   getUserByLogin,
   listCachedModels,
@@ -191,8 +192,17 @@ export async function buildIssueThread(
     extraStatusBadges = result.statusBadges;
   }
 
+  const issueRxAggs = await listIssueReactionsFor([issue.id]);
+  const issueReactionsHtml = issueRxAggs.length
+    ? `<span class="rx">` + issueRxAggs.map((a) => {
+        const emoji = REACTION_EMOJI[a.content] ?? a.content;
+        return `<span class="rxc">${emoji}<span class="rxn">${a.n}</span></span>`;
+      }).join("") + `</span>`
+    : undefined;
+
   const html = renderLayout(
     {
+      issueReactionsHtml,
       title: `${issue.title} · ${owner}/${repo}#${number}`,
       issueTitle: issue.title,
       upstreamUrl: upstreamRefBase(project) ?? undefined,

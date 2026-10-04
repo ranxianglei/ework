@@ -142,6 +142,16 @@ CREATE TABLE IF NOT EXISTS {{reactions}} (
 CREATE INDEX IF NOT EXISTS reactions_comment
   ON {{reactions}} (comment_id);
 
+CREATE TABLE IF NOT EXISTS {{issue_reactions}} (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  issue_id    INTEGER NOT NULL REFERENCES {{issues}}(id) ON DELETE CASCADE,
+  user_login  TEXT NOT NULL REFERENCES {{users}}(login),
+  content     TEXT NOT NULL,
+  UNIQUE (issue_id, user_login, content)
+);
+CREATE INDEX IF NOT EXISTS issue_reactions_issue
+  ON {{issue_reactions}} (issue_id);
+
 CREATE TABLE IF NOT EXISTS {{attachments}} (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   uuid          TEXT NOT NULL UNIQUE,

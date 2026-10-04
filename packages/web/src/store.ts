@@ -876,6 +876,39 @@ export async function removeReaction(commentId: number, userLogin: string, conte
   );
 }
 
+export interface IssueReactionAgg {
+  issue_id: number;
+  content: string;
+  n: number;
+}
+
+export async function listIssueReactionsFor(issueIds: number[]): Promise<IssueReactionAgg[]> {
+  if (issueIds.length === 0) return [];
+  const placeholders = issueIds.map(() => "?").join(",");
+  return await getDB().all<IssueReactionAgg>(
+    `SELECT issue_id, content, COUNT(*) AS n
+     FROM {{issue_reactions}} WHERE issue_id IN (${placeholders})
+     GROUP BY issue_id, content`,
+    issueIds
+  );
+}
+
+export async function addIssueReaction(issueId: number, userLogin: string, content: string): Promise<void> {
+  if (!content || content.length > 32) throw new StoreError(400, "非法的 reaction content");
+  await ensureUser(userLogin);
+  await getDB().run(
+    "INSERT OR IGNORE INTO {{issue_reactions}} (issue_id, user_login, content) VALUES (?, ?, ?)",
+    [issueId, userLogin, content]
+  );
+}
+
+export async function removeIssueReaction(issueId: number, userLogin: string, content: string): Promise<void> {
+  await getDB().run(
+    "DELETE FROM {{issue_reactions}} WHERE issue_id = ? AND user_login = ? AND content = ?",
+    [issueId, userLogin, content]
+  );
+}
+
 const LABEL_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
 const LABEL_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9 _\-./]{0,62}$/;
 

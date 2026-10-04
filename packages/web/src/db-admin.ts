@@ -56,6 +56,7 @@ export const MIGRATION_TABLE_ORDER = [
   "comments",
   "issue_labels",
   "reactions",
+  "issue_reactions",
   "attachments",
   "webhooks",
   "personal_access_tokens",

@@ -27,6 +27,7 @@ export interface LayoutProps {
   modelSelect?: { current: string; options: { id: string; label: string }[] } | null;
   runtimeSelect?: { current: string } | null;
   authorLineHtml?: string;
+  issueReactionsHtml?: string;
 }
 
 export const THEME_CSS = `
@@ -252,6 +253,7 @@ export function renderLayout(props: LayoutProps, inner: string, initialItems: st
 <div class="meta-bar">
   <h1>${escapeHtml(props.issueTitle)}</h1>
   ${props.authorLineHtml ?? ""}
+  ${props.issueReactionsHtml ?? ""}
   <div class="meta-status">
     <span class="state-badge ${stateClass}">${stateLabel}</span>
     ${aiBadgeHtml}

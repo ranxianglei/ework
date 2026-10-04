@@ -135,6 +135,16 @@ CREATE TABLE IF NOT EXISTS {{reactions}} (
   CONSTRAINT {{fk_reactions_comment}} FOREIGN KEY (comment_id)  REFERENCES {{comments}}(id) ON DELETE CASCADE,
   CONSTRAINT {{fk_reactions_user}} FOREIGN KEY (user_login)  REFERENCES {{users}}(login)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS {{issue_reactions}} (
+  id          BIGINT AUTO_INCREMENT PRIMARY KEY,
+  issue_id    BIGINT NOT NULL,
+  user_login  VARCHAR(255) NOT NULL,
+  content     VARCHAR(64) NOT NULL,
+  UNIQUE (issue_id, user_login, content),
+  CONSTRAINT {{fk_issue_reactions_issue}} FOREIGN KEY (issue_id)  REFERENCES {{issues}}(id) ON DELETE CASCADE,
+  CONSTRAINT {{fk_issue_reactions_user}} FOREIGN KEY (user_login)  REFERENCES {{users}}(login)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE INDEX reactions_comment ON {{reactions}} (comment_id);
 CREATE INDEX reactions_user   ON {{reactions}} (user_login);
 

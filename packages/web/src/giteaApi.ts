@@ -30,6 +30,8 @@ import {
   addReaction,
   removeReaction,
   listReactionsFor,
+  addIssueReaction,
+  removeIssueReaction,
   canWriteProject,
   canReadProject,
   ensureUser,
@@ -319,14 +321,33 @@ export async function handleGiteaApi(
     }
   }
 
-  // /issues/:n/reactions — stub. Some daemons use these for the 🔄 picked-up marker
-  // on issues. ework has no issue-reactions table today (only comment reactions).
-  // Returning empty list keeps the daemon's main loop (comment + close) running
-  // without crashing. Add a real issue_reactions table in Phase 4.x if the
-  // picked-up marker turns out to matter operationally.
   m = path.match(ROUTES.issueReactions);
-  if (m && (req.method === "POST" || req.method === "DELETE" || req.method === "GET")) {
-    return { status: 200, body: [] };
+  if (m) {
+    const [, owner, repo, numStr] = m;
+    if (!(owner && repo && numStr)) return giteaError(404, "not found");
+    try {
+      const project = await getProject(owner, repo);
+      if (!project) return giteaError(404, "repository not found");
+      if (!(await canReadProject(project.id, user))) return giteaError(404, "repository not found");
+      const issue = await getIssue(project.id, Number(numStr));
+      if (!issue) return giteaError(404, "issue not found");
+
+      if (req.method === "GET") {
+        return { status: 200, body: await issueReactionsList(issue.id, origin) };
+      }
+      if (req.method === "POST" || req.method === "DELETE") {
+        if (!(await canWriteProject(project.id, user))) return giteaError(403, "requires writer role");
+        const body = await readJson(req);
+        const content = asContent(body.content);
+        if (content === undefined) return giteaError(400, "content required");
+        if (req.method === "POST") await addIssueReaction(issue.id, user.login, content);
+        else await removeIssueReaction(issue.id, user.login, content);
+        return { status: 200, body: await issueReactionsList(issue.id, origin) };
+      }
+      return giteaError(405, `method ${req.method} not allowed`);
+    } catch (e) {
+      return giteaError(e instanceof StoreError ? e.status : 500, e instanceof Error ? e.message : "error");
+    }
   }
 
   m = path.match(ROUTES.commentShow);
@@ -424,6 +445,18 @@ export async function handleGiteaApi(
 // Gitea returns a per-user list, not the aggregated counts ework's store
 // keeps. The "reaction" key is Gitea's wire name; we also emit "content"
 // for self-consistency with ework's schema.
+async function issueReactionsList(issueId: number, origin: string): Promise<{ user: ReturnType<typeof buildUser>; reaction: string; content: string }[]> {
+  const rows = await getDB().all<{ user_login: string; content: string }>(
+    "SELECT user_login, content FROM {{issue_reactions}} WHERE issue_id = ? ORDER BY rowid",
+    [issueId]
+  );
+  return rows.map((r) => ({
+    user: buildUser(r.user_login, origin),
+    reaction: r.content,
+    content: r.content,
+  }));
+}
+
 async function reactionsList(commentId: number, origin: string): Promise<{ user: ReturnType<typeof buildUser>; reaction: string; content: string }[]> {
   const aggs = await listReactionsFor([commentId]);
   if (aggs.length === 0) return [];
