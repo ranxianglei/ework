@@ -140,6 +140,12 @@ function migrateIssuesTable(db: Database): void {
   if (!have.has("upstream_issue_number")) {
     db.exec(applyPrefix("ALTER TABLE {{issues}} ADD COLUMN upstream_issue_number INTEGER"));
   }
+  if (!have.has("upstream_mergeable_state")) {
+    db.exec(applyPrefix("ALTER TABLE {{issues}} ADD COLUMN upstream_mergeable_state TEXT"));
+  }
+  if (!have.has("upstream_merge_checked_at")) {
+    db.exec(applyPrefix("ALTER TABLE {{issues}} ADD COLUMN upstream_merge_checked_at TEXT"));
+  }
 }
 
 // SQLite cannot ALTER a column constraint, so dropping attachments.issue_id

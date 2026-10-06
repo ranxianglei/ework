@@ -57,6 +57,8 @@ CREATE TABLE IF NOT EXISTS {{issues}} (
   model      VARCHAR(128) NOT NULL DEFAULT '',
   runtime      VARCHAR(32) NOT NULL DEFAULT '',
   upstream_issue_number INT DEFAULT NULL,
+  upstream_mergeable_state VARCHAR(32) DEFAULT NULL,
+  upstream_merge_checked_at VARCHAR(40) DEFAULT NULL,
   UNIQUE (project_id, number),
   UNIQUE uq_issues_project_upstream (project_id, upstream_issue_number),
   CONSTRAINT {{fk_issues_project}} FOREIGN KEY (project_id) REFERENCES {{projects}}(id) ON DELETE CASCADE,

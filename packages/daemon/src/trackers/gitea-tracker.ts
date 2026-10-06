@@ -226,6 +226,29 @@ export class GiteaTracker implements IssueTracker {
       };
     }
 
+    if (action === "merge_conflict") {
+      const mergeState = typeof (payload as Record<string, unknown>).merge_state === "string"
+        ? (payload as Record<string, unknown>).merge_state as string
+        : "dirty";
+      return {
+        type: "merge_conflict",
+        ref,
+        dispatch_off: dispatchOff,
+        issue: {
+          title: issue.title as string,
+          body: (issue.body as string) ?? "",
+          state: (issue.state as string) ?? "open",
+          author: issueUser?.login ?? "",
+          ai_status: aiStatus,
+        },
+        merge: { state: mergeState },
+        model,
+        runtime,
+        cloneUrl,
+        sender,
+      };
+    }
+
     if (action === "status_changed") {
       const status = payload.status as { from?: string; to?: string; detail?: string } | undefined;
       return {

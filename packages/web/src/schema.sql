@@ -71,6 +71,13 @@ CREATE TABLE IF NOT EXISTS {{issues}} (
   runtime    TEXT NOT NULL DEFAULT '',
   -- Upstream Gitea issue number this row was imported from (NULL = native).
   upstream_issue_number INTEGER,
+  -- Upstream PR merge state probed via /pulls/{n}: 'dirty' | 'behind' |
+  -- 'clean' | ... (NULL = never probed / not a PR). Probes are limited to
+  -- recently-updated open PRs (owner policy: 24h activity window).
+  upstream_mergeable_state TEXT,
+  -- updated_at of the upstream PR at probe time; a probe is repeated only
+  -- when the PR moved since (conflicts cannot change without a push).
+  upstream_merge_checked_at TEXT,
   UNIQUE (project_id, number)
 );
 CREATE INDEX IF NOT EXISTS issues_project_state_updated

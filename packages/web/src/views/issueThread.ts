@@ -1,7 +1,7 @@
 import type { Config } from "../config";
 import { classifyActor, renderCommentCard, relTime, type CommentView } from "../render/components";
 import { renderMarkdown } from "../render/markdown";
-import { renderLayout, escapeHtml, escapeAttr } from "../render/layout";
+import { renderLayout, escapeHtml, escapeAttr, mergeStateBadge } from "../render/layout";
 import { runIssueActionsHook, type IssueActionContext, type IssueAction } from "../issue-actions-hook";
 import { hydrateReactions, REACTION_EMOJI } from "../reactions";
 import {
@@ -203,6 +203,7 @@ export async function buildIssueThread(
   const html = renderLayout(
     {
       issueReactionsHtml,
+      mergeStateHtml: mergeStateBadge(issue.upstream_mergeable_state) || undefined,
       title: `${issue.title} · ${owner}/${repo}#${number}`,
       issueTitle: issue.title,
       upstreamUrl: upstreamRefBase(project) ?? undefined,

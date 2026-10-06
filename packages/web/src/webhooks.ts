@@ -326,7 +326,7 @@ interface PayloadComment {
 
 interface IssueEventPayload {
   event_id?: string;
-  action: IssueAction;
+  action: IssueAction | "merge_conflict";
   issue: PayloadIssue;
   repository: PayloadRepository;
   sender: PayloadUser;
@@ -334,6 +334,7 @@ interface IssueEventPayload {
   commit_url?: string;
   url?: string;
   dispatch_off?: boolean;
+  merge_state?: string;
 }
 
 interface CommentEventPayload {
@@ -525,6 +526,41 @@ function buildIssuePayload(
 }
 
 // ─── Delivery ────────────────────────────────────────────────
+
+// Upstream PR conflict wake: shaped like an issues webhook but with the
+// dedicated action "merge_conflict" so the daemon routes it to a rebase
+// instruction instead of a generic status change. Delivered under the
+// existing "issues" subscription so no webhook reconfiguration is needed.
+export async function emitMergeConflictEvent(
+  projectId: number,
+  issueId: number,
+  origin: string,
+  mergeState: string,
+): Promise<void> {
+  try {
+    const project = await getProjectById(projectId);
+    if (!project) return;
+    const issue = await getIssueById(issueId);
+    if (!issue) return;
+    const cfg = await getConfigAll();
+    const scopeKey = `${project.owner}/${project.name}`;
+    const globalOff = cfg["dispatchEnabled"] === "false";
+    const projectOff = cfg[`dispatchOff:${scopeKey}`] === "1";
+    const issueOff = issue.ai_status === "dispatch_off" || issue.ai_status === "halted";
+    if (globalOff || projectOff || issueOff) return;
+    const commentCount = await countCommentsSafe(issueId);
+    const globalDefault = (await loadConfig()).defaultModel;
+    const model = resolveModel(project.model, globalDefault, issue.model);
+    const payload = buildIssuePayload(issue, project, commentCount, "opened", origin, model);
+    (payload as IssueEventPayload).action = "merge_conflict";
+    (payload as IssueEventPayload).merge_state = mergeState;
+    (payload as IssueEventPayload).event_id = randomUUID();
+    const rawBody = JSON.stringify(payload);
+    await fanOut(projectId, "issues", rawBody);
+  } catch (e) {
+    log.error("webhook: emitMergeConflictEvent failed", { err: e as Error, projectId, issueId });
+  }
+}
 
 function signBody(secret: string, rawBody: string): string {
   return createHmac("sha256", secret).update(rawBody).digest("hex");

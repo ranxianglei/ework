@@ -13,7 +13,7 @@ export interface TrackerRef {
 }
 
 /** Parsed, tracker-agnostic webhook event */
-export type TrackerEventType = "issue_opened" | "comment_created" | "issue_closed" | "status_changed";
+export type TrackerEventType = "issue_opened" | "comment_created" | "issue_closed" | "status_changed" | "merge_conflict";
 
 export interface TrackerEvent {
   type: TrackerEventType;
@@ -34,6 +34,8 @@ export interface TrackerEvent {
     // Set by ework-web when this comment was synced from an upstream repo (GitHub); the daemon uses it to ack upstream readers via reaction.
     upstreamCommentId?: number | null;
   };
+  // Present on merge_conflict events: upstream PR merge state ("dirty" etc).
+  merge?: { state: string };
   // Resolved "provider/model" string from ework-web (project override or
   // global default). Empty/undefined = no override; engine omits --model
   // and lets opencode pick per its own opencode.json + env.

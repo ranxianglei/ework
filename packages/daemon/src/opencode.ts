@@ -1151,12 +1151,12 @@ export class Engine {
       }
     }
 
-    if (this.paused && (event.type === "issue_opened" || event.type === "comment_created")) {
+    if (this.paused && (event.type === "issue_opened" || event.type === "comment_created" || event.type === "merge_conflict")) {
       log.info(`engine: paused — skipping ${event.type} for ${ref.trackerType}:${scopeKey}#${ref.issueId}`);
       return;
     }
 
-    if ((issueData.ai_status === "halted" || issueData.ai_status === "dispatch_off") && (event.type === "issue_opened" || event.type === "comment_created")) {
+    if ((issueData.ai_status === "halted" || issueData.ai_status === "dispatch_off") && (event.type === "issue_opened" || event.type === "comment_created" || event.type === "merge_conflict")) {
       log.info(`engine: issue ${issueData.ai_status} — skipping ${event.type} for ${ref.trackerType}:${scopeKey}#${ref.issueId}`);
       return;
     }
@@ -1255,7 +1255,60 @@ export class Engine {
         if (to === "halted") return this.handleHalted(ref, scopeKey, tracker);
         return;
       }
+      case "merge_conflict":
+        return this.handleMergeConflict(ref, scopeKey, issueData, tracker, event.merge?.state ?? "dirty", event.model);
     }
+  }
+
+  // Upstream PR conflict wake: the session that owns this PR rebase-pushes on
+  // its own — no manual trigger. Only engages issues an agent already worked
+  // (a session row exists); untouched PRs stay manual.
+  private async handleMergeConflict(
+    ref: TrackerRef,
+    scopeKey: string,
+    issueData: TrackerEvent["issue"],
+    tracker: IssueTracker,
+    mergeState: string,
+    model?: string,
+  ) {
+    if (issueData.state !== "open") return;
+    const issue = await this.store.findIssue(ref.trackerType, scopeKey, ref.issueId);
+    if (!issue) {
+      log.info(`engine: merge_conflict on untracked ${scopeKey}#${ref.issueId} — skipping`);
+      return;
+    }
+    if (issue.state === "closed") return;
+    if (!(await this.ensureOwned(issue))) return;
+
+    let session = await this.store.getSessionByName(issue.id, this.cfg.bot.username);
+    if (!session) {
+      const sessions = await this.store.getSessionsForIssue(issue.id);
+      session = sessions[sessions.length - 1];
+    }
+    if (!session) {
+      log.info(`engine: merge_conflict on ${scopeKey}#${ref.issueId} has no prior session — skipping (manual PR)`);
+      return;
+    }
+
+    const workdir = await this.resolveWorkdir(session, issue);
+    const instructions = tracker.getTrackerInstructions(ref);
+    const body =
+      `[SYSTEM] Upstream PR conflict detected (merge state: ${mergeState}). ` +
+      `The PR mirror 「${issueData.title}」 now conflicts with its base branch. ` +
+      `Rebase (or merge) the target branch into your branch, resolve the conflicts, ` +
+      `force-push (rebase) or push (merge), then reply with a 七问 summary.`;
+    const prompt = this.buildForwardPrompt(
+      session.name,
+      this.handleLargeContent(workdir, body, `merge-conflict-${ref.issueId}.txt`),
+      "ework-web",
+      "bot",
+      issueData.title,
+      workdir,
+      instructions,
+    );
+
+    await tracker.createComment(ref, `[system] 🏷 ${this.sessionRef(session)} ⚠️ 上游 PR 冲突(${mergeState})— 已转发 **${session.name}** 处理 rebase。`).catch(() => {});
+    await this.enqueueOrRun(session, issue, prompt, tracker, ref, `merge-conflict-${ref.issueId}-${Date.now()}`, model);
   }
 
   // Reply-burst circuit breaker: a looping session can re-perceive a standing

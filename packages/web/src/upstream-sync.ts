@@ -12,14 +12,15 @@ import {
   postComment,
   editIssue,
   updateIssueAiStatus,
+  updateIssueMergeState,
   updateUpstreamSyncState,
   listEnabledUpstreamSyncs,
 } from "./store";
-import { emitIssueEvent, emitCommentEvent } from "./webhooks";
+import { emitIssueEvent, emitCommentEvent, emitMergeConflictEvent } from "./webhooks";
 import { log } from "./logger";
 import type { Config } from "./config";
 
-interface GiteaIssue {
+export interface GiteaIssue {
   number: number;
   title: string;
   body: string | null;
@@ -56,6 +57,46 @@ function fromGithubBot(login: string | undefined): boolean {
 function upstreamIssueNumberFromComment(gc: GiteaComment): number | null {
   const m = (gc.issue_url ?? "").match(GITEA_COMMENT_ISSUE_RE);
   return m ? Number(m[1]) : null;
+}
+
+export const MERGE_PROBE_WINDOW_MS = 86_400_000;
+export const MERGE_PROBE_PER_POLL = 5;
+
+// PR conflict state only changes when head or base moves, and any move bumps
+// the PR's updated_at — so probing only PRs whose updated_at advanced past the
+// last probe covers every transition with zero requests for quiet PRs
+// (owner policy: activity window is the trailing 24h, older PRs are skipped).
+export function mergeProbeCandidates(
+  issues: GiteaIssue[],
+  checkedAtByNumber: Map<number, string>,
+  nowMs: number,
+  windowMs: number = MERGE_PROBE_WINDOW_MS,
+): number[] {
+  const out: number[] = [];
+  for (const gi of issues) {
+    if (!gi.pull_request || gi.state === "closed") continue;
+    const updatedMs = Date.parse(gi.updated_at ?? "");
+    if (!Number.isFinite(updatedMs) || nowMs - updatedMs > windowMs) continue;
+    const checked = checkedAtByNumber.get(gi.number);
+    if (checked && checked >= gi.updated_at) continue;
+    out.push(gi.number);
+  }
+  return out.slice(0, MERGE_PROBE_PER_POLL);
+}
+
+interface PullRequestPayload {
+  mergeable?: boolean | null;
+  mergeable_state?: string | null;
+}
+
+// Canonical short states: dirty (real conflicts), behind (base moved, clean
+// merge expected), clean, pending (GitHub hasn't computed mergeable yet —
+// retry next poll). Gitea only exposes the mergeable boolean.
+export function prMergeState(pull: PullRequestPayload): string {
+  const ms = pull.mergeable_state;
+  if (ms === "dirty" || ms === "behind" || ms === "clean") return ms;
+  if (typeof pull.mergeable === "boolean") return pull.mergeable ? "clean" : "dirty";
+  return "pending";
 }
 
 export function syncOrigin(cfg: Config): string {
@@ -170,6 +211,22 @@ export class UpstreamSync {
     return true;
   }
 
+  private async probeMergeState(gi: GiteaIssue, existing: IssueRow, result: UpstreamSyncPollResult): Promise<void> {
+    const pull = await this.fetchJson<PullRequestPayload>(`/pulls/${gi.number}`);
+    if (!pull) return;
+    const state = prMergeState(pull);
+    // pending: GitHub hasn't computed mergeable yet — leave checked_at behind
+    // so the next poll retries the probe.
+    if (state === "pending") return;
+    const was = existing.upstream_mergeable_state;
+    await updateIssueMergeState(existing.id, state, gi.updated_at ?? new Date().toISOString());
+    if (state === "dirty" && was !== "dirty") {
+      log.info(`upstream-sync: merge conflict detected on upstream PR #${gi.number} (${this.project.owner}/${this.project.name})`);
+      await emitMergeConflictEvent(this.project.id, existing.id, this.origin, state);
+      result.issuesUpdated++;
+    }
+  }
+
   private async importIssueComments(gi: GiteaIssue, emit: boolean): Promise<number> {
     const comments = await this.fetchJson<GiteaComment[]>(this.isGithub
       ? `/issues/${gi.number}/comments?per_page=50`
@@ -235,6 +292,7 @@ export class UpstreamSync {
       : `/issues?state=all&type=issues&limit=30&sort=updated&order=desc`
     );
     let issueCursor = this.sync.issue_cursor;
+    const prCandidates: { gi: GiteaIssue; existing: IssueRow }[] = [];
     if (issues) {
       for (const gi of issues) {
         const existing = await getIssueByUpstreamNumber(this.project.id, gi.number);
@@ -244,7 +302,10 @@ export class UpstreamSync {
         // locally must always import or that lag loses it forever
         // (ranxianglei/billion-context#1306). The cursor only dedupes state
         // syncs of rows we already mirror.
-        if (existing && this.sync.issue_cursor && gi.updated_at <= this.sync.issue_cursor) continue;
+        if (existing && this.sync.issue_cursor && gi.updated_at <= this.sync.issue_cursor) {
+          if (gi.pull_request && gi.state !== "closed") prCandidates.push({ gi, existing });
+          continue;
+        }
         if (!existing) {
           await this.importIssue(gi, true);
           result.issuesImported++;
@@ -252,8 +313,18 @@ export class UpstreamSync {
         } else if (await this.syncIssueState(existing, gi, true)) {
           result.issuesUpdated++;
         }
+        if (existing && gi.pull_request && gi.state !== "closed") prCandidates.push({ gi, existing });
         if (gi.updated_at && (!issueCursor || gi.updated_at > issueCursor)) issueCursor = gi.updated_at;
       }
+    }
+    const probeNumbers = mergeProbeCandidates(
+      prCandidates.map((c) => c.gi),
+      new Map(prCandidates.map((c) => [c.gi.number, c.existing.upstream_merge_checked_at ?? ""])),
+      Date.now(),
+    );
+    for (const c of prCandidates) {
+      if (!probeNumbers.includes(c.gi.number)) continue;
+      await this.probeMergeState(c.gi, c.existing, result);
     }
 
     let commentCursor = this.sync.comment_cursor;

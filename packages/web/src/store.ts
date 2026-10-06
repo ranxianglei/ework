@@ -77,6 +77,8 @@ export interface IssueRow {
   model: string;
   runtime: string;
   upstream_issue_number: number | null;
+  upstream_mergeable_state: string | null;
+  upstream_merge_checked_at: string | null;
 }
 
 export interface IssueWithMeta extends IssueRow {
@@ -526,6 +528,17 @@ export async function setIssueState(
 
 export async function updateIssueAiStatus(issueId: number, status: string): Promise<void> {
   await getDB().run("UPDATE {{issues}} SET ai_status = ? WHERE id = ?", [status, issueId]);
+}
+
+export async function updateIssueMergeState(
+  issueId: number,
+  mergeableState: string | null,
+  checkedAt: string,
+): Promise<void> {
+  await getDB().run(
+    "UPDATE {{issues}} SET upstream_mergeable_state = ?, upstream_merge_checked_at = ? WHERE id = ?",
+    [mergeableState, checkedAt, issueId],
+  );
 }
 
 export async function getIssueAiStatusByNumber(owner: string, repo: string, number: number): Promise<string> {

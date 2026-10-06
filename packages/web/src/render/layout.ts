@@ -28,6 +28,7 @@ export interface LayoutProps {
   runtimeSelect?: { current: string } | null;
   authorLineHtml?: string;
   issueReactionsHtml?: string;
+  mergeStateHtml?: string;
 }
 
 export const THEME_CSS = `
@@ -253,6 +254,7 @@ export function renderLayout(props: LayoutProps, inner: string, initialItems: st
 <div class="meta-bar">
   <h1>${escapeHtml(props.issueTitle)}</h1>
   ${props.authorLineHtml ?? ""}
+  ${props.mergeStateHtml ?? ""}
   ${props.issueReactionsHtml ?? ""}
   <div class="meta-status">
     <span class="state-badge ${stateClass}">${stateLabel}</span>
@@ -308,6 +310,12 @@ export function escapeHtml(s: string): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+export function mergeStateBadge(state: string | null | undefined): string {
+  if (state === "dirty") return '<span class="ai-badge ai-failed" title="上游 PR 与目标分支冲突（探测于最近 24h 活跃窗口）">⚠️ 冲突</span>';
+  if (state === "behind") return '<span class="ai-badge ai-queued" title="上游 PR 落后于目标分支，尚无冲突">⏪ 落后</span>';
+  return "";
 }
 
 export function aiStatusBadge(status: string | undefined): string {
