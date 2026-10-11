@@ -3,6 +3,7 @@ import type { IssueAction } from "../issue-actions-hook";
 export interface LayoutProps {
   title: string;
   issueTitle: string;
+  issueKind?: "issue" | "discussion";
   repoPath: string;
   issueNumber: number;
   upstreamUrl?: string;
@@ -252,7 +253,7 @@ export function renderLayout(props: LayoutProps, inner: string, initialItems: st
   ${props.upstreamUrl ? `<a href="${escapeAttr(props.upstreamUrl)}" target="_blank" rel="noopener" title="跳转到上游项目" style="color:var(--header-text);text-decoration:none;font-size:.85em">↗</a>` : ""}
 </header>
 <div class="meta-bar">
-  <h1>${escapeHtml(props.issueTitle)}</h1>
+  <h1>${props.issueKind === "discussion" ? `<span class="kind-tag" title="GitHub Discussion">💬</span> ` : ""}${escapeHtml(props.issueTitle)}</h1>
   ${props.authorLineHtml ?? ""}
   ${props.mergeStateHtml ?? ""}
   ${props.issueReactionsHtml ?? ""}

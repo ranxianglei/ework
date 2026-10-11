@@ -78,6 +78,10 @@ CREATE TABLE IF NOT EXISTS {{issues}} (
   -- updated_at of the upstream PR at probe time; a probe is repeated only
   -- when the PR moved since (conflicts cannot change without a push).
   upstream_merge_checked_at TEXT,
+  -- 'issue' (default) or 'discussion' — GitHub Discussions mirrored by the
+  -- discussions poll stream share this table; kind scopes upstream-number
+  -- lookups because GitHub numbers the two sequences independently.
+  kind TEXT NOT NULL DEFAULT 'issue' CHECK (kind IN ('issue','discussion')),
   UNIQUE (project_id, number)
 );
 CREATE INDEX IF NOT EXISTS issues_project_state_updated
@@ -85,7 +89,7 @@ CREATE INDEX IF NOT EXISTS issues_project_state_updated
 CREATE INDEX IF NOT EXISTS issues_state_updated
   ON {{issues}} (state, updated_at DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS issues_project_upstream
-  ON {{issues}} (project_id, upstream_issue_number) WHERE upstream_issue_number IS NOT NULL;
+  ON {{issues}} (project_id, upstream_issue_number, kind) WHERE upstream_issue_number IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS {{comments}} (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -114,6 +118,7 @@ CREATE TABLE IF NOT EXISTS {{upstream_sync}} (
   poll_interval_ms INTEGER NOT NULL DEFAULT 60000,
   issue_cursor     TEXT,
   comment_cursor   TEXT,
+  discussion_cursor TEXT,
   last_poll_at     TEXT,
   last_error       TEXT,
   created_at       TEXT NOT NULL,

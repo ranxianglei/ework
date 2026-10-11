@@ -19,6 +19,7 @@ interface PayloadIssue {
   id?: number;
   number: number;
   upstream_issue_number?: number | null;
+  kind?: "issue" | "discussion";
   title: string;
   body?: string;
   state?: "open" | "closed";

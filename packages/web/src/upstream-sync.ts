@@ -17,6 +17,7 @@ import {
   listEnabledUpstreamSyncs,
 } from "./store";
 import { emitIssueEvent, emitCommentEvent, emitMergeConflictEvent } from "./webhooks";
+import { getConfigAll } from "./db";
 import { log } from "./logger";
 import type { Config } from "./config";
 
@@ -89,6 +90,17 @@ interface PullRequestPayload {
   mergeable_state?: string | null;
 }
 
+export interface GithubDiscussion {
+  number: number;
+  title: string;
+  body: string | null;
+  state: string;
+  user: { login: string } | null;
+  created_at: string;
+  updated_at: string;
+  category?: { name?: string } | null;
+}
+
 // Canonical short states: dirty (real conflicts), behind (base moved, clean
 // merge expected), clean, pending (GitHub hasn't computed mergeable yet —
 // retry next poll). Gitea only exposes the mergeable boolean.
@@ -109,11 +121,13 @@ export class UpstreamSync {
   private readonly sync: UpstreamSyncRow;
   private readonly project: ProjectRow;
   private readonly origin: string;
+  private readonly discussionsEnabled: boolean;
 
-  constructor(sync: UpstreamSyncRow, project: ProjectRow, origin: string) {
+  constructor(sync: UpstreamSyncRow, project: ProjectRow, origin: string, discussionsEnabled = false) {
     this.sync = sync;
     this.project = project;
     this.origin = origin;
+    this.discussionsEnabled = discussionsEnabled && sync.base_url.toLowerCase().includes("github.com");
   }
 
   private headers(): Record<string, string> {
@@ -368,7 +382,110 @@ export class UpstreamSync {
     return result;
   }
 
+  private async importDiscussion(d: GithubDiscussion, emit: boolean): Promise<void> {
+    await ensureUser(d.user?.login ?? "upstream", fromGithubBot(d.user?.login) ? "bot" : "human");
+    const category = d.category?.name ? `[${d.category.name}] ` : "";
+    await createIssue(
+      this.project.id,
+      `${category}${d.title || `#${d.number}`}`,
+      d.body ?? "",
+      d.user?.login ?? "upstream",
+      {
+        createdAt: d.created_at,
+        updatedAt: d.updated_at,
+        state: d.state === "closed" ? "closed" : "open",
+        upstreamIssueNumber: d.number,
+        number: d.number,
+        kind: "discussion",
+      }
+    );
+    if (emit) {
+      const created = await getIssueByUpstreamNumber(this.project.id, d.number, "discussion");
+      if (created) void emitIssueEvent(this.project.id, created.id, "opened", this.origin);
+    }
+  }
+
+  private async importDiscussionComments(d: GithubDiscussion, emit: boolean): Promise<number> {
+    const local = await getIssueByUpstreamNumber(this.project.id, d.number, "discussion");
+    if (!local) return 0;
+    const comments = await this.fetchJson<GiteaComment[]>(`/discussions/${d.number}/comments?per_page=50`);
+    if (!comments) return 0;
+    let n = 0;
+    for (const gc of comments) {
+      if (await getCommentByUpstreamId(gc.id)) continue;
+      if ((gc.body ?? "").includes("<!-- ework-mirror -->")) continue;
+      const gcAuthor = gc.user?.login ?? "upstream";
+      await ensureUser(gcAuthor, fromGithubBot(gcAuthor) ? "bot" : "human");
+      const body = (gc.body ?? "") + "\n\n<!-- upstream-sync -->";
+      const row = await postComment(local.id, body, gcAuthor, {
+        createdAt: gc.created_at,
+        updatedAt: gc.updated_at,
+        upstreamCommentId: gc.id,
+      });
+      if (emit) void emitCommentEvent(this.project.id, local.id, row.id, this.origin);
+      n++;
+    }
+    return n;
+  }
+
+  private async syncDiscussionState(existing: IssueRow, d: GithubDiscussion, emit: boolean): Promise<boolean> {
+    const target: "open" | "closed" = d.state === "closed" ? "closed" : "open";
+    if (existing.state === target) return false;
+    await editIssue(existing.id, { state: target });
+    if (target === "closed" && existing.ai_status && existing.ai_status !== "completed") {
+      await updateIssueAiStatus(existing.id, "");
+    }
+    if (emit) {
+      void emitIssueEvent(this.project.id, existing.id, target === "closed" ? "closed" : "reopened", this.origin);
+    }
+    return true;
+  }
+
+  private async discussionsBackfill(): Promise<void> {
+    const list = await this.fetchJson<GithubDiscussion[]>("/discussions?per_page=50");
+    if (!list) {
+      await updateUpstreamSyncState(this.project.id, { discussionCursor: new Date().toISOString() });
+      return;
+    }
+    let cursor: string | null = null;
+    for (const d of list) {
+      if (!(await getIssueByUpstreamNumber(this.project.id, d.number, "discussion"))) {
+        await this.importDiscussion(d, false);
+      }
+      await this.importDiscussionComments(d, false);
+      if (d.updated_at && (!cursor || d.updated_at > cursor)) cursor = d.updated_at;
+    }
+    await updateUpstreamSyncState(this.project.id, { discussionCursor: cursor ?? new Date().toISOString() });
+  }
+
+  private async discussionsLive(): Promise<void> {
+    const list = await this.fetchJson<GithubDiscussion[]>("/discussions?per_page=30");
+    if (!list) return;
+    let cursor = this.sync.discussion_cursor;
+    for (const d of list) {
+      const existing = await getIssueByUpstreamNumber(this.project.id, d.number, "discussion");
+      if (existing && this.sync.discussion_cursor && d.updated_at <= this.sync.discussion_cursor) continue;
+      if (!existing) {
+        await this.importDiscussion(d, true);
+        await this.importDiscussionComments(d, true);
+      } else {
+        if (await this.syncDiscussionState(existing, d, true)) {
+          log.info(`upstream-sync: discussion #${d.number} state -> ${d.state} (${this.project.owner}/${this.project.name})`);
+        }
+        await this.importDiscussionComments(d, true);
+      }
+      if (d.updated_at && (!cursor || d.updated_at > cursor)) cursor = d.updated_at;
+    }
+    if (cursor && cursor !== this.sync.discussion_cursor) {
+      await updateUpstreamSyncState(this.project.id, { discussionCursor: cursor });
+    }
+  }
+
   async pollOnce(): Promise<UpstreamSyncPollResult> {
+    if (this.discussionsEnabled) {
+      if (this.sync.discussion_cursor === null) await this.discussionsBackfill();
+      else await this.discussionsLive();
+    }
     return this.isBackfill ? await this.backfillOnce() : await this.liveOnce();
   }
 }
@@ -387,7 +504,9 @@ async function tick(cfg: Config): Promise<void> {
       try {
         const project = await getProjectById(row.project_id);
         if (!project) return;
-        const sync = new UpstreamSync(row, project, syncOrigin(cfg));
+        const cfgKv = await getConfigAll();
+        const discussionsEnabled = cfgKv[`discussions:${project.owner}/${project.name}`] === "1";
+        const sync = new UpstreamSync(row, project, syncOrigin(cfg), discussionsEnabled);
         const r = await sync.pollOnce();
         if (r.issuesImported || r.issuesUpdated || r.commentsImported) {
           log.info("upstream-sync: polled", {

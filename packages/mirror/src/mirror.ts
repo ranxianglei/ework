@@ -12,6 +12,7 @@ import {
 import {
   createIssue,
   addComment,
+  addDiscussionComment,
   editComment,
   addReaction,
   patchIssueState,
@@ -380,7 +381,7 @@ export async function handleCommentEvent(
   if (ev.comment.body.startsWith("[system]") || ev.comment.body.startsWith("[SYSTEM ")) {
     // Side-effect inside a skip path: forward-notices with an upstream marker get a rocket reaction on the upstream comment (instant GitHub ack), then the plumbing comment is dropped.
     const upstreamId = parseUpstreamAck(ev.comment.body);
-    if (upstreamId && isGithubTarget(cfg) && !hasReacted(ev.comment.id)) {
+    if (upstreamId && isGithubTarget(cfg) && ev.issue.kind !== "discussion" && !hasReacted(ev.comment.id)) {
       try {
         await addReaction(cfg, { owner: ev.projectOwner, repo: ev.projectName }, upstreamId, "rocket");
         markReacted(ev.comment.id, upstreamId, "rocket");
@@ -463,6 +464,19 @@ export async function handleCommentEvent(
   let map: IssueMapRow | null =
     upstreamMap(ev, repo) ??
     getIssueMap(ev.projectOwner, ev.projectName, ev.issue.number);
+  if (!map && ev.issue.kind === "discussion") {
+    logEvent({
+      event: "issue_comment",
+      action: "created",
+      ework_project: projectKey,
+      ework_issue: ev.issue.number,
+      ework_comment: ev.comment.id,
+      gitea_target: giteaTarget,
+      outcome: OUTCOME_SKIPPED_NO_REPO,
+      detail: "discussion without upstream mapping",
+    });
+    return;
+  }
   if (!map) {
     const created = await createIssue(
       cfg,
@@ -498,12 +512,20 @@ export async function handleCommentEvent(
     const agentBadge = agentLogins(cfg).includes(ev.comment.user?.login ?? "")
       ? agentBadgeText(ev.comment.model || ev.model)
       : "";
-    const created = await addComment(
-      cfg,
-      repo,
-      map.gitea_issue_num,
-      agentBadge + scrubInternalRefs(ev.comment.body, cfg) + MIRROR_MARKER
-    );
+    const isDiscussion = ev.issue.kind === "discussion";
+    const created = isDiscussion && isGithubTarget(cfg)
+      ? await addDiscussionComment(
+          cfg,
+          repo,
+          map.gitea_issue_num,
+          agentBadge + scrubInternalRefs(ev.comment.body, cfg) + MIRROR_MARKER
+        )
+      : await addComment(
+          cfg,
+          repo,
+          map.gitea_issue_num,
+          agentBadge + scrubInternalRefs(ev.comment.body, cfg) + MIRROR_MARKER
+        );
     recordCommentMap({
       eworkCommentId: ev.comment.id,
       eworkProjectOwner: ev.projectOwner,

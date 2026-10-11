@@ -79,6 +79,7 @@ export interface IssueRow {
   upstream_issue_number: number | null;
   upstream_mergeable_state: string | null;
   upstream_merge_checked_at: string | null;
+  kind: "issue" | "discussion";
 }
 
 export interface IssueWithMeta extends IssueRow {
@@ -463,6 +464,7 @@ export interface CreateIssueOpts {
   model?: string;
   runtime?: string;
   upstreamIssueNumber?: number;
+  kind?: "issue" | "discussion";
 }
 
 function isoOr(value: string | undefined, fallback: string): string {
@@ -499,8 +501,8 @@ export async function createIssue(
           "SELECT COALESCE(MAX(number), 0) + 1 AS n FROM {{issues}} WHERE project_id = ?", [projectId]
         ))!;
     const info = await getDB().run(
-      "INSERT INTO {{issues}} (project_id, number, title, body, state, author, created_at, updated_at, closed_at, model, runtime, upstream_issue_number) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      [projectId, next.n, title, body, state, author, createdAt, updatedAt, closedAt, opts.model ?? "", opts.runtime ?? "", opts.upstreamIssueNumber ?? null]
+      "INSERT INTO {{issues}} (project_id, number, title, body, state, author, created_at, updated_at, closed_at, model, runtime, upstream_issue_number, kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [projectId, next.n, title, body, state, author, createdAt, updatedAt, closedAt, opts.model ?? "", opts.runtime ?? "", opts.upstreamIssueNumber ?? null, opts.kind ?? "issue"]
     );
     await getDB().run("UPDATE {{projects}} SET updated_at = ? WHERE id = ?", [updatedAt, projectId]);
     return (await getIssueById(info.insertId))!;
@@ -575,6 +577,7 @@ export interface UpstreamSyncRow {
   poll_interval_ms: number;
   issue_cursor: string | null;
   comment_cursor: string | null;
+  discussion_cursor: string | null;
   last_poll_at: string | null;
   last_error: string | null;
   created_at: string;
@@ -637,7 +640,7 @@ export async function upsertUpstreamSync(projectId: number, opts: UpsertUpstream
 
 export async function updateUpstreamSyncState(
   projectId: number,
-  patch: { issueCursor?: string | null; commentCursor?: string | null; lastError?: string | null }
+  patch: { issueCursor?: string | null; commentCursor?: string | null; discussionCursor?: string | null; lastError?: string | null }
 ): Promise<void> {
   const sets: string[] = [];
   const args: (string | number | null)[] = [];
@@ -649,6 +652,10 @@ export async function updateUpstreamSyncState(
     sets.push("comment_cursor = ?");
     args.push(patch.commentCursor);
   }
+  if (patch.discussionCursor !== undefined) {
+    sets.push("discussion_cursor = ?");
+    args.push(patch.discussionCursor);
+  }
   if (patch.lastError !== undefined) {
     sets.push("last_error = ?");
     args.push(patch.lastError);
@@ -659,10 +666,14 @@ export async function updateUpstreamSyncState(
   await getDB().run(`UPDATE {{upstream_sync}} SET ${sets.join(", ")} WHERE project_id = ?`, args);
 }
 
-export async function getIssueByUpstreamNumber(projectId: number, upstreamNumber: number): Promise<IssueRow | null> {
+export async function getIssueByUpstreamNumber(
+  projectId: number,
+  upstreamNumber: number,
+  kind: "issue" | "discussion" = "issue"
+): Promise<IssueRow | null> {
   return await getDB().get<IssueRow>(
-    "SELECT * FROM {{issues}} WHERE project_id = ? AND upstream_issue_number = ?",
-    [projectId, upstreamNumber]
+    "SELECT * FROM {{issues}} WHERE project_id = ? AND upstream_issue_number = ? AND kind = ?",
+    [projectId, upstreamNumber, kind]
   );
 }
 

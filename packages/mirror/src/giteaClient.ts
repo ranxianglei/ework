@@ -139,6 +139,22 @@ export async function addComment(
   );
 }
 
+export async function addDiscussionComment(
+  cfg: Config,
+  target: GiteaRepo,
+  discussionNumber: number,
+  body: string
+): Promise<GiteaCommentCreateResponse> {
+  return giteaFetch<GiteaCommentCreateResponse>(
+    cfg,
+    `${apiPrefix(cfg)}/repos/${encodeURIComponent(target.owner)}/${encodeURIComponent(target.repo)}/discussions/${discussionNumber}/comments`,
+    {
+      method: "POST",
+      body: JSON.stringify({ body }),
+    }
+  );
+}
+
 export async function addReaction(
   cfg: Config,
   target: GiteaRepo,

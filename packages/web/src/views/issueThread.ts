@@ -30,6 +30,7 @@ export interface IssueThreadPayload {
   repo: string;
   number: number;
   issueTitle: string;
+  issueKind?: string;
   state: string;
   totalComments: number;
   pageSize: number;
@@ -92,6 +93,7 @@ export function payloadFromComments(
     repo: issue.project_name,
     number: issue.number,
     issueTitle: issue.title,
+    issueKind: issue.kind,
     state: issue.state,
     totalComments: issue.comment_count,
     pageSize: PAGE_SIZE,
@@ -206,6 +208,7 @@ export async function buildIssueThread(
       mergeStateHtml: mergeStateBadge(issue.upstream_mergeable_state) || undefined,
       title: `${issue.title} · ${owner}/${repo}#${number}`,
       issueTitle: issue.title,
+      issueKind: issue.kind,
       upstreamUrl: upstreamRefBase(project) ?? undefined,
       repoPath: `${owner}/${repo}`,
       issueNumber: number,

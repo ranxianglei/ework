@@ -287,6 +287,7 @@ interface PayloadIssue {
   html_url: string;
   number: number;
   upstream_issue_number?: number | null;
+  kind?: "issue" | "discussion";
   title: string;
   body: string;
   labels: PayloadLabel[];
@@ -447,6 +448,7 @@ function buildIssue(
     html_url: issueUrl,
     number: issue.number,
     upstream_issue_number: issue.upstream_issue_number ?? null,
+    kind: issue.kind ?? "issue",
     title: issue.title,
     body: issue.body ?? "",
     labels,
