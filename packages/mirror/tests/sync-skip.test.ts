@@ -137,18 +137,50 @@ describe("agentBadgeText", () => {
 describe("discussion comment endpoint", () => {
   const cfg = { GITEA_URL: "https://github.com", GITEA_TOKEN: "t" } as never;
 
-  test("addDiscussionComment posts to /discussions/{n}/comments on github targets", async () => {
+  test("addDiscussionComment resolves node id then posts the GraphQL mutation on github targets", async () => {
     const seen: string[] = [];
+    const bodies: string[] = [];
     const orig = globalThis.fetch;
-    globalThis.fetch = (async (input: any) => {
-      seen.push(String(input instanceof Request ? input.url : input));
-      return new Response(JSON.stringify({ id: 9 }), { status: 201 });
+    globalThis.fetch = (async (input: any, init?: any) => {
+      const url = String(input instanceof Request ? input.url : input);
+      seen.push(url);
+      if (init?.body) bodies.push(String(init.body));
+      if (url.endsWith("/discussions/5795")) {
+        return new Response(JSON.stringify({ node_id: "DIC_abc123" }), { status: 200 });
+      }
+      return new Response(
+        JSON.stringify({ data: { addDiscussionComment: { comment: { databaseId: 9 } } } }),
+        { status: 200 }
+      );
     }) as any;
     try {
       const { addDiscussionComment } = await import("../src/giteaClient");
       const res = await addDiscussionComment(cfg, { owner: "acme", repo: "widget" }, 5795, "hi");
       expect(res.id).toBe(9);
-      expect(seen[0]).toBe("https://api.github.com/repos/acme/widget/discussions/5795/comments");
+      expect(seen[0]).toBe("https://api.github.com/repos/acme/widget/discussions/5795");
+      expect(seen[1]).toBe("https://api.github.com/graphql");
+      expect(bodies[0]).toContain("addDiscussionComment");
+      expect(bodies[0]).toContain("DIC_abc123");
+      expect(bodies[0]).toContain("hi");
+    } finally {
+      globalThis.fetch = orig;
+    }
+  });
+
+  test("addDiscussionComment surfaces GraphQL errors", async () => {
+    const orig = globalThis.fetch;
+    globalThis.fetch = (async (input: any) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.endsWith("/discussions/5795")) {
+        return new Response(JSON.stringify({ node_id: "DIC_abc123" }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ errors: [{ message: "discussion is locked" }] }), { status: 200 });
+    }) as any;
+    try {
+      const { addDiscussionComment } = await import("../src/giteaClient");
+      await expect(
+        addDiscussionComment(cfg, { owner: "acme", repo: "widget" }, 5795, "hi")
+      ).rejects.toThrow(/discussion is locked/);
     } finally {
       globalThis.fetch = orig;
     }
