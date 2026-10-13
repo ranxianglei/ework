@@ -37,7 +37,7 @@ function discussion(n: number, over: Partial<any> = {}): any {
   };
 }
 
-function dcomment(id: number, n: number, over: Partial<any> = {}): any {
+function dcomment(id: number, _n: number, over: Partial<any> = {}): any {
   const ts = `2026-10-01T01:00:${String(id).padStart(2, "0")}Z`;
   return {
     id,

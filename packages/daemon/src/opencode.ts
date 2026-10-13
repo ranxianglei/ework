@@ -631,6 +631,7 @@ export class Engine {
   private heartbeatTimer?: ReturnType<typeof setInterval>;
   private maxConcurrent: number;
   private maxConcurrentExplicit: boolean;
+  private conflictMaxConcurrent: number;
 
   // Runtime state keyed by session key (trackerType:scopeKey#issueId@sessionName)
   private processes = new Map<string, RuntimeHandle>();
@@ -716,6 +717,7 @@ export class Engine {
     this.replyBurstCfg = opts.replyBurst ?? cfg.replyBurst;
     this.maxConcurrent = cfg.work.maxConcurrent;
     this.maxConcurrentExplicit = cfg.work.maxConcurrentExplicit;
+    this.conflictMaxConcurrent = cfg.work.conflictMaxConcurrent ?? 1;
     this.startGlobalObserver();
     if (opts.recoverOnBoot !== false) void this.recover();
   }
@@ -1840,6 +1842,19 @@ export class Engine {
       await this.clearRuntimeState(k);
       this.running.delete(k);
       return;
+    }
+    // Owner policy 2026-10-14: conflict-rebase work must not fan out across the
+    // whole fleet — cap concurrent merge-conflict runs so they never eat more
+    // than their share of slots (default 1). Deferred messages stay pending;
+    // the next completion event drains them.
+    if (msg.sourceCommentId?.startsWith("merge-conflict-")) {
+      const runningConflicts = await this.store.countRunningConflictMessages(msg.id);
+      if (runningConflicts >= this.conflictMaxConcurrent) {
+        log.info(`engine: merge-conflict cap (${this.conflictMaxConcurrent}) reached — deferring msg ${msg.id.slice(0, 8)} for ${k}`);
+        await this.store.updateMessageStatus(msg.id, "pending");
+        this.running.delete(k);
+        return;
+      }
     }
     const gate = await this.gateChecker(issue);
     const [projOwner, ...projRest] = issue.trackerScopeKey.split("/");

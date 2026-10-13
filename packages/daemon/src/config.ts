@@ -66,6 +66,7 @@ export const configSchema = z.object({
     infraRetryBaseMs: z.coerce.number().int().positive().default(15_000),
     recoveryReport: z.boolean().default(true),
     projectPriorities: z.array(z.object({ scope: z.string().min(1), priority: z.number().int().min(0).max(1000) })).default([]),
+    conflictMaxConcurrent: z.coerce.number().int().min(1).max(8).default(1),
   }),
   db: z.object({
     driver: z.enum(["sqlite", "mysql"]).default("sqlite"),
@@ -132,6 +133,9 @@ function readWorkSection() {
     infraRetryBaseMs: process.env.WORK_INFRA_RETRY_BASE_MS ? Math.max(1, Number(process.env.WORK_INFRA_RETRY_BASE_MS)) : 15_000,
     recoveryReport: !(process.env.WORK_RECOVERY_REPORT === "false" || process.env.WORK_RECOVERY_REPORT === "0"),
     projectPriorities: parseProjectPriorities(process.env.WORK_PROJECT_PRIORITIES),
+    conflictMaxConcurrent: process.env.WORK_CONFLICT_MAX_CONCURRENT != null && process.env.WORK_CONFLICT_MAX_CONCURRENT !== ""
+      ? Math.min(8, Math.max(1, Math.trunc(Number(process.env.WORK_CONFLICT_MAX_CONCURRENT))))
+      : 1,
   };
 }
 

@@ -429,6 +429,14 @@ export class Store {
     );
   }
 
+  async countRunningConflictMessages(excludeUid: string): Promise<number> {
+    const res = await getDB().get<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM {{messages}} WHERE status = 'running' AND source_comment_id LIKE 'merge-conflict-%' AND uid != ?",
+      [excludeUid]
+    );
+    return res?.n ?? 0;
+  }
+
   async getMessagesForSession(sessionId: string): Promise<Message[]> {
     const rows = await getDB().all<MessageRow>(
       "SELECT * FROM {{messages}} WHERE session_id = ? ORDER BY created_at DESC",
