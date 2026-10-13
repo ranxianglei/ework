@@ -1166,6 +1166,15 @@ export class Engine {
       return;
     }
 
+    // Record-only issue (owner policy 2026-10-13): body carries the
+    // [no-dispatch] marker — the fix already ships in the linked PR; this
+    // issue exists for owner visibility only. Never spawn an AI for the
+    // opening event (later human comments still wake via wake policy).
+    if (event.type === "issue_opened" && (event.issue?.body ?? "").includes("[no-dispatch]")) {
+      log.info(`engine: issue body carries [no-dispatch] marker — skipping issue_opened for ${ref.trackerType}:${scopeKey}#${ref.issueId}`);
+      return;
+    }
+
     // Self-authored comment (our own reply landing back): never wake on it,
     // but feed the reply-burst circuit breaker first.
     if (event.type === "comment_created" && event.comment?.author === this.cfg.bot.username) {
