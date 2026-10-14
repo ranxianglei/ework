@@ -1427,6 +1427,16 @@ export class Engine {
       return;
     }
 
+    // Machine comments (CI bots, apps) are status plumbing, not user input.
+    // Injecting them into active sessions caused duplicate-issue storms: every
+    // running agent saw "master CI red" and filed its own copy (owner policy
+    // 2026-10-14). Idle wakes already skip bot authors; agents check CI
+    // themselves when their work depends on it.
+    if (comment.authorKind === "bot") {
+      log.info(`engine: bot comment from ${comment.author} on ${scopeKey}#${ref.issueId} — skipping`);
+      return;
+    }
+
     if (issueData.state !== "open") return;
 
     if (comment.id) {
