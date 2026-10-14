@@ -1291,15 +1291,11 @@ export class Engine {
     if (issue.state === "closed") return;
     if (!(await this.ensureOwned(issue))) return;
 
-    let session = await this.store.getSessionByName(issue.id, this.cfg.bot.username);
-    if (!session) {
-      const sessions = await this.store.getSessionsForIssue(issue.id);
-      session = sessions[sessions.length - 1];
-    }
-    if (!session) {
-      log.info(`engine: merge_conflict on ${scopeKey}#${ref.issueId} has no prior session — skipping (manual PR)`);
-      return;
-    }
+    // Dedicated sticky conflict worker per PR (owner policy 2026-10-14): one
+    // specialist session accumulates this PR's rebase context; runs are
+    // serialized globally by WORK_CONFLICT_MAX_CONCURRENT. Manual PRs (no
+    // prior session) get a worker too — conflict resolution runs 24/7.
+    const session = await this.store.createSession(issue.id, "conflict-worker");
 
     const workdir = await this.resolveWorkdir(session, issue);
     const instructions = tracker.getTrackerInstructions(ref);

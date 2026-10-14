@@ -39,53 +39,61 @@ describe("handleMergeConflict gating", () => {
     author: "ranxianglei",
   };
 
-  function makeSelf(opts: { sessions: unknown[]; issueState?: string }) {
+  function makeSelf(opts: { issueState?: string; existingWorker?: unknown }) {
     const enqueueOrRun = vi.fn();
-    const createComment = vi.fn(async () => ({ id: "c1" }));
+    const worker = opts.existingWorker ?? { id: "w1", name: "conflict-worker" };
+    const createSession = vi.fn(async () => worker);
     const self = Object.create(Engine.prototype) as Record<string, unknown>;
     self.cfg = { bot: { username: "ework-daemon" }, daemon: { wakeLogins: ["ranxianglei"], noWakeLogins: [], nonWakingAuthors: [] } };
     self.store = {
       findIssue: vi.fn(async () => ({ id: 7, state: opts.issueState ?? "active" })),
-      getSessionByName: vi.fn(async () => opts.sessions[0] ?? null),
-      getSessionsForIssue: vi.fn(async () => opts.sessions),
+      createSession,
     };
     self.ensureOwned = vi.fn(async () => true);
     self.sessionRef = () => "ses_link";
     self.resolveWorkdir = async () => "/w";
     self.handleLargeContent = (_w: string, c: string) => c;
     self.enqueueOrRun = enqueueOrRun;
-    return { self, enqueueOrRun, createComment };
+    return { self, enqueueOrRun, createSession, worker };
   }
 
   const call = (self: Record<string, unknown>, tracker: unknown) =>
     Engine.prototype.handleMergeConflict.call(self, ref, "acme/widgets", issueData, tracker, "dirty");
 
-  test("forwards a rebase instruction to the owning session", async () => {
-    const session = { id: "s1", name: "ework-daemon" };
-    const { self, enqueueOrRun } = makeSelf({ sessions: [session] });
+  test("forwards a rebase instruction to the sticky conflict-worker session", async () => {
+    const { self, enqueueOrRun, createSession, worker } = makeSelf({});
     const tracker = { createComment: vi.fn(async () => ({ id: "c1" })), getTrackerInstructions: () => ({ issueRef: "acme/widgets#42" }) };
     await call(self, tracker);
+    expect(createSession).toHaveBeenCalledWith(7, "conflict-worker");
     expect(enqueueOrRun).toHaveBeenCalledTimes(1);
     const [s, i, prompt, , , sourceCommentId] = enqueueOrRun.mock.calls[0] as unknown as [unknown, { id: number }, string, unknown, unknown, string];
-    expect(s).toBe(session);
+    expect(s).toBe(worker);
     expect(i.id).toBe(7);
     expect(prompt).toContain("Rebase");
     expect(prompt).toContain("[PR] fix widgets");
     expect(String(sourceCommentId)).toMatch(/^merge-conflict-42-\d+$/);
   });
 
-  test("skips PRs no agent ever worked on (no session row)", async () => {
-    const { self, enqueueOrRun } = makeSelf({ sessions: [] });
-    const tracker = { createComment: vi.fn(), getTrackerInstructions: () => ({ issueRef: "x" }) };
+  test("reuses the same worker session on repeat conflicts (sticky)", async () => {
+    const existing = { id: "w9", name: "conflict-worker" };
+    const { self, createSession } = makeSelf({ existingWorker: existing });
+    const tracker = { createComment: vi.fn(async () => ({ id: "c1" })), getTrackerInstructions: () => ({ issueRef: "x" }) };
     await call(self, tracker);
-    expect(enqueueOrRun).not.toHaveBeenCalled();
-    expect(tracker.createComment).not.toHaveBeenCalled();
+    expect(createSession).toHaveBeenCalledWith(7, "conflict-worker");
+  });
+
+  test("manual PRs with no prior sessions still get a conflict worker (24/7 coverage)", async () => {
+    const { self, enqueueOrRun } = makeSelf({});
+    const tracker = { createComment: vi.fn(async () => ({ id: "c1" })), getTrackerInstructions: () => ({ issueRef: "x" }) };
+    await call(self, tracker);
+    expect(enqueueOrRun).toHaveBeenCalledTimes(1);
   });
 
   test("skips when the mirror issue is closed in DB", async () => {
-    const { self, enqueueOrRun } = makeSelf({ sessions: [{ id: "s1", name: "ework-daemon" }], issueState: "closed" });
+    const { self, enqueueOrRun, createSession } = makeSelf({ issueState: "closed" });
     const tracker = { createComment: vi.fn(), getTrackerInstructions: () => ({ issueRef: "x" }) };
     await call(self, tracker);
     expect(enqueueOrRun).not.toHaveBeenCalled();
+    expect(createSession).not.toHaveBeenCalled();
   });
 });
