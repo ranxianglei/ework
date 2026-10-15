@@ -1177,6 +1177,14 @@ export class Engine {
       return;
     }
 
+    // CI-titled issue (owner policy 2026-10-14): CI failure reports historically
+    // produced duplicate-issue storms; any issue whose title mentions CI waits
+    // for a human trigger. Later human comments still wake via wake policy.
+    if (event.type === "issue_opened" && /\bci\b/i.test(event.issue?.title ?? "")) {
+      log.info(`engine: issue title mentions CI — skipping auto dispatch for ${ref.trackerType}:${scopeKey}#${ref.issueId} (waits for human trigger)`);
+      return;
+    }
+
     // Self-authored comment (our own reply landing back): never wake on it,
     // but feed the reply-burst circuit breaker first.
     if (event.type === "comment_created" && event.comment?.author === this.cfg.bot.username) {

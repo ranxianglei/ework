@@ -46,4 +46,26 @@ describe("issue_opened [no-dispatch] marker gating", () => {
     await call(self, issue("normal body without the marker"));
     expect(handleOpened).toHaveBeenCalledTimes(1);
   });
+
+  const ciIssue = (title: string): TrackerEvent => ({
+    type: "issue_opened",
+    ref,
+    issue: { title, body: "ci report", state: "open", author: "ranxianglei" },
+  });
+
+  test("CI-mentioning titles never auto-dispatch (case-insensitive, word-bounded)", async () => {
+    for (const title of ["CI failed on master", "master ci 红", "[CI] flaky test", "修复CI失败"]) {
+      const { self, handleOpened } = makeSelf({ body: "ci" });
+      await call(self, ciIssue(title));
+      expect(handleOpened).not.toHaveBeenCalled();
+    }
+  });
+
+  test("titles with ci inside words still dispatch", async () => {
+    for (const title of ["special circuit fix", "social login"]) {
+      const { self, handleOpened } = makeSelf({ body: "normal" });
+      await call(self, ciIssue(title));
+      expect(handleOpened).toHaveBeenCalledTimes(1);
+    }
+  });
 });
