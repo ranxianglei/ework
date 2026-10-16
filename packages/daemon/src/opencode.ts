@@ -1443,8 +1443,12 @@ export class Engine {
     // Start observer for this issue
     this.startObserver(issue);
 
+    // Scheduled full-suite CI tracker issues are fleet-infrastructure work:
+    // route them to a dedicated sticky ci-worker session (owner policy
+    // 2026-10-17) so they rank in the infra pickup tier of the queue (op.ts).
+    const scheduledCiTracker = /\[bot\]$/i.test(issueData?.author ?? "") && /^定时全量测试失败[:：]/.test(issueData?.title ?? "");
     // Create default session for bot user
-    const defaultSessionName = this.cfg.bot.username;
+    const defaultSessionName = scheduledCiTracker ? "ci-worker" : this.cfg.bot.username;
     let session = await this.store.getSessionByName(issue.id, defaultSessionName);
     if (session && session.state === "running") {
       log.info(`engine: duplicate issue_opened — session already running for ${scopeKey}#${ref.issueId}`);
