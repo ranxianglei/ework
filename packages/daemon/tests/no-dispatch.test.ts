@@ -69,3 +69,45 @@ describe("issue_opened [no-dispatch] marker gating", () => {
     }
   });
 });
+
+describe("scheduled full-suite tracker wake (owner policy 2026-10-17)", () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const { Engine } = require("../src/opencode") as { Engine: any };
+
+  function makeSelf() {
+    const handleOpened = vi.fn();
+    const self = Object.create(Engine.prototype) as Record<string, unknown>;
+    self.cfg = { bot: { username: "ework-daemon" }, daemon: { wakeLogins: ["ranxianglei"], noWakeLogins: [], nonWakingAuthors: [], wakeKinds: ["human"] } };
+    self.store = {
+      findIssue: vi.fn(async () => ({ id: 7, state: "active" })),
+      updateIssueState: vi.fn(async () => {}),
+    };
+    self.paused = false;
+    self.getTracker = () => ({ formatScopeKey: () => "acme/widgets" });
+    self.projectWakeConfig = vi.fn(async () => ({ logins: [], communityWake: false }));
+    self.externalWakeStamps = new Map();
+    self.handleOpened = handleOpened;
+    self.handleCommented = vi.fn();
+    self.handleClosed = vi.fn();
+    self.handleMergeConflict = vi.fn();
+    return { self, handleOpened };
+  }
+
+  const ev = (title: string, author: string): TrackerEvent => ({
+    type: "issue_opened",
+    ref,
+    issue: { title, body: "自动跟踪:定时全量矩阵挂了", state: "open", author },
+  });
+
+  test("bot-authored scheduled-CI tracker issue IS dispatched", async () => {
+    const { self, handleOpened } = makeSelf();
+    await Engine.prototype.handleEvent.call(self, ev("定时全量测试失败: ce9bc90a", "github-actions[bot]"));
+    expect(handleOpened).toHaveBeenCalledTimes(1);
+  });
+
+  test("bot-authored issue with any other title stays gated", async () => {
+    const { self, handleOpened } = makeSelf();
+    await Engine.prototype.handleEvent.call(self, ev("nightly report: something else", "github-actions[bot]"));
+    expect(handleOpened).not.toHaveBeenCalled();
+  });
+});

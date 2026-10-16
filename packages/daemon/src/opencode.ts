@@ -1236,6 +1236,15 @@ export class Engine {
           }
         }
       }
+      // Scheduled full-suite tracker (github-actions bot opens 「定时全量测试失败: <sha>」
+      // when the timed matrix goes red on master). Owner policy 2026-10-17: these ARE
+      // dispatched — the bot exists to surface master reds and the fleet fixes them
+      // promptly. Scoped to the tracker's exact title signature; every other bot
+      // issue/comment stays gated by the storm defenses.
+      if (skip && event.type === "issue_opened" && (wakeKind === "bot" || /\[bot\]$/i.test(wakeAuthor)) && /^定时全量测试失败[:：]/.test(event.issue?.title ?? "")) {
+        skip = null;
+        log.info(`engine: scheduled-CI tracker ${ref.trackerType}:${scopeKey}#${ref.issueId} — dispatching (owner policy 2026-10-17)`);
+      }
       if (skip) {
         log.info(`engine: ${skip} — skipping ${event.type} for ${ref.trackerType}:${scopeKey}#${ref.issueId}`);
         return;
