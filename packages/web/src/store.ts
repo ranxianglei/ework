@@ -1011,6 +1011,22 @@ function validateLabel(t: LabelInput): { name: string; color: string; descriptio
   return { name, color: t.color, description: (t.description ?? "").trim(), exclusive: t.exclusive ? 1 : 0 };
 }
 
+/** Idempotently ensure a project label exists and is attached to the issue
+ *  (upstream sync uses this for the "pr" mirror badge, owner policy 2026-10-16). */
+export async function ensureIssueHasLabel(projectId: number, issueId: number, name: string, color: string): Promise<void> {
+  let label = await getDB().get<LabelRow>("SELECT * FROM {{labels}} WHERE project_id = ? AND name = ?", [projectId, name]);
+  if (!label) {
+    await getDB().run(
+      "INSERT OR IGNORE INTO {{labels}} (project_id, name, color, description, exclusive) VALUES (?, ?, ?, '', 0)",
+      [projectId, name, color],
+    );
+    label = await getDB().get<LabelRow>("SELECT * FROM {{labels}} WHERE project_id = ? AND name = ?", [projectId, name]);
+  }
+  if (label) {
+    await getDB().run("INSERT OR IGNORE INTO {{issue_labels}} (issue_id, label_id) VALUES (?, ?)", [issueId, label.id]);
+  }
+}
+
 export async function createLabel(projectId: number, input: LabelInput): Promise<LabelRow> {
   const v = validateLabel(input);
   const info = await getDB().run(

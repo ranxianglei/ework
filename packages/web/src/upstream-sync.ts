@@ -11,6 +11,7 @@ import {
   ensureUser,
   postComment,
   editIssue,
+  ensureIssueHasLabel,
   updateIssueAiStatus,
   updateIssueMergeState,
   updateIssueCiState,
@@ -234,9 +235,12 @@ export class UpstreamSync {
     // authorship: it silently ate PRs the owner opened themselves (or via an
     // agent-prepared body). Self-recognition now lives at the session level
     // (AGENTS.md: marker-PR = verify + report, don't redo).
-    if (emit) {
-      const created = await getIssueByUpstreamNumber(this.project.id, gi.number);
-      if (created) void emitIssueEvent(this.project.id, created.id, "opened", this.origin);
+    const created = await getIssueByUpstreamNumber(this.project.id, gi.number);
+    if (gi.pull_request && created) {
+      await ensureIssueHasLabel(this.project.id, created.id, "pr", "#576699");
+    }
+    if (emit && created) {
+      void emitIssueEvent(this.project.id, created.id, "opened", this.origin);
     }
   }
 
@@ -392,8 +396,17 @@ export class UpstreamSync {
           await this.importIssue(gi, true);
           result.issuesImported++;
           result.commentsImported += await this.importIssueComments(gi, true);
-        } else if (await this.syncIssueState(existing, gi, true)) {
-          result.issuesUpdated++;
+        } else {
+          const composedTitle = (gi.pull_request ? "[PR] " : "") + (gi.title || `#${gi.number}`);
+          if (existing.title !== composedTitle) {
+            await editIssue(existing.id, { title: composedTitle });
+          }
+          if (gi.pull_request) {
+            await ensureIssueHasLabel(this.project.id, existing.id, "pr", "#576699");
+          }
+          if (await this.syncIssueState(existing, gi, true)) {
+            result.issuesUpdated++;
+          }
         }
         if (existing && gi.pull_request && gi.state !== "closed") prCandidates.push({ gi, existing });
         if (gi.updated_at && (!issueCursor || gi.updated_at > issueCursor)) issueCursor = gi.updated_at;
