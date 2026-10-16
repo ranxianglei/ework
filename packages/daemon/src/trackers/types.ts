@@ -13,7 +13,7 @@ export interface TrackerRef {
 }
 
 /** Parsed, tracker-agnostic webhook event */
-export type TrackerEventType = "issue_opened" | "comment_created" | "issue_closed" | "status_changed" | "merge_conflict";
+export type TrackerEventType = "issue_opened" | "comment_created" | "issue_closed" | "status_changed" | "merge_conflict" | "ci_failed";
 
 export interface TrackerEvent {
   type: TrackerEventType;
@@ -36,6 +36,8 @@ export interface TrackerEvent {
   };
   // Present on merge_conflict events: upstream PR merge state ("dirty" etc).
   merge?: { state: string };
+  // Present on ci_failed events: failing head sha + failed checks.
+  ci?: { sha: string; checks: { name: string; html_url?: string; conclusion: string }[] };
   // Resolved "provider/model" string from ework-web (project override or
   // global default). Empty/undefined = no override; engine omits --model
   // and lets opencode pick per its own opencode.json + env.

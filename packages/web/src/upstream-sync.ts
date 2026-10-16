@@ -13,10 +13,11 @@ import {
   editIssue,
   updateIssueAiStatus,
   updateIssueMergeState,
+  updateIssueCiState,
   updateUpstreamSyncState,
   listEnabledUpstreamSyncs,
 } from "./store";
-import { emitIssueEvent, emitCommentEvent, emitMergeConflictEvent } from "./webhooks";
+import { emitIssueEvent, emitCommentEvent, emitMergeConflictEvent, emitCiFailedEvent } from "./webhooks";
 import { getConfigAll } from "./db";
 import { log } from "./logger";
 import type { Config } from "./config";
@@ -88,6 +89,34 @@ export function mergeProbeCandidates(
 interface PullRequestPayload {
   mergeable?: boolean | null;
   mergeable_state?: string | null;
+  head?: { sha?: string | null } | null;
+}
+
+interface CheckRunPayload {
+  name?: string;
+  html_url?: string;
+  conclusion?: string | null;
+}
+
+// Per-PR CI-fix bookkeeping (owner policy 2026-10-14): sha tracks the last
+// failing head we dispatched for; attempts caps auto-fix cycles at 2 per PR
+// so a hopeless CI never loops the worker. Green builds reset the state.
+export interface CiProbeState {
+  sha: string;
+  attempts: number;
+}
+
+// Pure transition rule: emit on a NEW failing sha until 2 fix attempts per PR
+// are spent; green clears state; same sha never re-emits (loop guard).
+export function ciProbeDecision(
+  stored: CiProbeState | null,
+  sha: string,
+  failedCount: number,
+): { emit: boolean; next: CiProbeState | null } {
+  if (failedCount === 0) return { emit: false, next: null };
+  if (stored?.sha === sha) return { emit: false, next: stored };
+  if ((stored?.attempts ?? 0) >= 2) return { emit: false, next: stored };
+  return { emit: true, next: { sha, attempts: (stored?.attempts ?? 0) + 1 } };
 }
 
 export interface GithubDiscussion {
@@ -241,6 +270,45 @@ export class UpstreamSync {
     }
   }
 
+  // CI-failure wake (owner policy 2026-10-14): probe check-runs for the PR's
+  // head sha; on a NEW failing sha (max 2 auto-fix attempts per PR) emit a
+  // ci_failed event so the daemon routes a sticky ci-worker at it. Conflicts
+  // got their auto lane first; CI failures now have one too.
+  private async probeCiState(gi: GiteaIssue, existing: IssueRow, result: UpstreamSyncPollResult): Promise<void> {
+    if (!this.isGithub || existing.kind !== "issue" || !gi.title.startsWith("[PR]")) return;
+    const pull = await this.fetchJson<PullRequestPayload>(`/pulls/${gi.number}`);
+    const sha = pull?.head?.sha ?? null;
+    if (!sha) return;
+    const checks = await this.fetchJson<CheckRunPayload[]>(`/commits/${sha}/check-runs?filter=latest`);
+    if (!checks) return;
+    const failed = checks.filter((c) => c.conclusion === "failure");
+    if (failed.length === 0) {
+      if (existing.upstream_ci_state) await updateIssueCiState(existing.id, null);
+      return;
+    }
+    let stored: CiProbeState | null = null;
+    try {
+      stored = existing.upstream_ci_state ? (JSON.parse(existing.upstream_ci_state) as CiProbeState) : null;
+    } catch {
+      stored = null;
+    }
+    const decision = ciProbeDecision(stored, sha, failed.length);
+    if (!decision.emit) {
+      if (decision.next !== stored) await updateIssueCiState(existing.id, decision.next ? JSON.stringify(decision.next) : null);
+      return;
+    }
+    log.info(`upstream-sync: CI failure detected on upstream PR #${gi.number} (${this.project.owner}/${this.project.name})`);
+    await emitCiFailedEvent(
+      this.project.id,
+      existing.id,
+      this.origin,
+      sha,
+      failed.map((c) => ({ name: c.name ?? "check", html_url: c.html_url ?? "", conclusion: "failure" })),
+    );
+    await updateIssueCiState(existing.id, decision.next ? JSON.stringify(decision.next satisfies CiProbeState) : null);
+    result.issuesUpdated++;
+  }
+
   private async importIssueComments(gi: GiteaIssue, emit: boolean): Promise<number> {
     const comments = await this.fetchJson<GiteaComment[]>(this.isGithub
       ? `/issues/${gi.number}/comments?per_page=50`
@@ -339,6 +407,7 @@ export class UpstreamSync {
     for (const c of prCandidates) {
       if (!probeNumbers.includes(c.gi.number)) continue;
       await this.probeMergeState(c.gi, c.existing, result);
+      await this.probeCiState(c.gi, c.existing, result);
     }
 
     let commentCursor = this.sync.comment_cursor;

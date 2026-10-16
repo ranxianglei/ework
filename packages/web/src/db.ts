@@ -146,6 +146,9 @@ function migrateIssuesTable(db: Database): void {
   if (!have.has("upstream_merge_checked_at")) {
     db.exec(applyPrefix("ALTER TABLE {{issues}} ADD COLUMN upstream_merge_checked_at TEXT"));
   }
+  if (!have.has("upstream_ci_state")) {
+    db.exec(applyPrefix("ALTER TABLE {{issues}} ADD COLUMN upstream_ci_state TEXT"));
+  }
   if (!have.has("kind")) {
     db.exec(applyPrefix("ALTER TABLE {{issues}} ADD COLUMN kind TEXT NOT NULL DEFAULT 'issue'"));
   }
@@ -448,6 +451,7 @@ async function migrateMysqlAttachmentsNullable(pool: Pool): Promise<void> {
 }
 
 async function migrateMysqlDiscussions(pool: Pool): Promise<void> {
+  await migrateMysqlColumn(pool, "issues", "upstream_ci_state", "upstream_ci_state VARCHAR(512) DEFAULT NULL");
   await migrateMysqlColumn(pool, "issues", "kind", "kind VARCHAR(16) NOT NULL DEFAULT 'issue'");
   await migrateMysqlColumn(pool, "upstream_sync", "discussion_cursor", "discussion_cursor VARCHAR(40) DEFAULT NULL");
   try {

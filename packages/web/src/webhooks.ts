@@ -327,7 +327,7 @@ interface PayloadComment {
 
 interface IssueEventPayload {
   event_id?: string;
-  action: IssueAction | "merge_conflict";
+  action: IssueAction | "merge_conflict" | "ci_failed";
   issue: PayloadIssue;
   repository: PayloadRepository;
   sender: PayloadUser;
@@ -336,6 +336,7 @@ interface IssueEventPayload {
   url?: string;
   dispatch_off?: boolean;
   merge_state?: string;
+  ci?: { sha: string; checks: { name: string; html_url?: string; conclusion: string }[] };
 }
 
 interface CommentEventPayload {
@@ -561,6 +562,41 @@ export async function emitMergeConflictEvent(
     await fanOut(projectId, "issues", rawBody);
   } catch (e) {
     log.error("webhook: emitMergeConflictEvent failed", { err: e as Error, projectId, issueId });
+  }
+}
+
+// Upstream PR CI-failure wake: same shape as the merge-conflict wake, action
+// "ci_failed", carrying the failing head sha + failed check list. Emitted at
+// most twice per PR (web-side attempt cap) so the ci-worker cannot loop.
+export async function emitCiFailedEvent(
+  projectId: number,
+  issueId: number,
+  origin: string,
+  sha: string,
+  checks: { name: string; html_url: string; conclusion: string }[],
+): Promise<void> {
+  try {
+    const project = await getProjectById(projectId);
+    if (!project) return;
+    const issue = await getIssueById(issueId);
+    if (!issue) return;
+    const cfg = await getConfigAll();
+    const scopeKey = `${project.owner}/${project.name}`;
+    const globalOff = cfg["dispatchEnabled"] === "false";
+    const projectOff = cfg[`dispatchOff:${scopeKey}`] === "1";
+    const issueOff = issue.ai_status === "dispatch_off" || issue.ai_status === "halted";
+    if (globalOff || projectOff || issueOff) return;
+    const commentCount = await countCommentsSafe(issueId);
+    const globalDefault = (await loadConfig()).defaultModel;
+    const model = resolveModel(project.model, globalDefault, issue.model);
+    const payload = buildIssuePayload(issue, project, commentCount, "opened", origin, model);
+    (payload as IssueEventPayload).action = "ci_failed";
+    (payload as IssueEventPayload).ci = { sha, checks };
+    (payload as IssueEventPayload).event_id = randomUUID();
+    const rawBody = JSON.stringify(payload);
+    await fanOut(projectId, "issues", rawBody);
+  } catch (e) {
+    log.error("webhook: emitCiFailedEvent failed", { err: e as Error, projectId, issueId });
   }
 }
 

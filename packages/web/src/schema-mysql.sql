@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS {{issues}} (
   upstream_issue_number INT DEFAULT NULL,
   upstream_mergeable_state VARCHAR(32) DEFAULT NULL,
   upstream_merge_checked_at VARCHAR(40) DEFAULT NULL,
+  upstream_ci_state VARCHAR(512) DEFAULT NULL,
   kind       VARCHAR(16) NOT NULL DEFAULT 'issue',
   UNIQUE (project_id, number),
   UNIQUE uq_issues_project_upstream (project_id, upstream_issue_number, kind),

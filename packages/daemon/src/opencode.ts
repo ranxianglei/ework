@@ -632,6 +632,7 @@ export class Engine {
   private maxConcurrent: number;
   private maxConcurrentExplicit: boolean;
   private conflictMaxConcurrent: number;
+  private ciMaxConcurrent: number;
 
   // Runtime state keyed by session key (trackerType:scopeKey#issueId@sessionName)
   private processes = new Map<string, RuntimeHandle>();
@@ -718,6 +719,7 @@ export class Engine {
     this.maxConcurrent = cfg.work.maxConcurrent;
     this.maxConcurrentExplicit = cfg.work.maxConcurrentExplicit;
     this.conflictMaxConcurrent = cfg.work.conflictMaxConcurrent ?? 1;
+    this.ciMaxConcurrent = cfg.work.ciMaxConcurrent ?? 1;
     this.startGlobalObserver();
     if (opts.recoverOnBoot !== false) void this.recover();
   }
@@ -1153,12 +1155,12 @@ export class Engine {
       }
     }
 
-    if (this.paused && (event.type === "issue_opened" || event.type === "comment_created" || event.type === "merge_conflict")) {
+    if (this.paused && (event.type === "issue_opened" || event.type === "comment_created" || event.type === "merge_conflict" || event.type === "ci_failed")) {
       log.info(`engine: paused — skipping ${event.type} for ${ref.trackerType}:${scopeKey}#${ref.issueId}`);
       return;
     }
 
-    if ((issueData.ai_status === "halted" || issueData.ai_status === "dispatch_off") && (event.type === "issue_opened" || event.type === "comment_created" || event.type === "merge_conflict")) {
+    if ((issueData.ai_status === "halted" || issueData.ai_status === "dispatch_off") && (event.type === "issue_opened" || event.type === "comment_created" || event.type === "merge_conflict" || event.type === "ci_failed")) {
       log.info(`engine: issue ${issueData.ai_status} — skipping ${event.type} for ${ref.trackerType}:${scopeKey}#${ref.issueId}`);
       return;
     }
@@ -1276,6 +1278,8 @@ export class Engine {
       }
       case "merge_conflict":
         return this.handleMergeConflict(ref, scopeKey, issueData, tracker, event.merge?.state ?? "dirty", event.model);
+      case "ci_failed":
+        return this.handleCiFailed(ref, scopeKey, issueData, tracker, event.ci ?? { sha: "", checks: [] }, event.model);
     }
   }
 
@@ -1324,6 +1328,53 @@ export class Engine {
 
     await tracker.createComment(ref, `[system] 🏷 ${this.sessionRef(session)} ⚠️ 上游 PR 冲突(${mergeState})— 已转发 **${session.name}** 处理 rebase。`).catch(() => {});
     await this.enqueueOrRun(session, issue, prompt, tracker, ref, `merge-conflict-${ref.issueId}-${Date.now()}`, model);
+  }
+
+  // Upstream PR CI-failure wake (owner policy 2026-10-14): the anti-storm
+  // gates keep CI-bot COMMENTS out of sessions; this is the sanctioned lane —
+  // a sticky ci-worker per PR fixes red CI directly on the PR branch (small
+  // fixes per the几行级小修 discipline). Web caps auto-fix cycles at 2 per PR;
+  // unfixable CI gets a verdict comment and stops for a human.
+  private async handleCiFailed(
+    ref: TrackerRef,
+    scopeKey: string,
+    issueData: TrackerEvent["issue"],
+    tracker: IssueTracker,
+    ci: NonNullable<TrackerEvent["ci"]>,
+    model?: string,
+  ) {
+    if (issueData.state !== "open") return;
+    const issue = await this.store.findIssue(ref.trackerType, scopeKey, ref.issueId);
+    if (!issue) {
+      log.info(`engine: ci_failed on untracked ${scopeKey}#${ref.issueId} — skipping`);
+      return;
+    }
+    if (issue.state === "closed") return;
+    if (!(await this.ensureOwned(issue))) return;
+
+    const session = await this.store.createSession(issue.id, "ci-worker");
+
+    const workdir = await this.resolveWorkdir(session, issue);
+    const instructions = tracker.getTrackerInstructions(ref);
+    const checkList = ci.checks.map((c) => `- ${c.name}${c.html_url ? ` (${c.html_url})` : ""}`).join("\n");
+    const body =
+      `[SYSTEM] Upstream PR CI failure detected (head ${ci.sha.slice(0, 10)}).\n` +
+      `The PR mirror 「${issueData.title}」 has failing checks:\n${checkList}\n` +
+      `Fix the CI directly on the PR branch (fetch the check logs via the GitHub API as needed), ` +
+      `push, and reply with a 七问 summary. This is an auto-fix lane: at most 2 attempts per PR — ` +
+      `if the failure needs design decisions or is not a small fix, post a verdict comment instead and stop.`;
+    const prompt = this.buildForwardPrompt(
+      session.name,
+      this.handleLargeContent(workdir, body, `ci-fail-${ref.issueId}.txt`),
+      "ework-web",
+      "bot",
+      issueData.title,
+      workdir,
+      instructions,
+    );
+
+    await tracker.createComment(ref, `[system] 🏷 ${this.sessionRef(session)} ❌ CI 失败(${ci.checks.map((c) => c.name).join(", ")})— 已转发 **${session.name}** 修复。`).catch(() => {});
+    await this.enqueueOrRun(session, issue, prompt, tracker, ref, `ci-fail-${ref.issueId}-${ci.sha || Date.now()}`, model);
   }
 
   // Reply-burst circuit breaker: a looping session can re-perceive a standing
@@ -1865,6 +1916,16 @@ export class Engine {
       const runningConflicts = await this.store.countRunningConflictMessages(msg.id);
       if (runningConflicts >= this.conflictMaxConcurrent) {
         log.info(`engine: merge-conflict cap (${this.conflictMaxConcurrent}) reached — deferring msg ${msg.id.slice(0, 8)} for ${k}`);
+        await this.store.updateMessageStatus(msg.id, "pending");
+        this.running.delete(k);
+        return;
+      }
+    }
+    // CI-fix lane shares the same discipline (owner policy 2026-10-14).
+    if (msg.sourceCommentId?.startsWith("ci-fail-")) {
+      const runningCi = await this.store.countRunningCiMessages(msg.id);
+      if (runningCi >= this.ciMaxConcurrent) {
+        log.info(`engine: ci-fix cap (${this.ciMaxConcurrent}) reached — deferring msg ${msg.id.slice(0, 8)} for ${k}`);
         await this.store.updateMessageStatus(msg.id, "pending");
         this.running.delete(k);
         return;
