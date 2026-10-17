@@ -123,7 +123,7 @@ function parseEvents(events: unknown): WebhookEventName[] {
   try {
     const arr = JSON.parse(events) as unknown[];
     const valid = arr.filter(
-      (v): v is WebhookEventName => v === "issues" || v === "issue_comment" || v === "status_changed"
+      (v): v is WebhookEventName => v === "issues" || v === "issue_comment" || v === "status_changed" || v === "issue_boosted"
     );
     return valid.length > 0 ? valid : DEFAULT_EVENTS;
   } catch {
