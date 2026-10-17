@@ -112,4 +112,36 @@ describe("ingest title translation", () => {
     expect(a?.title).toBe("Cached translation | 游标卡死修复");
     expect(b?.title).toBe(a?.title);
   });
+
+  test("already-translated titles are never rewritten by later polls", async () => {
+    let calls = 0;
+    setTitleTranslator(async () => {
+      calls += 1;
+      return `Translation v${calls}`;
+    });
+    const { sync, projectId } = await setup();
+    // First import composes with v1.
+    issueList = [gi(16, { title: "排队优先级缺陷" })];
+    mockFetch();
+    await sync.pollOnce();
+    const row1 = await getIssueByUpstreamNumber(projectId, 16);
+    expect(row1?.title).toBe("Translation v1 | 排队优先级缺陷");
+    // A fresh poll cycle (new UpstreamSync instance, empty cache) with a
+    // different translator output must NOT rewrite the stored title.
+    issueList = [gi(16, { title: "排队优先级缺陷", updated_at: "2026-10-01T00:01:00Z" })];
+    const { sync: sync2, projectId: p2 } = await setup();
+    void sync2; void p2;
+    const mod = await import("../src/upstream-sync");
+    const sync3 = new mod.UpstreamSync(
+      { ...(await (await import("../src/store")).getUpstreamSync(projectId))! },
+      { id: projectId, owner: "acme", name: "widget", model: "m", public: 1 } as any,
+      "http://origin.local",
+      false,
+      true,
+    );
+    await sync3.pollOnce();
+    const row2 = await getIssueByUpstreamNumber(projectId, 16);
+    expect(row2?.title).toBe("Translation v1 | 排队优先级缺陷");
+  });
 });
+

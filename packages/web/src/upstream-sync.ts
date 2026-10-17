@@ -465,7 +465,12 @@ export class UpstreamSync {
           result.commentsImported += await this.importIssueComments(gi, true);
         } else {
           const composedTitle = await this.composeTitle(gi.title, !!gi.pull_request, gi.number);
-          if (existing.title !== composedTitle) {
+          // Repair-only recompose: if the mirror already carries a translated
+          // lead segment ("EN | 原题"), never rewrite it — translator output is
+          // not deterministic, so re-composing every poll would churn every
+          // title. Recompose only when the lead is missing (stripped/mangled).
+          const missingLead = !existing.title.includes(" | ");
+          if (missingLead && existing.title !== composedTitle) {
             await editIssue(existing.id, { title: composedTitle });
           }
           if (gi.pull_request) {
