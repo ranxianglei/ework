@@ -636,6 +636,8 @@ export class Engine {
 
   // Runtime state keyed by session key (trackerType:scopeKey#issueId@sessionName)
   private processes = new Map<string, RuntimeHandle>();
+  // Issues pinned to the front of the global pending queue by owner boost (web ⚡).
+  private readonly boostedIssueIds = new Set<string>();
   private running = new Set<string>();
   // generation-scoped: a stale flag from a preempted/killed run must not
   // suppress finishRun for the replacement run spawned afterwards
@@ -1289,12 +1291,47 @@ export class Engine {
         return this.handleMergeConflict(ref, scopeKey, issueData, tracker, event.merge?.state ?? "dirty", event.model);
       case "ci_failed":
         return this.handleCiFailed(ref, scopeKey, issueData, tracker, event.ci ?? { sha: "", checks: [] }, event.model);
+      case "issue_boosted":
+        return this.handleBoost(ref, scopeKey, issueData, tracker);
     }
   }
 
   // Upstream PR conflict wake: the session that owns this PR rebase-pushes on
   // its own — no manual trigger. Only engages issues an agent already worked
   // (a session row exists); untouched PRs stay manual.
+  // Owner-driven queue boost (web ⚡ button): dispatch this issue's pending
+  // messages immediately if a slot is free; otherwise pin the issue to the
+  // absolute front of the global queue (owner policy 2026-10-17).
+  private async handleBoost(ref: TrackerRef, scopeKey: string, _issueData: NonNullable<TrackerEvent["issue"]>, _tracker: unknown): Promise<void> {
+    const issue = await this.store.findIssue(ref.trackerType, scopeKey, ref.issueId);
+    if (!issue) {
+      log.info(`engine: boost — no local issue state for ${scopeKey}#${ref.issueId}, nothing to boost`);
+      return;
+    }
+    const pendings = await this.store.getPendingForIssue(issue.id);
+    if (pendings.length === 0) {
+      log.info(`engine: boost — ${scopeKey}#${ref.issueId} has no pending messages (running or idle)`);
+      return;
+    }
+    let dispatched = 0;
+    for (const msg of pendings) {
+      if (this.running.size >= this.maxConcurrent) break;
+      const session = await this.store.getSession(msg.sessionId);
+      if (!session || session.state === "running") continue;
+      const k = this.sessionKey(session, issue);
+      if (this.running.has(k)) continue;
+      const won = await this.store.claimMessage(msg.id);
+      if (!won) continue;
+      log.info(`engine: boost dispatched msg ${msg.id.slice(0, 8)} for ${k} (owner policy)`);
+      await this.dequeueOrIdle(k, session, issue, msg);
+      dispatched++;
+    }
+    if (dispatched < pendings.length) {
+      this.boostedIssueIds.add(issue.id);
+      log.info(`engine: boost — ${scopeKey}#${ref.issueId} pinned to front of queue (${pendings.length - dispatched} waiting for a slot)`);
+    }
+  }
+
   private async handleMergeConflict(
     ref: TrackerRef,
     scopeKey: string,
@@ -2555,6 +2592,42 @@ export class Engine {
 
   private async drainGlobalPending(): Promise<void> {
     if (this.destroyed) return;
+    // Owner-boosted issues jump the queue: dispatch their pending messages
+    // before the global priority query sees anything else.
+    if (this.boostedIssueIds.size > 0 && this.maxConcurrent - this.running.size > 0) {
+      for (const issueId of [...this.boostedIssueIds]) {
+        if (this.running.size >= this.maxConcurrent) break;
+        let pendings: Awaited<ReturnType<Store["getPendingForIssue"]>>;
+        try {
+          pendings = await this.store.getPendingForIssue(issueId);
+        } catch {
+          continue;
+        }
+        if (pendings.length === 0) {
+          this.boostedIssueIds.delete(issueId);
+          continue;
+        }
+        const issue = await this.store.getIssue(issueId);
+        if (!issue || issue.state === "closed") {
+          this.boostedIssueIds.delete(issueId);
+          continue;
+        }
+        for (const msg of pendings) {
+          if (this.running.size >= this.maxConcurrent) break;
+          const session = await this.store.getSession(msg.sessionId);
+          if (!session || session.state === "running") continue;
+          const k = this.sessionKey(session, issue);
+          if (this.running.has(k)) continue;
+          const won = await this.store.claimMessage(msg.id);
+          if (!won) continue;
+          log.info(`engine: boost-front dispatched msg ${msg.id.slice(0, 8)} for ${k}`);
+          await this.dequeueOrIdle(k, session, issue, msg);
+        }
+        const remaining = await this.store.getPendingForIssue(issueId);
+        if (remaining.length === 0) this.boostedIssueIds.delete(issueId);
+      }
+      if (this.running.size >= this.maxConcurrent) return;
+    }
     const slotsAvailable = this.maxConcurrent - this.running.size;
     if (slotsAvailable <= 0) {
       // Nothing can run — surface waiting work as ⏳ queued so the web does

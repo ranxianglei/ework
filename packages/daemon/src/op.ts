@@ -430,6 +430,14 @@ export class Store {
     );
   }
 
+  async getPendingForIssue(issueId: string): Promise<Message[]> {
+    const nowIso = new Date().toISOString();
+    return getDB().all<Message>(
+      "SELECT m.* FROM {{messages}} m JOIN {{op_sessions}} s ON s.uid = m.session_id WHERE s.issue_id = ? AND m.status = 'pending' AND (m.retry_after IS NULL OR m.retry_after <= ?) ORDER BY m.created_at ASC",
+      [issueId, nowIso],
+    );
+  }
+
   async countRunningConflictMessages(excludeUid: string): Promise<number> {
     const res = await getDB().get<{ n: number }>(
       "SELECT COUNT(*) AS n FROM {{messages}} WHERE status = 'running' AND source_comment_id LIKE 'merge-conflict-%' AND uid != ?",

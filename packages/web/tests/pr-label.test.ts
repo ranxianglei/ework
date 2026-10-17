@@ -46,7 +46,7 @@ async function settle() {
 }
 
 async function setup(cursor: string | null = "2026-09-30T00:00:00Z") {
-  const project = await createProject("acme", "widget", "test");
+  const project = await createProject("acme", `widget-prlabel-${Date.now() % 1000000}`, "test");
   await upsertUpstreamSync(project.id, {
     baseUrl: "https://github.com",
     upstreamOwner: "acme",

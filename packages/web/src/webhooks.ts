@@ -34,7 +34,7 @@ import {
   type CommentRow,
 } from "./store";
 
-export type WebhookEventName = "issues" | "issue_comment" | "status_changed";
+export type WebhookEventName = "issues" | "issue_comment" | "status_changed" | "issue_boosted";
 export type IssueAction = "opened" | "closed" | "reopened";
 
 export interface WebhookRow {
@@ -870,6 +870,30 @@ export async function emitStatusChanged(
       from,
       to,
     });
+  }
+}
+
+export async function emitIssueBoost(projectId: number, issueId: number, actor: string, origin: string): Promise<void> {
+  try {
+    const project = await getProjectById(projectId);
+    if (!project) return;
+    const issue = await getIssueById(issueId);
+    if (!issue) { log.warn(`emitIssueBoost: issue ${issueId} not found — silent skip prevented`); return; }
+    const commentCount = await countCommentsSafe(issueId);
+    const actorUser = await getUserByLogin(actor);
+    const sender = actorUser ? buildUserFromRow(actorUser, origin) : buildUser(actor, origin);
+    const repo = buildRepository(project, origin);
+    const issuePayload = buildIssue(issue, project, commentCount, origin);
+    const rawBody = JSON.stringify({
+      event_id: randomUUID(),
+      action: "boosted",
+      issue: issuePayload,
+      repository: repo,
+      sender,
+    });
+    await fanOut(projectId, "issue_boosted", rawBody);
+  } catch (e) {
+    log.error("webhook: emitIssueBoost failed", { err: e as Error, projectId, issueId });
   }
 }
 

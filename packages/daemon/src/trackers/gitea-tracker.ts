@@ -269,6 +269,21 @@ export class GiteaTracker implements IssueTracker {
       };
     }
 
+    if (action === "boosted") {
+      return {
+        type: "issue_boosted" as const,
+        ref,
+        issue: {
+          title: issue.title as string,
+          body: (issue.body as string) ?? "",
+          state: (issue.state as string) ?? "open",
+          author: issueUser?.login ?? "",
+          ai_status: aiStatus,
+        },
+        sender,
+      };
+    }
+
     if (action === "status_changed") {
       const status = payload.status as { from?: string; to?: string; detail?: string } | undefined;
       return {

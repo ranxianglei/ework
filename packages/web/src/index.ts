@@ -102,6 +102,7 @@ import {
   emitIssueEvent,
   emitCommentEvent,
   emitStatusChanged,
+  emitIssueBoost,
   emitPingEvent,
   migrateWebhookEvents,
   listWebhooks,
@@ -415,7 +416,7 @@ const REPO_AI_RE = /^\/([^/]+)\/([^/]+)\/settings\/ai$/;
 const REPO_LABELS_RE = /^\/([^/]+)\/([^/]+)\/settings\/labels$/;
 const REPO_LABEL_ADD_RE = /^\/([^/]+)\/([^/]+)\/settings\/labels\/add$/;
 const REPO_LABEL_ACTION_RE = /^\/([^/]+)\/([^/]+)\/settings\/labels\/(\d+)\/(update|archive|unarchive|delete)$/;
-const REPO_ISSUE_HALT_RE = /^\/([^/]+)\/([^/]+)\/issues\/(\d+)\/(halt|resume|dispatch-off|dispatch-on|reset-session)$/;
+const REPO_ISSUE_HALT_RE = /^\/([^/]+)\/([^/]+)\/issues\/(\d+)\/(halt|resume|dispatch-off|dispatch-on|reset-session|boost)$/;
 const REPO_ISSUE_MODEL_RE = /^\/([^/]+)\/([^/]+)\/issues\/(\d+)\/model$/;
 const REPO_ISSUE_RUNTIME_RE = /^\/([^/]+)\/([^/]+)\/issues\/(\d+)\/runtime$/;
 const REPO_ISSUE_STATUS_RE = /^\/([^/]+)\/([^/]+)\/issues\/(\d+)\/ai-status$/;
@@ -2103,6 +2104,13 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
         const issue = await getIssueWithMeta(project.id, number);
         if (!issue) return json({ error: "issue not found" }, 404);
         const statusMap: Record<string, string> = { halt: "halted", resume: "", "dispatch-off": "dispatch_off", "dispatch-on": "" };
+      if (action === "boost") {
+        if (!(await canWriteProject(project.id, ctx.user))) {
+          return json({ error: "write role required" }, 403);
+        }
+        void emitIssueBoost(project.id, issue.id, ctx.user!.login, url.origin);
+        return json({ ok: true, boosted: true });
+      }
       if (action === "reset-session") {
         if (!(await canAdminProject(project.id, ctx.user))) {
           return json({ error: "admin role required" }, 403);
