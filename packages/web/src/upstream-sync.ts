@@ -223,6 +223,25 @@ export class UpstreamSync {
       return `${base}${prefix}/repos/${this.sync.upstream_owner}/${this.sync.upstream_repo}${path}`;
   }
 
+  // Push the composed bilingual title back to the upstream issue so GitHub
+  // (what the owner reads) matches the mirror. Best-effort: failures log and
+  // skip — the mirror stays authoritative for our own display either way.
+  private async patchUpstreamTitle(gi: GiteaIssue, title: string): Promise<void> {
+    try {
+      const resp = await fetch(this.api(`/issues/${gi.number}`), {
+        method: "PATCH",
+        headers: { ...this.headers(), "Content-Type": "application/json" },
+        body: JSON.stringify({ title }),
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (!resp.ok) {
+        log.warn("upstream-sync: title write-back failed", { n: gi.number, status: resp.status });
+      }
+    } catch (err) {
+      log.warn("upstream-sync: title write-back error", { n: gi.number, err: String(err) });
+    }
+  }
+
   private async fetchJson<T>(path: string): Promise<T | null> {
     const resp = await fetch(this.api(path), { headers: this.headers(), signal: AbortSignal.timeout(15_000) });
     if (resp.status === 404) return null;
@@ -277,9 +296,10 @@ export class UpstreamSync {
     }
     if (body.includes("<!-- ework-mirror -->")) return;
     await ensureUser(gi.user?.login ?? "upstream", fromGithubBot(gi.user?.login) ? "bot" : "human");
+    const composedImportTitle = await this.composeTitle(gi.title, !!gi.pull_request, gi.number);
     await createIssue(
       this.project.id,
-      await this.composeTitle(gi.title, !!gi.pull_request, gi.number),
+      composedImportTitle,
       gi.body ?? "",
       gi.user?.login ?? "upstream",
       {
@@ -298,6 +318,9 @@ export class UpstreamSync {
     // agent-prepared body). Self-recognition now lives at the session level
     // (AGENTS.md: marker-PR = verify + report, don't redo).
     const created = await getIssueByUpstreamNumber(this.project.id, gi.number);
+    if (this.titleTranslate && composedImportTitle !== gi.title) {
+      await this.patchUpstreamTitle(gi, composedImportTitle);
+    }
     if (gi.pull_request && created) {
       await ensureIssueHasLabel(this.project.id, created.id, "pr", "#576699");
     }
@@ -472,6 +495,9 @@ export class UpstreamSync {
           const missingLead = !existing.title.includes(" | ");
           if (missingLead && existing.title !== composedTitle) {
             await editIssue(existing.id, { title: composedTitle });
+            if (this.titleTranslate && composedTitle !== gi.title) {
+              await this.patchUpstreamTitle(gi, composedTitle);
+            }
           }
           if (gi.pull_request) {
             await ensureIssueHasLabel(this.project.id, existing.id, "pr", "#576699");
