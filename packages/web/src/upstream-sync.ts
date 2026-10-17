@@ -154,17 +154,59 @@ function clipTitle(t: string): string {
   return t.length > 255 ? t.slice(0, 254) + "…" : t;
 }
 
+const CJK_RE = /[\u4e00-\u9fff\u3040-\u30ff]/;
+
+async function defaultTranslateTitle(raw: string): Promise<string | null> {
+  // Ingest-time deterministic rename (owner policy 2026-10-17): CJK upstream
+  // titles get an English lead segment at import, composed by the pipeline
+  // instead of relying on agents (agent renames drifted in both format and
+  // order — b-c#3373 appended the translation at the tail).
+  try {
+    const proc = Bun.spawn(["ework-translate", raw], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const timer = setTimeout(() => proc.kill(), 10_000);
+    const out = await new Response(proc.stdout).text();
+    clearTimeout(timer);
+    const line = out
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean)[0];
+    if (!line) return null;
+    return line.replace(/\s+/g, " ").slice(0, 120);
+  } catch {
+    return null;
+  }
+}
+
+let titleTranslator: (raw: string) => Promise<string | null> = defaultTranslateTitle;
+
+export function setTitleTranslator(fn: (raw: string) => Promise<string | null>): void {
+  titleTranslator = fn;
+}
+
 export class UpstreamSync {
   private readonly sync: UpstreamSyncRow;
   private readonly project: ProjectRow;
   private readonly origin: string;
   private readonly discussionsEnabled: boolean;
+  private readonly titleTranslate: boolean;
+  private readonly titleCache = new Map<string, string>();
 
-  constructor(sync: UpstreamSyncRow, project: ProjectRow, origin: string, discussionsEnabled = false) {
+  constructor(
+    sync: UpstreamSyncRow,
+    project: ProjectRow,
+    origin: string,
+    discussionsEnabled = false,
+    titleTranslate = false,
+  ) {
     this.sync = sync;
     this.project = project;
     this.origin = origin;
-    this.discussionsEnabled = discussionsEnabled && sync.base_url.toLowerCase().includes("github.com");
+    const githubUpstream = sync.base_url.toLowerCase().includes("github.com");
+    this.discussionsEnabled = discussionsEnabled && githubUpstream;
+    this.titleTranslate = titleTranslate && githubUpstream;
   }
 
   private headers(): Record<string, string> {
@@ -204,6 +246,19 @@ export class UpstreamSync {
     return this.sync.issue_cursor === null;
   }
 
+  private async composeTitle(rawTitle: string | undefined, isPr: boolean, number: number): Promise<string> {
+    const raw = rawTitle || `#${number}`;
+    const prefix = isPr ? "[PR] " : "";
+    if (!this.titleTranslate || !CJK_RE.test(raw)) return clipTitle(prefix + raw);
+    let en = this.titleCache.get(raw);
+    if (en === undefined) {
+      en = (await titleTranslator(raw)) ?? "";
+      this.titleCache.set(raw, en);
+    }
+    if (!en) return clipTitle(prefix + raw);
+    return clipTitle(prefix + en + " | " + raw);
+  }
+
   private async importIssue(gi: GiteaIssue, emit: boolean): Promise<void> {
     const body = gi.body ?? "";
     // Issues ework-mirror created upstream reference their origin issue by
@@ -224,7 +279,7 @@ export class UpstreamSync {
     await ensureUser(gi.user?.login ?? "upstream", fromGithubBot(gi.user?.login) ? "bot" : "human");
     await createIssue(
       this.project.id,
-      clipTitle((gi.pull_request ? "[PR] " : "") + (gi.title || `#${gi.number}`)),
+      await this.composeTitle(gi.title, !!gi.pull_request, gi.number),
       gi.body ?? "",
       gi.user?.login ?? "upstream",
       {
@@ -409,7 +464,7 @@ export class UpstreamSync {
           result.issuesImported++;
           result.commentsImported += await this.importIssueComments(gi, true);
         } else {
-          const composedTitle = clipTitle((gi.pull_request ? "[PR] " : "") + (gi.title || `#${gi.number}`));
+          const composedTitle = await this.composeTitle(gi.title, !!gi.pull_request, gi.number);
           if (existing.title !== composedTitle) {
             await editIssue(existing.id, { title: composedTitle });
           }
@@ -605,7 +660,8 @@ async function tick(cfg: Config): Promise<void> {
         if (!project) return;
         const cfgKv = await getConfigAll();
         const discussionsEnabled = cfgKv[`discussions:${project.owner}/${project.name}`] === "1";
-        const sync = new UpstreamSync(row, project, syncOrigin(cfg), discussionsEnabled);
+        const titleTranslate = cfgKv[`titleTranslate:${project.owner}/${project.name}`] === "1";
+        const sync = new UpstreamSync(row, project, syncOrigin(cfg), discussionsEnabled, titleTranslate);
         const r = await sync.pollOnce();
         if (r.issuesImported || r.issuesUpdated || r.commentsImported) {
           log.info("upstream-sync: polled", {
