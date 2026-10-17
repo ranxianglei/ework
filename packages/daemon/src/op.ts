@@ -355,7 +355,7 @@ export class Store {
        JOIN {{op_sessions}} s ON s.uid = m.session_id
        JOIN {{issues}} i ON i.uid = s.issue_id
        WHERE m.status = 'pending' AND (m.retry_after IS NULL OR m.retry_after <= ?)
-       ORDER BY CASE WHEN s.name IN ('conflict-worker', 'ci-worker') THEN 1 ELSE 0 END DESC,
+       ORDER BY CASE WHEN s.name IN ('conflict-worker', 'ci-worker', 'release-worker') THEN 1 ELSE 0 END DESC,
          CASE ${whens.join(" ")} ELSE 0 END DESC, m.created_at ASC
        LIMIT ?`,
       [nowIso, ...caseParams, limit]

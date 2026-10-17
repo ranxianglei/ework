@@ -1447,8 +1447,12 @@ export class Engine {
     // route them to a dedicated sticky ci-worker session (owner policy
     // 2026-10-17) so they rank in the infra pickup tier of the queue (op.ts).
     const scheduledCiTracker = /\[bot\]$/i.test(issueData?.author ?? "") && /^定时全量测试失败[:：]/.test(issueData?.title ?? "");
+    // Release PRs (mirror titles look like "[PR] release vX.Y.Z") are
+    // fleet-infrastructure work: route to a sticky release-worker session
+    // (owner policy 2026-10-17) so they rank in the infra pickup tier (op.ts).
+    const releaseTracker = /release v?\d+\.\d+\.\d+/i.test(issueData?.title ?? "");
     // Create default session for bot user
-    const defaultSessionName = scheduledCiTracker ? "ci-worker" : this.cfg.bot.username;
+    const defaultSessionName = scheduledCiTracker ? "ci-worker" : releaseTracker ? "release-worker" : this.cfg.bot.username;
     let session = await this.store.getSessionByName(issue.id, defaultSessionName);
     if (session && session.state === "running") {
       log.info(`engine: duplicate issue_opened — session already running for ${scopeKey}#${ref.issueId}`);
