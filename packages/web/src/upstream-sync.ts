@@ -147,6 +147,13 @@ export function syncOrigin(cfg: Config): string {
   return `http://127.0.0.1:${cfg.port}`;
 }
 
+function clipTitle(t: string): string {
+  // Mirror titles must fit the tracker's 255-char ceiling; a single overlong
+  // upstream title otherwise aborts the whole poll batch (observed wedge
+  // 2026-10-17: b-c#3476's 355-char title froze the comment stream).
+  return t.length > 255 ? t.slice(0, 254) + "…" : t;
+}
+
 export class UpstreamSync {
   private readonly sync: UpstreamSyncRow;
   private readonly project: ProjectRow;
@@ -217,7 +224,7 @@ export class UpstreamSync {
     await ensureUser(gi.user?.login ?? "upstream", fromGithubBot(gi.user?.login) ? "bot" : "human");
     await createIssue(
       this.project.id,
-      (gi.pull_request ? "[PR] " : "") + (gi.title || `#${gi.number}`),
+      clipTitle((gi.pull_request ? "[PR] " : "") + (gi.title || `#${gi.number}`)),
       gi.body ?? "",
       gi.user?.login ?? "upstream",
       {
@@ -353,12 +360,16 @@ export class UpstreamSync {
       );
       if (!issues || issues.length === 0) break;
       for (const gi of issues) {
-        if (!(await getIssueByUpstreamNumber(this.project.id, gi.number))) {
-          await this.importIssue(gi, false);
-          result.issuesImported++;
+        try {
+          if (!(await getIssueByUpstreamNumber(this.project.id, gi.number))) {
+            await this.importIssue(gi, false);
+            result.issuesImported++;
+          }
+          result.commentsImported += await this.importIssueComments(gi, false);
+          if (gi.updated_at && (!cursor || gi.updated_at > cursor)) cursor = gi.updated_at;
+        } catch (err) {
+          log.warn(`upstream-sync: backfill item failed for #${gi.number}: ${String(err)} — skipping`);
         }
-        result.commentsImported += await this.importIssueComments(gi, false);
-        if (gi.updated_at && (!cursor || gi.updated_at > cursor)) cursor = gi.updated_at;
       }
       if (issues.length < 50) break;
     }
@@ -381,6 +392,7 @@ export class UpstreamSync {
     const prCandidates: { gi: GiteaIssue; existing: IssueRow }[] = [];
     if (issues) {
       for (const gi of issues) {
+       try {
         const existing = await getIssueByUpstreamNumber(this.project.id, gi.number);
         // Identity beats the cursor for imports: GitHub's sort=updated listing
         // lags seconds behind creation, so a fresh issue can sit below a cursor
@@ -397,7 +409,7 @@ export class UpstreamSync {
           result.issuesImported++;
           result.commentsImported += await this.importIssueComments(gi, true);
         } else {
-          const composedTitle = (gi.pull_request ? "[PR] " : "") + (gi.title || `#${gi.number}`);
+          const composedTitle = clipTitle((gi.pull_request ? "[PR] " : "") + (gi.title || `#${gi.number}`));
           if (existing.title !== composedTitle) {
             await editIssue(existing.id, { title: composedTitle });
           }
@@ -410,6 +422,11 @@ export class UpstreamSync {
         }
         if (existing && gi.pull_request && gi.state !== "closed") prCandidates.push({ gi, existing });
         if (gi.updated_at && (!issueCursor || gi.updated_at > issueCursor)) issueCursor = gi.updated_at;
+       } catch (err) {
+        // One bad item must never wedge the whole stream (2026-10-17 wedge
+        // lesson): log, skip its cursor advance, keep the batch moving.
+        log.warn(`upstream-sync: item failed for #${gi.number}: ${String(err)} — skipping this cycle`);
+       }
       }
     }
     const probeNumbers = mergeProbeCandidates(
@@ -469,7 +486,7 @@ export class UpstreamSync {
     const category = d.category?.name ? `[${d.category.name}] ` : "";
     await createIssue(
       this.project.id,
-      `${category}${d.title || `#${d.number}`}`,
+      clipTitle(`${category}${d.title || `#${d.number}`}`),
       d.body ?? "",
       d.user?.login ?? "upstream",
       {
