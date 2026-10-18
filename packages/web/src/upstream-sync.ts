@@ -191,6 +191,8 @@ export class UpstreamSync {
   private readonly project: ProjectRow;
   private readonly origin: string;
   private readonly discussionsEnabled: boolean;
+  private readonly issuesEnabled: boolean;
+  private readonly discussionWhitelist: string[] | null;
   private readonly titleTranslate: boolean;
   private readonly titleCache = new Map<string, string>();
 
@@ -199,6 +201,8 @@ export class UpstreamSync {
     project: ProjectRow,
     origin: string,
     discussionsEnabled = false,
+    issuesEnabled = true,
+    discussionWhitelist?: string,
     titleTranslate = false,
   ) {
     this.sync = sync;
@@ -206,6 +210,10 @@ export class UpstreamSync {
     this.origin = origin;
     const githubUpstream = sync.base_url.toLowerCase().includes("github.com");
     this.discussionsEnabled = discussionsEnabled && githubUpstream;
+    this.issuesEnabled = issuesEnabled;
+    this.discussionWhitelist = discussionWhitelist
+      ? discussionWhitelist.split(",").map((x) => x.trim()).filter(Boolean)
+      : null;
     this.titleTranslate = titleTranslate && githubUpstream;
   }
 
@@ -641,6 +649,13 @@ export class UpstreamSync {
     return true;
   }
 
+  // Single-thread listening (owner policy 2026-10-18): when a whitelist is
+  // configured only listed discussion numbers sync; everything else in the
+  // repo (discussions AND issues, via issuesEnabled=false) stays untouched.
+  private discussionAllowed(n: number): boolean {
+    return !this.discussionWhitelist || this.discussionWhitelist.includes(String(n));
+  }
+
   private async discussionsBackfill(): Promise<void> {
     const list = await this.fetchJson<GithubDiscussion[]>("/discussions?per_page=50");
     if (!list) {
@@ -649,6 +664,7 @@ export class UpstreamSync {
     }
     let cursor: string | null = null;
     for (const d of list) {
+      if (!this.discussionAllowed(d.number)) continue;
       if (!(await getIssueByUpstreamNumber(this.project.id, d.number, "discussion"))) {
         await this.importDiscussion(d, false);
       }
@@ -663,6 +679,7 @@ export class UpstreamSync {
     if (!list) return;
     let cursor = this.sync.discussion_cursor;
     for (const d of list) {
+      if (!this.discussionAllowed(d.number)) continue;
       const existing = await getIssueByUpstreamNumber(this.project.id, d.number, "discussion");
       if (existing && this.sync.discussion_cursor && d.updated_at <= this.sync.discussion_cursor) continue;
       if (!existing) {
@@ -686,6 +703,7 @@ export class UpstreamSync {
       if (this.sync.discussion_cursor === null) await this.discussionsBackfill();
       else await this.discussionsLive();
     }
+    if (!this.issuesEnabled) return { issuesImported: 0, issuesUpdated: 0, commentsImported: 0 };
     return this.isBackfill ? await this.backfillOnce() : await this.liveOnce();
   }
 }
@@ -707,7 +725,9 @@ async function tick(cfg: Config): Promise<void> {
         const cfgKv = await getConfigAll();
         const discussionsEnabled = cfgKv[`discussions:${project.owner}/${project.name}`] === "1";
         const titleTranslate = cfgKv[`titleTranslate:${project.owner}/${project.name}`] === "1";
-        const sync = new UpstreamSync(row, project, syncOrigin(cfg), discussionsEnabled, titleTranslate);
+        const issuesEnabled = cfgKv[`issuesSync:${project.owner}/${project.name}`] !== "0";
+        const discussionWhitelist = cfgKv[`discussionWhitelist:${project.owner}/${project.name}`] || undefined;
+        const sync = new UpstreamSync(row, project, syncOrigin(cfg), discussionsEnabled, issuesEnabled, discussionWhitelist, titleTranslate);
         const r = await sync.pollOnce();
         if (r.issuesImported || r.issuesUpdated || r.commentsImported) {
           log.info("upstream-sync: polled", {
