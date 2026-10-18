@@ -7,6 +7,8 @@ import { UpstreamSync, setTitleTranslator } from "../src/upstream-sync";
 const originalFetch = globalThis.fetch;
 let issueList: any[] = [];
 let translateCalls: string[] = [];
+let labelPosts: { n: number }[] = [];
+let labelCreates: number[] = [];
 
 function gi(n: number, over: Partial<any> = {}): any {
   const ts = `2026-10-01T00:00:${String(n).padStart(2, "0")}Z`;
@@ -27,6 +29,13 @@ function mockFetch() {
     const url = String(input instanceof Request ? input.url : input);
     if (url.includes("/issues?")) return Response.json(issueList);
     if (/\/issues\/\d+\/comments/.test(url)) return Response.json([]);
+    if (/POST/.test(String(input.method ?? "GET"))) {
+      const m = url.match(/\/issues\/(\d+)\/labels$/);
+      if (m) { labelPosts.push({ n: Number(m[1]) }); return Response.json([]); }
+      if (url.endsWith("/labels")) { labelCreates.push(1); return Response.json({}); }
+    }
+    if (/\/issues\/\d+\/labels$/.test(url)) return Response.json([]);
+    if (url.endsWith("/labels")) return Response.json([]);
     return new Response("{}", { status: 404 });
   }) as any;
 }
@@ -166,6 +175,26 @@ describe("ingest title translation", () => {
     issueList = [gi(22, { title: "[PR] Translation of 排队缺陷 | 排队缺陷", pull_request: {}, updated_at: "2026-10-01T00:03:00Z" })];
     await sync.pollOnce();
     expect(calls).toBeLessThan(4);
+  });
+
+  test("label write-back fires even when the title is healthy (#3723 regression)", async () => {
+    labelPosts = []; labelCreates = [];
+    setTitleTranslator(async (t) => `EN ${t}`);
+    const { sync, projectId } = await setup();
+    // Seed the mirror with an already-composed title + two labels.
+    issueList = [gi(81, { title: "EN 排队缺陷 | 排队缺陷" })];
+    mockFetch();
+    await sync.pollOnce();
+    const row = (await getIssueByUpstreamNumber(projectId, 81))!;
+    const { ensureIssueHasLabel } = await import("../src/store");
+    await ensureIssueHasLabel(projectId, row.id, "bug", "#d73a4a");
+    await ensureIssueHasLabel(projectId, row.id, "p2", "#d93f0b");
+    // Upstream already shows the composed title AND an existing GH label.
+    issueList = [gi(81, { title: "EN 排队缺陷 | 排队缺陷", labels: [{ name: "bug" }] })];
+    labelPosts = []; labelCreates = [];
+    await sync.pollOnce();
+    // bug already upstream -> only p2 must be posted; no repo-label creation needed.
+    expect(labelPosts.length).toBe(1);
   });
 });
 

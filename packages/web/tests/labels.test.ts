@@ -244,4 +244,5 @@ describe("setIssueLabels (bulk replace)", () => {
     await setIssueLabels(issue.id, [a.id, a.id, a.id]);
     expect(await listLabelsForIssue(issue.id)).toHaveLength(1);
   });
+
 });

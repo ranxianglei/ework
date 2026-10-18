@@ -519,6 +519,7 @@ export class UpstreamSync {
           const missingLead = !existing.title.includes(" | ");
           if (missingLead && existing.title !== composedTitle) {
             await editIssue(existing.id, { title: composedTitle });
+          }
           // Label write-back: push agent-applied mirror labels to GitHub (add-only,
           // never removes owner's GitHub-side labels). Creates missing repo-level
           // taxonomy labels first. Owner policy 2026-10-18.
@@ -556,7 +557,6 @@ export class UpstreamSync {
             if (this.titleTranslate && composedTitle !== gi.title) {
               await this.patchUpstreamTitle(gi, composedTitle);
             }
-          }
           if (gi.pull_request) {
             await ensureIssueHasLabel(this.project.id, existing.id, "pr", "#576699");
           }
