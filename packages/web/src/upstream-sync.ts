@@ -265,11 +265,26 @@ export class UpstreamSync {
     return this.sync.issue_cursor === null;
   }
 
+  // The pipeline PATCHes composed titles back upstream, so a later poll can
+  // see its own output as input. composeTitle must therefore be idempotent:
+  //  - strip repeated "[PR] " leads (else every cycle prepends another one —
+  //    the billion-context#3623 title storm, 2026-10-17);
+  //  - recognize an already-bilingual "EN | 原题" lead and reuse it instead of
+  //    re-translating the whole string (which would double the lead).
+  private static stripPrLeads(t: string): string {
+    return t.replace(/^(\[PR\] )+/g, "");
+  }
+
   private async composeTitle(rawTitle: string | undefined, isPr: boolean, number: number): Promise<string> {
-    const raw = rawTitle || `#${number}`;
+    const stripped = UpstreamSync.stripPrLeads(rawTitle || `#${number}`);
     const prefix = isPr ? "[PR] " : "";
-    if (!this.titleTranslate || !CJK_RE.test(raw)) return clipTitle(prefix + raw);
-    let en = this.titleCache.get(raw);
+    if (!this.titleTranslate || !CJK_RE.test(stripped)) return clipTitle(prefix + stripped);
+    const composed = stripped.match(/^(.*?) \| ([^|]*)$/);
+    const lead = composed?.[1];
+    const tail = composed?.[2];
+    const raw = tail !== undefined && CJK_RE.test(tail) ? tail : stripped;
+    const cachedEn = lead ?? this.titleCache.get(raw);
+    let en = cachedEn;
     if (en === undefined) {
       en = (await titleTranslator(raw)) ?? "";
       this.titleCache.set(raw, en);

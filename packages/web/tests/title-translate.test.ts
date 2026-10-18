@@ -143,5 +143,30 @@ describe("ingest title translation", () => {
     const row2 = await getIssueByUpstreamNumber(projectId, 16);
     expect(row2?.title).toBe("Translation v1 | 排队优先级缺陷");
   });
+
+  test("composeTitle is idempotent under its own write-back (no [PR] storm, no double lead)", async () => {
+    let calls = 0;
+    setTitleTranslator(async (t) => {
+      calls += 1;
+      return `Translation of ${t}`;
+    });
+    const { sync } = await setup();
+    // Round 1: plain EN PR title.
+    issueList = [gi(21, { title: "Enrich auto-filed diagnostics reports", pull_request: {} })];
+    mockFetch();
+    await sync.pollOnce();
+    // Simulate write-back: upstream now returns our own composed title.
+    issueList = [gi(21, { title: "[PR] Enrich auto-filed diagnostics reports", pull_request: {}, updated_at: "2026-10-01T00:02:00Z" })];
+    await sync.pollOnce();
+    const row = await getIssueByUpstreamNumber((await setup()).projectId, 21);
+    expect(row?.title).toBe("[PR] Enrich auto-filed diagnostics reports");
+    // CJK variant: bilingual title comes back — lead reused, not re-translated.
+    issueList = [gi(22, { title: "排队缺陷", pull_request: {} })];
+    await sync.pollOnce();
+    issueList = [gi(22, { title: "[PR] Translation of 排队缺陷 | 排队缺陷", pull_request: {}, updated_at: "2026-10-01T00:03:00Z" })];
+    await sync.pollOnce();
+    expect(calls).toBeLessThan(4);
+  });
 });
+
 
