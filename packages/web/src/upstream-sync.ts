@@ -5,6 +5,7 @@ import {
   getProjectById,
   getIssue,
   getIssueByUpstreamNumber,
+  listLabelsForIssue,
   linkIssueToUpstream,
   getCommentByUpstreamId,
   createIssue,
@@ -518,6 +519,40 @@ export class UpstreamSync {
           const missingLead = !existing.title.includes(" | ");
           if (missingLead && existing.title !== composedTitle) {
             await editIssue(existing.id, { title: composedTitle });
+          // Label write-back: push agent-applied mirror labels to GitHub (add-only,
+          // never removes owner's GitHub-side labels). Creates missing repo-level
+          // taxonomy labels first. Owner policy 2026-10-18.
+          try {
+            const want = (await listLabelsForIssue(existing.id)).map((l) => l.name).filter((n) => n && n !== "pr");
+            if (want.length > 0) {
+              const gh = (await this.fetchJson<any[]>(`/issues/${gi.number}/labels`)) ?? [];
+              const have = new Set((gh as any[]).map((l: any) => String(l?.name)));
+              const missing = want.filter((n) => !have.has(n));
+              if (missing.length > 0) {
+                const repoLabels = (await this.fetchJson<any[]>(`/labels`)) ?? [];
+                const repoNames = new Set((repoLabels as any[]).map((l: any) => String(l?.name)));
+                for (const n of missing) {
+                  if (!repoNames.has(n)) {
+                    await fetch(this.api(`/labels`), {
+                      method: "POST",
+                      headers: { ...this.headers(), "Content-Type": "application/json" },
+                      body: JSON.stringify({ name: n, color: "0e8a16" }),
+                      signal: AbortSignal.timeout(15_000),
+                    });
+                    repoNames.add(n);
+                  }
+                }
+                await fetch(this.api(`/issues/${gi.number}/labels`), {
+                  method: "POST",
+                  headers: { ...this.headers(), "Content-Type": "application/json" },
+                  body: JSON.stringify({ labels: missing }),
+                  signal: AbortSignal.timeout(15_000),
+                });
+              }
+            }
+          } catch {
+            // best-effort: label sync must never break the poll cycle
+          }
             if (this.titleTranslate && composedTitle !== gi.title) {
               await this.patchUpstreamTitle(gi, composedTitle);
             }
