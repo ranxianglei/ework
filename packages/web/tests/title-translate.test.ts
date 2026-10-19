@@ -196,6 +196,36 @@ describe("ingest title translation", () => {
     // bug already upstream -> only p2 must be posted; no repo-label creation needed.
     expect(labelPosts.length).toBe(1);
   });
+
+  test("translator echo does not duplicate the title", async () => {
+    let calls = 0;
+    setTitleTranslator(async (t) => {
+      calls += 1;
+      return t; // echo: returns the CJK input unchanged
+    });
+    const { sync, projectId } = await setup();
+    issueList = [gi(21, { title: "用两条出站不变量定死缓存稳定" })];
+    mockFetch();
+    await sync.pollOnce();
+    const row = await getIssueByUpstreamNumber(projectId, 21);
+    expect(row?.title).toBe("用两条出站不变量定死缓存稳定");
+    expect(calls).toBe(1);
+  });
+
+  test("agent-mangled CJK | EN tail is normalized to EN | CJK without translating", async () => {
+    let calls = 0;
+    setTitleTranslator(async () => {
+      calls += 1;
+      return "should-not-be-called";
+    });
+    const { sync, projectId } = await setup();
+    issueList = [gi(22, { title: "中文原题 | some english tail the agent appended" })];
+    mockFetch();
+    await sync.pollOnce();
+    const row = await getIssueByUpstreamNumber(projectId, 22);
+    expect(row?.title).toBe("some english tail the agent appended | 中文原题");
+    expect(calls).toBe(0);
+  });
 });
 
 

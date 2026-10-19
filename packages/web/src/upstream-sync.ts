@@ -291,6 +291,13 @@ export class UpstreamSync {
     const composed = stripped.match(/^(.*?) \| ([^|]*)$/);
     const lead = composed?.[1];
     const tail = composed?.[2];
+    if (lead !== undefined && tail !== undefined && CJK_RE.test(lead) && !CJK_RE.test(tail) && tail.trim().length > 8) {
+      // Agent-mangled "CJK | EN" (English appended at the tail): normalize to
+      // the canonical "EN | CJK" shape by reusing the tail. Never translate
+      // the whole string here — a translator echo would duplicate the title
+      // on every poll (incident 2026-10-19 #3842).
+      return clipTitle(prefix + tail.trim() + " | " + lead.trim());
+    }
     const raw = tail !== undefined && CJK_RE.test(tail) ? tail : stripped;
     const cachedEn = lead ?? this.titleCache.get(raw);
     let en = cachedEn;
@@ -298,7 +305,10 @@ export class UpstreamSync {
       en = (await titleTranslator(raw)) ?? "";
       this.titleCache.set(raw, en);
     }
-    if (!en) return clipTitle(prefix + raw);
+    // Echo guard: a "translation" that is still CJK (or identical to raw)
+    // must not be composed — `${en} | ${raw}` would then duplicate the title
+    // each poll cycle (incident 2026-10-19 #3842).
+    if (!en || en === raw || CJK_RE.test(en)) return clipTitle(prefix + raw);
     return clipTitle(prefix + en + " | " + raw);
   }
 
