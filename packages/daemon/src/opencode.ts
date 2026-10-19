@@ -633,6 +633,27 @@ export class Engine {
   private maxConcurrentExplicit: boolean;
   private conflictMaxConcurrent: number;
   private ciMaxConcurrent: number;
+  private readonly infraNightBoost: boolean;
+
+  // Night window for infra lanes (owner policy 2026-10-20): 00:00-08:00
+  // Beijing time (UTC+8 => UTC 16:00-24:00). During the window conflict/CI
+  // caps double and ordinary issue lanes run at half the global cap, so
+  // quiet-night slots flow to rebase/CI work without raising the fleet cap.
+  infraNightActive(): boolean {
+    if (!this.infraNightBoost) return false;
+    const cstHour = (new Date().getUTCHours() + 8) % 24;
+    return cstHour < 8;
+  }
+
+  effectiveGlobalCap(sourceCommentId?: string): number {
+    if (
+      sourceCommentId &&
+      (sourceCommentId.startsWith("merge-conflict-") || sourceCommentId.startsWith("ci-fail-"))
+    ) {
+      return this.maxConcurrent;
+    }
+    return this.infraNightActive() ? Math.floor(this.maxConcurrent / 2) : this.maxConcurrent;
+  }
 
   // Runtime state keyed by session key (trackerType:scopeKey#issueId@sessionName)
   private processes = new Map<string, RuntimeHandle>();
@@ -722,6 +743,7 @@ export class Engine {
     this.maxConcurrentExplicit = cfg.work.maxConcurrentExplicit;
     this.conflictMaxConcurrent = cfg.work.conflictMaxConcurrent ?? 1;
     this.ciMaxConcurrent = cfg.work.ciMaxConcurrent ?? 1;
+    this.infraNightBoost = cfg.work.infraNightBoost !== false;
     this.startGlobalObserver();
     if (opts.recoverOnBoot !== false) void this.recover();
   }
@@ -1315,7 +1337,7 @@ export class Engine {
     }
     let dispatched = 0;
     for (const msg of pendings) {
-      if (this.running.size >= this.maxConcurrent) break;
+      if (this.running.size >= this.effectiveGlobalCap(msg.sourceCommentId)) break;
       const session = await this.store.getSession(msg.sessionId);
       if (!session || session.state === "running") continue;
       const k = this.sessionKey(session, issue);
@@ -1820,8 +1842,8 @@ export class Engine {
       return;
     }
 
-    if (this.running.size >= this.maxConcurrent) {
-      log.info(`engine: concurrency limit reached (${this.running.size}/${this.maxConcurrent}), message ${msg.id.slice(0, 8)} queued for ${k}`);
+    if (this.running.size >= this.effectiveGlobalCap(msg.sourceCommentId)) {
+      log.info(`engine: concurrency limit reached (${this.running.size}/${this.effectiveGlobalCap(msg.sourceCommentId)}), message ${msg.id.slice(0, 8)} queued for ${k}`);
       void tracker.updateStatus(ref, "queued");
       return;
     }
@@ -1967,9 +1989,10 @@ export class Engine {
     // than their share of slots (default 1). Deferred messages stay pending;
     // the next completion event drains them.
     if (msg.sourceCommentId?.startsWith("merge-conflict-")) {
+      const conflictCap = this.infraNightActive() ? this.conflictMaxConcurrent * 2 : this.conflictMaxConcurrent;
       const runningConflicts = await this.store.countRunningConflictMessages(msg.id);
-      if (runningConflicts >= this.conflictMaxConcurrent) {
-        log.info(`engine: merge-conflict cap (${this.conflictMaxConcurrent}) reached — deferring msg ${msg.id.slice(0, 8)} for ${k}`);
+      if (runningConflicts >= conflictCap) {
+        log.info(`engine: merge-conflict cap (${conflictCap}) reached — deferring msg ${msg.id.slice(0, 8)} for ${k}`);
         await this.store.updateMessageStatus(msg.id, "pending");
         this.running.delete(k);
         return;
@@ -1977,9 +2000,10 @@ export class Engine {
     }
     // CI-fix lane shares the same discipline (owner policy 2026-10-14).
     if (msg.sourceCommentId?.startsWith("ci-fail-")) {
+      const ciCap = this.infraNightActive() ? this.ciMaxConcurrent * 2 : this.ciMaxConcurrent;
       const runningCi = await this.store.countRunningCiMessages(msg.id);
-      if (runningCi >= this.ciMaxConcurrent) {
-        log.info(`engine: ci-fix cap (${this.ciMaxConcurrent}) reached — deferring msg ${msg.id.slice(0, 8)} for ${k}`);
+      if (runningCi >= ciCap) {
+        log.info(`engine: ci-fix cap (${ciCap}) reached — deferring msg ${msg.id.slice(0, 8)} for ${k}`);
         await this.store.updateMessageStatus(msg.id, "pending");
         this.running.delete(k);
         return;
