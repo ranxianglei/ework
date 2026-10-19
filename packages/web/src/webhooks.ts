@@ -65,7 +65,7 @@ export interface WebhookDeliveryRow {
 const DEFAULT_EVENTS: WebhookEventName[] = ["issues", "issue_comment", "status_changed"];
 const MAX_RESPONSE_LOG_BYTES = 8192;
 const HTTP_TIMEOUT_MS = 10_000;
-const RETRY_DELAYS_MS = [0, 2_000, 8_000];
+const RETRY_DELAYS_MS = [0, 5_000, 30_000, 60_000];
 
 // Global cap on concurrent in-flight webhook HTTP deliveries. Without this, a
 // flood of events against dead targets (e.g. daemon down during migration)

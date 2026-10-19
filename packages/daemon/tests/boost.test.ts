@@ -11,7 +11,7 @@ describe("owner boost (web ⚡ button)", () => {
   const { Engine } = require("../src/opencode") as { Engine: any };
 
   function makeSelf(runningCount: number) {
-    const self = Object.create(Engine.prototype) as Record<string, unknown>;
+    const self = Object.create(Engine.prototype) as Record<string, any>;
     self.maxConcurrent = 8;
     self.running = new Map();
     for (let i = 0; i < runningCount; i++) self.running.set(`k-${i}`, { pid: 1 });
