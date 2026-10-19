@@ -325,6 +325,16 @@ export class Store {
     return row ? rowToMessage(row) : undefined;
   }
 
+  async countPendingWorkerMessages(names: string[]): Promise<number> {
+    if (names.length === 0) return 0;
+    const ph = names.map(() => "?").join(",");
+    const rows = await getDB().all<{ n?: number }>(
+      `SELECT COUNT(*) AS n FROM {{messages}} m JOIN {{op_sessions}} s ON s.uid = m.session_id WHERE m.status = 'pending' AND s.name IN (${ph})`,
+      names,
+    );
+    return Number((rows[0] as { n?: number } | undefined)?.n ?? 0);
+  }
+
   async getGlobalPendingMessages(limit: number): Promise<Message[]> {
     const now = new Date().toISOString();
     const rows = this.projectPriorities.length > 0

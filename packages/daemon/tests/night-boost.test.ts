@@ -28,12 +28,21 @@ describe("infra night boost (00:00-08:00 CST)", () => {
     expect(makeSelf(16, false).infraNightActive()).toBe(false);
   });
 
-  it("issue lanes run at half the global cap at night; infra keeps the full cap", () => {
+  it("issue lanes halve at night only when infra work demands slots; infra keys keep the full cap", () => {
     const day = makeSelf(10);
     expect(day.effectiveGlobalCap(undefined)).toBe(8);
-    const night = makeSelf(17);
-    expect(night.effectiveGlobalCap(undefined)).toBe(4);
-    expect(night.effectiveGlobalCap("merge-conflict-123-1")).toBe(8);
-    expect(night.effectiveGlobalCap("ci-fail-9-abc")).toBe(8);
+    const quietNight = makeSelf(17);
+    quietNight.pendingInfraCount = 0;
+    quietNight.running = new Map([["k1", { pid: 1 }]]);
+    expect(quietNight.effectiveGlobalCap(undefined)).toBe(8);
+    const busyNight = makeSelf(17);
+    busyNight.pendingInfraCount = 2;
+    expect(busyNight.effectiveGlobalCap(undefined)).toBe(4);
+    expect(busyNight.effectiveGlobalCap("merge-conflict-123-1")).toBe(8);
+    expect(busyNight.effectiveGlobalCap("ci-fail-9-abc")).toBe(8);
+    const runningInfra = makeSelf(17);
+    runningInfra.pendingInfraCount = 0;
+    runningInfra.running = new Map([["x@conflict-worker", { pid: 1 }]]);
+    expect(runningInfra.effectiveGlobalCap(undefined)).toBe(4);
   });
 });

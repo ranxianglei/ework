@@ -652,7 +652,31 @@ export class Engine {
     ) {
       return this.maxConcurrent;
     }
-    return this.infraNightActive() ? Math.floor(this.maxConcurrent / 2) : this.maxConcurrent;
+    if (!this.infraNightActive()) return this.maxConcurrent;
+    // Demand-aware halving: only squeeze ordinary lanes when infra work is
+    // actually waiting — otherwise quiet nights waste half the fleet. Infra
+    // demand = running infra keys + pending worker-session messages (counter
+    // refreshed by the drain loop; stale values only over-squeeze briefly).
+    let infraDemand = this.pendingInfraCount;
+    for (const k of this.running.keys()) {
+      if (k.includes("@conflict-worker") || k.includes("@ci-worker")) infraDemand++;
+    }
+    return infraDemand > 0 ? Math.floor(this.maxConcurrent / 2) : this.maxConcurrent;
+  }
+
+  // Pending message count for infra worker sessions; refreshed each drain
+  // cycle for effectiveGlobalCap's demand check (see above).
+  private pendingInfraCount = 0;
+
+  private async refreshPendingInfraCount(): Promise<void> {
+    try {
+      this.pendingInfraCount = await this.store.countPendingWorkerMessages([
+        "conflict-worker",
+        "ci-worker",
+      ]);
+    } catch {
+      this.pendingInfraCount = 0;
+    }
   }
 
   // Runtime state keyed by session key (trackerType:scopeKey#issueId@sessionName)
@@ -2616,6 +2640,7 @@ export class Engine {
 
   private async drainGlobalPending(): Promise<void> {
     if (this.destroyed) return;
+    await this.refreshPendingInfraCount();
     // Owner-boosted issues jump the queue: dispatch their pending messages
     // before the global priority query sees anything else.
     if (this.boostedIssueIds.size > 0 && this.maxConcurrent - this.running.size > 0) {
