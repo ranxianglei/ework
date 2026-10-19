@@ -744,15 +744,21 @@ export class UpstreamSync {
 }
 
 let tickTimer: ReturnType<typeof setInterval> | null = null;
-const inFlight = new Set<number>();
+// project_id -> tick start time. A stale entry (>10 min) means the previous
+// poll never settled (hung fetch/subprocess despite per-call timeouts) — the
+// watchdog re-arms the project instead of dropping it from polling forever
+// (incident: awesome-dsh-plugin silent stop 2026-10-18).
+const inFlight = new Map<number, number>();
+const IN_FLIGHT_TTL_MS = 10 * 60_000;
 
 async function tick(cfg: Config): Promise<void> {
   const rows = await listEnabledUpstreamSyncs();
   for (const row of rows) {
-    if (inFlight.has(row.project_id)) continue;
+    const startedAt = inFlight.get(row.project_id);
+    if (startedAt !== undefined && Date.now() - startedAt < IN_FLIGHT_TTL_MS) continue;
     const interval = Math.max(10_000, row.poll_interval_ms);
     if (row.last_poll_at && Date.now() - Date.parse(row.last_poll_at) < interval) continue;
-    inFlight.add(row.project_id);
+    inFlight.set(row.project_id, Date.now());
     void (async () => {
       try {
         const project = await getProjectById(row.project_id);
