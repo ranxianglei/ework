@@ -63,13 +63,14 @@ function upstreamIssueNumberFromComment(gc: GiteaComment): number | null {
   return m ? Number(m[1]) : null;
 }
 
-export const MERGE_PROBE_WINDOW_MS = 172_800_000;
+export const MERGE_PROBE_WINDOW_MS = 432_000_000;
 export const MERGE_PROBE_PER_POLL = 5;
 
 // PR conflict state only changes when head or base moves, and any move bumps
 // the PR's updated_at — so probing only PRs whose updated_at advanced past the
 // last probe covers every transition with zero requests for quiet PRs
-// (owner policy 2026-10-14: activity window is the trailing 48h, older PRs are skipped).
+// (owner policy 2026-10-19: activity window is the trailing 5 days — was 48h;
+// older PRs are skipped).
 export function mergeProbeCandidates(
   issues: GiteaIssue[],
   checkedAtByNumber: Map<number, string>,
