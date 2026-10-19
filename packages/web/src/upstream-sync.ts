@@ -710,23 +710,30 @@ export class UpstreamSync {
   }
 
   private async discussionsLive(): Promise<void> {
-    const list = await this.fetchJson<GithubDiscussion[]>("/discussions?per_page=30");
-    if (!list) return;
     let cursor = this.sync.discussion_cursor;
-    for (const d of list) {
-      if (!this.discussionAllowed(d.number)) continue;
-      const existing = await getIssueByUpstreamNumber(this.project.id, d.number, "discussion");
-      if (existing && this.sync.discussion_cursor && d.updated_at <= this.sync.discussion_cursor) continue;
-      if (!existing) {
-        await this.importDiscussion(d, true);
-        await this.importDiscussionComments(d, true);
-      } else {
-        if (await this.syncDiscussionState(existing, d, true)) {
-          log.info(`upstream-sync: discussion #${d.number} state -> ${d.state} (${this.project.owner}/${this.project.name})`);
+    // The REST discussions list has no updated-desc ordering guarantee; a
+    // fixed first page silently hides recently-active threads that sit deeper
+    // in the list (incident: #5795 at index 45 invisible to per_page=30,
+    // 2026-10-19). Walk up to 3 pages of 100 per poll.
+    for (let page = 1; page <= 3; page++) {
+      const list = await this.fetchJson<GithubDiscussion[]>(`/discussions?per_page=100&page=${page}`);
+      if (!list || list.length === 0) break;
+      for (const d of list) {
+        if (!this.discussionAllowed(d.number)) continue;
+        const existing = await getIssueByUpstreamNumber(this.project.id, d.number, "discussion");
+        if (existing && this.sync.discussion_cursor && d.updated_at <= this.sync.discussion_cursor) continue;
+        if (!existing) {
+          await this.importDiscussion(d, true);
+          await this.importDiscussionComments(d, true);
+        } else {
+          if (await this.syncDiscussionState(existing, d, true)) {
+            log.info(`upstream-sync: discussion #${d.number} state -> ${d.state} (${this.project.owner}/${this.project.name})`);
+          }
+          await this.importDiscussionComments(d, true);
         }
-        await this.importDiscussionComments(d, true);
+        if (d.updated_at && (!cursor || d.updated_at > cursor)) cursor = d.updated_at;
       }
-      if (d.updated_at && (!cursor || d.updated_at > cursor)) cursor = d.updated_at;
+      if (list.length < 100) break;
     }
     if (cursor && cursor !== this.sync.discussion_cursor) {
       await updateUpstreamSyncState(this.project.id, { discussionCursor: cursor });
