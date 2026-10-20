@@ -98,6 +98,7 @@ interface PullRequestPayload {
 interface CheckRunPayload {
   name?: string;
   html_url?: string;
+  status?: string;
   conclusion?: string | null;
 }
 
@@ -413,6 +414,13 @@ export class UpstreamSync {
     // The check-runs endpoint wraps the list in {total_count, check_runs};
     // tolerate both shapes.
     const checks: CheckRunPayload[] = Array.isArray(checksResp) ? checksResp : (checksResp.check_runs ?? []);
+    // In-progress runs have conclusion=null and must read as NEITHER green nor
+    // red — deciding here green-resets the attempt state, re-arming emission
+    // for the same logical failure after CI re-runs a superseded head
+    // (PR#3886 duplicate dispatch 2026-10-20). Wait for completion instead.
+    const allCompleted =
+      checks.length > 0 && checks.every((c: CheckRunPayload) => c.status === "completed");
+    if (!allCompleted) return;
     const failed = checks.filter((c: CheckRunPayload) => c.conclusion === "failure");
     if (failed.length === 0) {
       if (existing.upstream_ci_state) await updateIssueCiState(existing.id, null);

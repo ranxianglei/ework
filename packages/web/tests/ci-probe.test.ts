@@ -30,3 +30,15 @@ describe("ciProbeDecision", () => {
     expect(ciProbeDecision(stored, "zzz", 0).next).toBeNull();
   });
 });
+
+// PR#3886 regression companion: probeCiState now returns early while any
+// check-run status != "completed" (in-progress runs read as neither green nor
+// red). The pure rule below only ever runs on fully-completed check sets:
+// same sha must stay silent, a new failing sha must still dispatch.
+test("completed-set transitions: same sha silent, new failing sha dispatches", () => {
+  const st: CiProbeState = { sha: "abc", attempts: 1 };
+  expect(ciProbeDecision(st, "abc", 2).emit).toBe(false);
+  const d = ciProbeDecision(st, "xyz", 2);
+  expect(d.emit).toBe(true);
+  expect(d.next).toEqual({ sha: "xyz", attempts: 2 });
+});
