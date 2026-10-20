@@ -84,3 +84,41 @@ describe("infra idle-fill (owner policy 2026-10-20)", () => {
     expect(cap).toBe(8);
   });
 });
+
+// Fairness guard (owner 2026-10-21): per-session continuation must yield to a
+// much older pending message in another session instead of leapfrogging it.
+describe("queue fairness guard", () => {
+  test("newer per-session candidate yields to older global pending", async () => {
+    const self = makeSelf();
+    const older = new Date(Date.now() - 30 * 60_000);
+    const newer = new Date(Date.now() - 1 * 60_000);
+    let drained = false;
+    self.store = {
+      getOldestPendingCreatedAt: async () => older,
+    };
+    self.startObserver = () => {};
+    self.drainGlobalPending = async () => { drained = true; };
+    const msg = { id: "m1", createdAt: newer, pendingSince: newer };
+    await (self as { dequeueOrIdle(k: string, s: unknown, i: unknown, m: unknown): Promise<void> }).dequeueOrIdle("k@git:x/y#1@ework-daemon", { id: "s1", name: "ework-daemon" }, { id: "i1", trackerType: "gitea", trackerScopeKey: "x/y", trackerIssueId: 1 }, msg as never);
+    expect(drained).toBe(true);
+  });
+
+  test("globally-oldest message proceeds without yielding", async () => {
+    const self = makeSelf();
+    const t = new Date(Date.now() - 30 * 60_000);
+    let drained = false;
+    let observed = false;
+    self.store = {
+      getOldestPendingCreatedAt: async () => t,
+      getPendingForIssue: async () => [],
+      getMessagesForSession: async () => [],
+      countMessagesByStatus: async () => 0,
+    };
+    self.startObserver = () => { observed = true; };
+    self.drainGlobalPending = async () => { drained = true; };
+    const msg = { id: "m1", createdAt: t, pendingSince: t };
+    await (self as unknown as { dequeueOrIdle(k: string, s: unknown, i: unknown, m: unknown): Promise<void> }).dequeueOrIdle("k@git:x/y#1@ework-daemon", { id: "s1", name: "ework-daemon" }, { id: "i1", trackerType: "gitea", trackerScopeKey: "x/y", trackerIssueId: 1 }, msg as never);
+    expect(drained).toBe(false);
+    expect(observed).toBe(true);
+  });
+});

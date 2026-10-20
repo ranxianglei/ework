@@ -2783,6 +2783,23 @@ export class Engine {
         ? { trackerType: issue.trackerType, scope: { owner: scopeParts[0]!, repo: scopeParts[1]! }, issueId: String(issue.trackerIssueId) }
         : undefined;
       while (next) {
+        // Fairness guard (owner 2026-10-21): per-session continuation and
+        // targeted pickups must not leapfrog a much older queued message in
+        // another session — #3975 starved ~10h while spawns flowed via this
+        // path. Yield to the global drain (age grace 10min to avoid thrash
+        // when a batch clusters in time).
+        try {
+          const oldest = await this.store.getOldestPendingCreatedAt();
+          if (
+            oldest &&
+            next.createdAt.getTime() > oldest.getTime() + 10 * 60_000
+          ) {
+            void this.drainGlobalPending();
+            return;
+          }
+        } catch {
+          /* fairness check is best-effort */
+        }
         // Age from pending_since (when it entered/last re-entered pending),
         // NOT created_at: recover() shifts pending_since to now on restart,
         // so time spent down never expires a queued message (ework#5).

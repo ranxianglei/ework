@@ -334,13 +334,24 @@ export class Store {
   }
 
   async countPendingWorkerMessages(names: string[]): Promise<number> {
-    if (names.length === 0) return 0;
-    const ph = names.map(() => "?").join(",");
+    // Prefix matching: worker sessions rotate (conflict-worker-N-r1) and are
+    // categorized (conflict-worker-E) — exact IN() missed every suffixed
+    // generation, skewing the night-boost demand count (owner 2026-10-21).
+    const likes = ["conflict-worker%", "ci-worker%", "release-worker%"];
+    const where = likes.map(() => "s.name LIKE ?").join(" OR ");
     const rows = await getDB().all<{ n?: number }>(
-      `SELECT COUNT(*) AS n FROM {{messages}} m JOIN {{op_sessions}} s ON s.uid = m.session_id WHERE m.status = 'pending' AND s.name IN (${ph})`,
-      names,
+      `SELECT COUNT(*) AS n FROM {{messages}} m JOIN {{op_sessions}} s ON s.uid = m.session_id WHERE m.status = 'pending' AND (${where})`,
+      likes,
     );
     return Number((rows[0] as { n?: number } | undefined)?.n ?? 0);
+  }
+
+  async getOldestPendingCreatedAt(): Promise<Date | undefined> {
+    const rows = await getDB().all<{ oldest?: string }>(
+      `SELECT MIN(created_at) AS oldest FROM {{messages}} WHERE status = 'pending'`,
+    );
+    const v = (rows[0] as { oldest?: string } | undefined)?.oldest;
+    return v ? new Date(v) : undefined;
   }
 
   async getGlobalPendingMessages(limit: number): Promise<Message[]> {
@@ -373,7 +384,7 @@ export class Store {
        JOIN {{op_sessions}} s ON s.uid = m.session_id
        JOIN {{issues}} i ON i.uid = s.issue_id
        WHERE m.status = 'pending' AND (m.retry_after IS NULL OR m.retry_after <= ?)
-       ORDER BY CASE WHEN s.name IN ('conflict-worker', 'ci-worker', 'release-worker') THEN 1 ELSE 0 END DESC,
+       ORDER BY CASE WHEN s.name LIKE 'conflict-worker%' OR s.name LIKE 'ci-worker%' OR s.name LIKE 'release-worker%' THEN 1 ELSE 0 END DESC,
          CASE ${whens.join(" ")} ELSE 0 END DESC, m.created_at ASC
        LIMIT ?`,
       [nowIso, ...caseParams, limit]
