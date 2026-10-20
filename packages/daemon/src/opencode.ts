@@ -668,6 +668,39 @@ export class Engine {
   // cycle for effectiveGlobalCap's demand check (see above).
   private pendingInfraCount = 0;
 
+  // Idle-fill (owner policy 2026-10-20): when ordinary lanes leave global slots
+  // free, conflict/ci work may occupy them — expanded cap = max(configured,
+  // free global slots). Keeps the fleet busy on CI-heavy idle periods.
+  private infraIdleExpandedCap(base: number): number {
+    let infraRunning = 0;
+    for (const k of this.running.keys()) {
+      if (k.includes("@conflict-worker") || k.includes("@ci-worker")) infraRunning++;
+    }
+    const ordinary = this.running.size - infraRunning;
+    const freeGlobal = Math.max(0, this.maxConcurrent - ordinary);
+    return Math.max(base, freeGlobal);
+  }
+
+  // Sticky worker session with rotation (owner policy 2026-10-20): one session
+  // accumulates a PR's context, but long-lived sessions degrade — after 20
+  // completed tasks, rotate to a fresh generation (base-rN) so context rebuilds.
+  private async workerSession(issueId: string, base: string): Promise<OpSession> {
+    const sessions = await this.store.getSessionsForIssue(issueId);
+    const gens = sessions.filter((x) => x.name === base || new RegExp(`^${base}-r\d+$`).test(x.name));
+    for (let i = gens.length - 1; i >= 0; i--) {
+      const g = gens[i];
+      if (g && (await this.store.countMessagesByStatus(g.id, "done")) < 20) {
+        return this.store.createSession(issueId, g.name);
+      }
+    }
+    let maxGen = 0;
+    for (const g of gens) {
+      const m = /-r(\d+)$/.exec(g.name);
+      if (m) maxGen = Math.max(maxGen, Number(m[1]));
+    }
+    return this.store.createSession(issueId, `${base}-r${maxGen + 1}`);
+  }
+
   private async refreshPendingInfraCount(): Promise<void> {
     try {
       this.pendingInfraCount = await this.store.countPendingWorkerMessages([
@@ -1399,7 +1432,7 @@ export class Engine {
     // specialist session accumulates this PR's rebase context; runs are
     // serialized globally by WORK_CONFLICT_MAX_CONCURRENT. Manual PRs (no
     // prior session) get a worker too — conflict resolution runs 24/7.
-    const session = await this.store.createSession(issue.id, "conflict-worker");
+    const session = await this.workerSession(issue.id, "conflict-worker");
 
     const workdir = await this.resolveWorkdir(session, issue);
     const instructions = tracker.getTrackerInstructions(ref);
@@ -1444,7 +1477,7 @@ export class Engine {
     if (issue.state === "closed") return;
     if (!(await this.ensureOwned(issue))) return;
 
-    const session = await this.store.createSession(issue.id, "ci-worker");
+    const session = await this.workerSession(issue.id, "ci-worker");
 
     const workdir = await this.resolveWorkdir(session, issue);
     const instructions = tracker.getTrackerInstructions(ref);
@@ -2013,7 +2046,9 @@ export class Engine {
     // than their share of slots (default 1). Deferred messages stay pending;
     // the next completion event drains them.
     if (msg.sourceCommentId?.startsWith("merge-conflict-")) {
-      const conflictCap = this.infraNightActive() ? this.conflictMaxConcurrent * 2 : this.conflictMaxConcurrent;
+      const conflictCap = this.infraIdleExpandedCap(
+        this.infraNightActive() ? this.conflictMaxConcurrent * 2 : this.conflictMaxConcurrent,
+      );
       const runningConflicts = await this.store.countRunningConflictMessages(msg.id);
       if (runningConflicts >= conflictCap) {
         log.info(`engine: merge-conflict cap (${conflictCap}) reached — deferring msg ${msg.id.slice(0, 8)} for ${k}`);
@@ -2024,7 +2059,9 @@ export class Engine {
     }
     // CI-fix lane shares the same discipline (owner policy 2026-10-14).
     if (msg.sourceCommentId?.startsWith("ci-fail-")) {
-      const ciCap = this.infraNightActive() ? this.ciMaxConcurrent * 2 : this.ciMaxConcurrent;
+      const ciCap = this.infraIdleExpandedCap(
+        this.infraNightActive() ? this.ciMaxConcurrent * 2 : this.ciMaxConcurrent,
+      );
       const runningCi = await this.store.countRunningCiMessages(msg.id);
       if (runningCi >= ciCap) {
         log.info(`engine: ci-fix cap (${ciCap}) reached — deferring msg ${msg.id.slice(0, 8)} for ${k}`);

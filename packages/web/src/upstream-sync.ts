@@ -18,6 +18,7 @@ import {
   updateIssueCiState,
   updateUpstreamSyncState,
   listEnabledUpstreamSyncs,
+  updateIssueConflictState,
 } from "./store";
 import { emitIssueEvent, emitCommentEvent, emitMergeConflictEvent, emitCiFailedEvent } from "./webhooks";
 import { getConfigAll } from "./db";
@@ -388,10 +389,28 @@ export class UpstreamSync {
     if (state === "pending") return;
     const was = existing.upstream_mergeable_state;
     await updateIssueMergeState(existing.id, state, gi.updated_at ?? new Date().toISOString());
-    if (state === "dirty" && was !== "dirty") {
-      log.info(`upstream-sync: merge conflict detected on upstream PR #${gi.number} (${this.project.owner}/${this.project.name})`);
-      await emitMergeConflictEvent(this.project.id, existing.id, this.origin, state);
-      result.issuesUpdated++;
+    if (state === "dirty") {
+      // One-shot transition emission loses conflicts whose single event died in
+      // an outage window — the row then sticks at dirty forever (PR#3873 sat
+      // conflicted for a day with zero dispatch). Re-arm: while the conflict
+      // persists, re-emit every 6h until the state turns clean.
+      let lastEmit: number | null = null;
+      try {
+        lastEmit = existing.upstream_conflict_state
+          ? (JSON.parse(existing.upstream_conflict_state) as { lastEmit: number }).lastEmit
+          : null;
+      } catch {
+        lastEmit = null;
+      }
+      const REARM_MS = 6 * 60 * 60 * 1000;
+      if (was !== "dirty" || lastEmit === null || Date.now() - lastEmit > REARM_MS) {
+        log.info(`upstream-sync: merge conflict detected on upstream PR #${gi.number} (${this.project.owner}/${this.project.name})`);
+        await emitMergeConflictEvent(this.project.id, existing.id, this.origin, state);
+        await updateIssueConflictState(existing.id, JSON.stringify({ lastEmit: Date.now() }));
+        result.issuesUpdated++;
+      }
+    } else if (existing.upstream_conflict_state) {
+      await updateIssueConflictState(existing.id, null);
     }
   }
 

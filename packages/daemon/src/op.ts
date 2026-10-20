@@ -325,6 +325,14 @@ export class Store {
     return row ? rowToMessage(row) : undefined;
   }
 
+  async countMessagesByStatus(sessionId: string, status: string): Promise<number> {
+    const rows = await getDB().all<{ n?: number }>(
+      "SELECT COUNT(*) AS n FROM {{messages}} WHERE session_id = ? AND status = ?",
+      [sessionId, status],
+    );
+    return Number(rows[0]?.n ?? 0);
+  }
+
   async countPendingWorkerMessages(names: string[]): Promise<number> {
     if (names.length === 0) return 0;
     const ph = names.map(() => "?").join(",");

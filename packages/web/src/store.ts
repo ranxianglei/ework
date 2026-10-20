@@ -80,6 +80,7 @@ export interface IssueRow {
   upstream_mergeable_state: string | null;
   upstream_merge_checked_at: string | null;
   upstream_ci_state: string | null;
+  upstream_conflict_state: string | null;
   kind: "issue" | "discussion";
 }
 
@@ -531,6 +532,10 @@ export async function setIssueState(
 
 export async function updateIssueAiStatus(issueId: number, status: string): Promise<void> {
   await getDB().run("UPDATE {{issues}} SET ai_status = ? WHERE id = ?", [status, issueId]);
+}
+
+export async function updateIssueConflictState(issueId: number, v: string | null): Promise<void> {
+  await getDB().run("UPDATE {{issues}} SET upstream_conflict_state = ? WHERE id = ?", [v, issueId]);
 }
 
 export async function updateIssueCiState(issueId: number, ciState: string | null): Promise<void> {
