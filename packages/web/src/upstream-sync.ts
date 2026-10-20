@@ -400,12 +400,20 @@ export class UpstreamSync {
   // got their auto lane first; CI failures now have one too.
   private async probeCiState(gi: GiteaIssue, existing: IssueRow, result: UpstreamSyncPollResult): Promise<void> {
     if (!this.isGithub || existing.kind !== "issue" || !gi.title.startsWith("[PR]")) return;
+    // CI probing is auxiliary telemetry: any failure here (network, API shape
+    // surprises, timeouts) must never abort the whole poll — the sync lanes
+    // are the primary payload (incident 2026-10-20: checks.filter TypeError
+    // killed every b-c poll for an hour).
+    try {
     const pull = await this.fetchJson<PullRequestPayload>(`/pulls/${gi.number}`);
     const sha = pull?.head?.sha ?? null;
     if (!sha) return;
-    const checks = await this.fetchJson<CheckRunPayload[]>(`/commits/${sha}/check-runs?filter=latest`);
-    if (!checks) return;
-    const failed = checks.filter((c) => c.conclusion === "failure");
+    const checksResp = await this.fetchJson<CheckRunPayload[] | { check_runs?: CheckRunPayload[] }>(`/commits/${sha}/check-runs?filter=latest`);
+    if (!checksResp) return;
+    // The check-runs endpoint wraps the list in {total_count, check_runs};
+    // tolerate both shapes.
+    const checks: CheckRunPayload[] = Array.isArray(checksResp) ? checksResp : (checksResp.check_runs ?? []);
+    const failed = checks.filter((c: CheckRunPayload) => c.conclusion === "failure");
     if (failed.length === 0) {
       if (existing.upstream_ci_state) await updateIssueCiState(existing.id, null);
       return;
@@ -431,6 +439,9 @@ export class UpstreamSync {
     );
     await updateIssueCiState(existing.id, decision.next ? JSON.stringify(decision.next satisfies CiProbeState) : null);
     result.issuesUpdated++;
+    } catch (err) {
+      log.warn(`upstream-sync: CI probe skipped for PR #${gi.number} (${this.project.owner}/${this.project.name}): ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   private async importIssueComments(gi: GiteaIssue, emit: boolean): Promise<number> {
