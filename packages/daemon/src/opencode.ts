@@ -684,6 +684,19 @@ export class Engine {
   // Sticky worker session with rotation (owner policy 2026-10-20): one session
   // accumulates a PR's context, but long-lived sessions degrade — after 20
   // completed tasks, rotate to a fresh generation (base-rN) so context rebuilds.
+  private conflictCategory(prNumber: string): string {
+    try {
+      const raw = require("fs").readFileSync(
+        "/var/lib/ework-web/share/status-board.json",
+        "utf8",
+      ) as string;
+      const cat = (JSON.parse(raw).pr_category ?? {})[String(prNumber)];
+      return typeof cat === "string" && cat ? cat : "N";
+    } catch {
+      return "N";
+    }
+  }
+
   private async workerSession(issueId: string, base: string): Promise<OpSession> {
     const sessions = await this.store.getSessionsForIssue(issueId);
     const gens = sessions.filter((x) => x.name === base || new RegExp(`^${base}-r\d+$`).test(x.name));
@@ -1428,11 +1441,14 @@ export class Engine {
     if (issue.state === "closed") return;
     if (!(await this.ensureOwned(issue))) return;
 
-    // Dedicated sticky conflict worker per PR (owner policy 2026-10-14): one
-    // specialist session accumulates this PR's rebase context; runs are
-    // serialized globally by WORK_CONFLICT_MAX_CONCURRENT. Manual PRs (no
-    // prior session) get a worker too — conflict resolution runs 24/7.
-    const session = await this.workerSession(issue.id, "conflict-worker");
+    // Sticky conflict worker keyed by PR CATEGORY (owner policy 2026-10-20):
+    // conflicts in the same category share one specialist session so the
+    // agent resolves them class-by-class instead of rebuilding context per
+    // PR. Category comes from the status board's pr→category map; unknown
+    // PRs fall back to N (misc). Orthogonal to concurrency caps; the
+    // workerSession rotation (20 done → -r2) still applies per category.
+    const base = `conflict-worker-${this.conflictCategory(String(ref.issueId))}`;
+    const session = await this.workerSession(issue.id, base);
 
     const workdir = await this.resolveWorkdir(session, issue);
     const instructions = tracker.getTrackerInstructions(ref);
