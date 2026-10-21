@@ -2268,6 +2268,14 @@ export class Engine {
       if (this.processes.get(k) !== handle) {
         log.info(`engine: process replaced, skipping finishRun for ${k}`);
         this.stopping.delete(k);
+        // Ghost-row guard (owner 2026-10-21): this handle's message was
+        // superseded by a newer dispatch — if its row is still 'running'
+        // (the replacement claimed its own row), park it so the zombie
+        // factory stops. Same row reused by the replacement is untouched
+        // (currentMessage then equals msg.id).
+        if (this.currentMessage.get(k) !== msg.id) {
+          await this.store.updateMessageStatus(msg.id, "interrupted").catch(() => {});
+        }
         return;
       }
 
@@ -2445,6 +2453,13 @@ export class Engine {
   ) {
     if (this.stopping.get(k) === gen && this.stopping.delete(k)) {
       log.info(`engine: finishRun skipped (force-stopped) for ${k}`);
+      // Ghost-row guard (owner 2026-10-21): a force-stopped run never marks
+      // its message row — park it as interrupted instead of leaking running.
+      const haltedMsgId = this.currentMessage.get(k);
+      if (haltedMsgId) {
+        await this.store.updateMessageStatus(haltedMsgId, "interrupted").catch(() => {});
+        this.currentMessage.delete(k);
+      }
       return;
     }
 
