@@ -346,6 +346,15 @@ export class Store {
     return Number((rows[0] as { n?: number } | undefined)?.n ?? 0);
   }
 
+  async getRunningWithPid(): Promise<{ id: string; pid: number | null; updatedAt: Date }[]> {
+    const rows = await getDB().all<{ id: string; pid: number | null; updated_at: string }>(
+      `SELECT m.id AS id, s.opencode_pid AS pid, m.updated_at AS updated_at
+       FROM {{messages}} m JOIN {{op_sessions}} s ON s.uid = m.session_id
+       WHERE m.status = 'running'`,
+    );
+    return rows.map((r) => ({ id: r.id, pid: r.pid ?? null, updatedAt: new Date(r.updated_at) }));
+  }
+
   async getOldestPendingCreatedAt(): Promise<Date | undefined> {
     const rows = await getDB().all<{ oldest?: string }>(
       `SELECT MIN(created_at) AS oldest FROM {{messages}} WHERE status = 'pending'`,

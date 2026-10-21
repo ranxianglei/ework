@@ -3008,6 +3008,38 @@ export class Engine {
   private startGlobalObserver() {
     // Single global timer that checks all active issues
     this.observerTimer = setInterval(() => this.runObserverCycle(), Engine.OBSERVER_INTERVAL_MS);
+    // Zombie reconciliation (owner 2026-10-21): running rows whose backing
+    // process is gone (preempt/replace/crash paths that escaped the inline
+    // guards) are parked automatically instead of accumulating as ghosts
+    // that fool every count-based diagnostic. Grace 3min so spawn windows
+    // (claim → exec → pid persist) never trip it.
+    this.reconcileTimer = setInterval(() => void this.reconcileRunningRows(), Engine.OBSERVER_INTERVAL_MS);
+  }
+
+  private reconcileTimer?: ReturnType<typeof setInterval>;
+
+  private async reconcileRunningRows(): Promise<void> {
+    if (this.destroyed) return;
+    try {
+      const rows = await this.store.getRunningWithPid();
+      const now = Date.now();
+      const dead: string[] = [];
+      for (const r of rows) {
+        if (now - r.updatedAt.getTime() < 3 * 60_000) continue; // spawn/claim grace
+        let alive = false;
+        if (r.pid != null) {
+          try { process.kill(r.pid, 0); alive = true; } catch { alive = false; }
+        }
+        if (!alive) dead.push(r.id);
+      }
+      if (dead.length > 0) {
+        for (const id of dead) await this.store.updateMessageStatus(id, "interrupted");
+        log.info(`engine: reconciler parked ${dead.length} zombie running row(s) (no live process)`);
+        void this.drainGlobalPending();
+      }
+    } catch (err) {
+      log.warn(`engine: zombie reconciliation failed: ${(err as Error).message}`);
+    }
   }
 
   private startObserver(issue: Issue) {
@@ -3823,6 +3855,7 @@ export class Engine {
     this.destroyed = true;
     this.stopHeartbeat();
     if (this.observerTimer) clearInterval(this.observerTimer);
+    if (this.reconcileTimer) clearInterval(this.reconcileTimer);;
     this.observedIssues.clear();
     for (const [, proc] of this.processes) {
       try { process.kill(proc.pid, "SIGKILL"); } catch { /* dead */ }
