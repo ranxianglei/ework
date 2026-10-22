@@ -791,7 +791,7 @@ export class Engine {
   // ework#957 lost 70 queued messages fleet-wide to a 30min cap that only
   // meant to reap downtime zombies — restart already resets pending_since,
   // so live saturation was the ONLY thing the short cap could still hit).
-  private static MAX_PENDING_AGE_MS = 6 * 60 * 60_000;
+  private static MAX_PENDING_AGE_MS = 128 * 60 * 60_000;
   private static MAX_STUCK_NUDGE_ROUNDS = 1;
   private static MAX_RUNTIME_MS = 3 * 60 * 60 * 1000;
   private static OBSERVER_INTERVAL_MS = 5 * 60 * 1000;
@@ -2833,7 +2833,13 @@ export class Engine {
         // Silent drops read as "no one picked this up" (ework#957) — the user
         // must see that work was discarded and how to re-trigger it.
         const hoursCap = Math.round(Engine.MAX_PENDING_AGE_MS / 3_600_000);
-        void this.getTracker(issue.trackerType).createComment(ref, `[system] 🏷 ${this.sessionRef(session)} ⚡ 排队超时：${expiredCount} 条消息在繁忙队列中等待超过 ${hoursCap} 小时，已被丢弃（未执行）。如仍需处理，请回复"继续"重新触发。`).catch((err) => log.warn(`engine: queue-timeout notice failed for ${k}:`, (err as Error).message));
+        const timeoutNotice = `[system] 🏷 ${this.sessionRef(session)} ⚡ 排队超时：${expiredCount} 条消息在繁忙队列中等待超过 ${hoursCap} 小时，已被丢弃（未执行）。如仍需处理，请回复"继续"重新触发。`;
+        void this.getTracker(issue.trackerType).createComment(ref, timeoutNotice).catch((err) => log.warn(`engine: queue-timeout notice failed for ${k}:`, (err as Error).message));
+        // Owner 2026-10-21: the drop must be visible on GitHub too — mirror-only
+        // notices are invisible without opening every issue by hand. Best-effort
+        // POST via the shared PAT; failure only logs (the mirror copy above is
+        // the source of truth).
+        void this.postGitHubNotice(issue, timeoutNotice);
       }
       if (!next) {
         this.clearRuntimeState(k);
@@ -3017,6 +3023,31 @@ export class Engine {
   }
 
   private reconcileTimer?: ReturnType<typeof setInterval>;
+
+  private async postGitHubNotice(issue: Issue, body: string): Promise<void> {
+    try {
+      const pat = await Bun.file("/root/ework-gh-pat").text().catch(() => undefined);
+      if (!pat) return;
+      const scope = issue.trackerScopeKey.split("/");
+      if (scope.length !== 2) return;
+      const proc = Bun.spawnSync(["curl", "-sS", "-o", "/dev/null", "-w", "%{http_code}",
+        "-X", "POST",
+        "-H", `Authorization: Bearer ${pat.trim()}`,
+        "-H", "Accept: application/vnd.github+json",
+        "--proxy", "http://192.168.10.157:20176",
+        "--max-time", "20",
+        "-d", JSON.stringify({ body }),
+        `https://api.github.com/repos/${scope[0]}/${scope[1]}/issues/${issue.trackerIssueId}/comments`], {
+        env: { ...process.env },
+      });
+      const code = proc.stdout.toString().trim();
+      if (code !== "201") {
+        log.warn(`engine: GitHub queue-timeout notice for ${issue.trackerScopeKey}#${issue.trackerIssueId} → HTTP ${code}`);
+      }
+    } catch (err) {
+      log.warn(`engine: GitHub queue-timeout notice failed: ${(err as Error).message}`);
+    }
+  }
 
   private async reconcileRunningRows(): Promise<void> {
     if (this.destroyed) return;
