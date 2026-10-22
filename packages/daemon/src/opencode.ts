@@ -2451,19 +2451,35 @@ export class Engine {
     gen: number,
     opts: { infraRequeued?: boolean } = {},
   ) {
+    const superseded = () => this.generation.get(k) !== gen;
+
     if (this.stopping.get(k) === gen && this.stopping.delete(k)) {
       log.info(`engine: finishRun skipped (force-stopped) for ${k}`);
-      // Ghost-row guard (owner 2026-10-21): a force-stopped run never marks
-      // its message row — park it as interrupted instead of leaking running.
-      const haltedMsgId = this.currentMessage.get(k);
-      if (haltedMsgId) {
-        await this.store.updateMessageStatus(haltedMsgId, "interrupted").catch(() => {});
+      // Zombie-factory close-out (owner 2026-10-22, root cause: generation
+      // aliasing — see forceStop): this branch historically returned with NO
+      // cleanup, permanently leaking the running-slot entry and the session's
+      // running state, so drainGlobalPending could never redispatch the
+      // session again. Settle by outcome and always release the slot.
+      // (a) exit-0 already wrote done in execProcess — do NOT downgrade it to
+      //     interrupted (updateMessageStatus is an unconditional UPDATE).
+      // (b) non-zero/aborted exits park their still-running row as interrupted.
+      if (exitCode !== 0) {
+        const haltedMsgId = this.currentMessage.get(k);
+        if (haltedMsgId) {
+          await this.store.updateMessageStatus(haltedMsgId, "interrupted").catch(() => {});
+        }
+      }
+      if (!superseded()) {
+        // A successor (nudge/retry/forward) already re-seeded the key — leave
+        // its runtime state untouched; otherwise release the slot fully.
         this.currentMessage.delete(k);
+        this.currentModel.delete(k);
+        this.running.delete(k);
+        await this.store.updateSession(session.id, { state: "idle", opencodePid: undefined }).catch(() => {});
+        void this.drainGlobalPending();
       }
       return;
     }
-
-    const superseded = () => this.generation.get(k) !== gen;
 
     // running.delete deferred to dequeuePending
     const started = this.startedAt.get(k);
@@ -3343,7 +3359,13 @@ export class Engine {
               err => log.error(`engine: stuck-nudge comment failed for ${k}:`, (err as Error).message)
             );
 
-            this.forceStop(k);
+            // Await the stop and only arm it against a run that still exists:
+            // the un-awaited variant raced execProcess's awaits, arming
+            // `stopping` after a healthy exit-0 had already settled done
+            // (zombie factory contributor, Oct 2026).
+            if (this.processes.get(k)) {
+              await this.forceStop(k);
+            }
 
             // A stuck hang is the dead-provider signature: open the circuit so
             // the pool stops picking it, and leave the nudge unpinned so the
@@ -3363,7 +3385,9 @@ export class Engine {
             await tracker.createComment(ref, `[system] ⛔ **${session.name}** stuck for ${minutes} min, gave up after ${this.maxStuckNudges} restart(s).`).catch(
               err => log.error(`engine: stuck-giveup comment failed for ${k}:`, (err as Error).message)
             );
-            this.forceStop(k);
+            if (this.processes.get(k)) {
+              await this.forceStop(k);
+            }
             this.stuckNudgeRounds.delete(k);
           }
         }
@@ -3849,7 +3873,11 @@ export class Engine {
     this.currentPrompt.delete(key);
     this.processExitNudgeRounds.delete(key);
     this.stuckNudgeRounds.delete(key);
-    this.generation.delete(key);
+    // Bump (never delete) the generation: a deleted gen lets the next run
+    // re-mint the SAME number, aliasing the stale stopping flag onto an
+    // innocent successor — its normal exit-0 then hit "finishRun skipped
+    // (force-stopped)" and leaked the slot forever (zombie factory, Oct 2026).
+    this.generation.set(key, (this.generation.get(key) ?? 0) + 1);
     // Update session and messages
     const parsed = parseKey(key);
     if (parsed) {
