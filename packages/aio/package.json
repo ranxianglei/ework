@@ -1,6 +1,6 @@
 {
   "name": "ework-aio",
-  "version": "0.5.135",
+  "version": "0.5.136",
   "description": "All-in-one installer for ework (issue tracker) + ework-daemon (AI bridge) + opencode-ework (plugin). One command: npm i -g ework-aio && ework-aio install.",
   "type": "module",
   "license": "MIT",
@@ -47,7 +47,7 @@
   },
   "dependencies": {
     "ework-web": "^0.10.163",
-    "ework-daemon": "^0.4.132"
+    "ework-daemon": "^0.4.133"
   },
   "devDependencies": {
     "@types/bun": "^1.4.2",

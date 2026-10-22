@@ -3070,17 +3070,29 @@ export class Engine {
     try {
       const rows = await this.store.getRunningWithPid();
       const now = Date.now();
-      const dead: string[] = [];
+      const dead: { id: string; sessionId: string }[] = [];
       for (const r of rows) {
         if (now - r.updatedAt.getTime() < 3 * 60_000) continue; // spawn/claim grace
         let alive = false;
         if (r.pid != null) {
           try { process.kill(r.pid, 0); alive = true; } catch { alive = false; }
         }
-        if (!alive) dead.push(r.id);
+        if (!alive) dead.push(r);
       }
       if (dead.length > 0) {
-        for (const id of dead) await this.store.updateMessageStatus(id, "interrupted");
+        for (const r of dead) {
+          await this.store.updateMessageStatus(r.id, "interrupted");
+          await this.store.updateSession(r.sessionId, { state: "idle", opencodePid: undefined }).catch(() => {});
+          for (const rk of this.currentMessage.keys()) {
+            if (this.currentMessage.get(rk) === r.id) {
+              this.running.delete(rk);
+              this.currentMessage.delete(rk);
+              this.processes.delete(rk);
+              this.startedAt.delete(rk);
+              this.lastOutputAt.delete(rk);
+            }
+          }
+        }
         log.info(`engine: reconciler parked ${dead.length} zombie running row(s) (no live process)`);
         void this.drainGlobalPending();
       }
