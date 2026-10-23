@@ -3070,30 +3070,27 @@ export class Engine {
     try {
       const rows = await this.store.getRunningWithPid();
       const now = Date.now();
-      const dead: { id: string; sessionId: string }[] = [];
+      const dead: { id: string; key: string }[] = [];
       for (const r of rows) {
-        if (now - r.updatedAt.getTime() < 3 * 60_000) continue; // spawn/claim grace
-        let alive = false;
-        if (r.pid != null) {
-          try { process.kill(r.pid, 0); alive = true; } catch { alive = false; }
-        }
-        if (!alive) dead.push(r);
+        if (this.running.has(r.key)) continue;
+        if (now - r.updatedAt.getTime() < 3 * 60_000) continue;
+        // A live session pid only proves SOME run on that session is alive —
+        // a stuck claimed row on the same session hides behind it forever
+        // (carousel relief 2026-10-23). A running row this engine is not
+        // itself executing is an orphan regardless of pid: park it, recovery
+        // re-dispatches.
+        dead.push({ id: r.id, key: r.key });
       }
       if (dead.length > 0) {
         for (const r of dead) {
           await this.store.updateMessageStatus(r.id, "interrupted");
-          await this.store.updateSession(r.sessionId, { state: "idle", opencodePid: undefined }).catch(() => {});
-          for (const rk of this.currentMessage.keys()) {
-            if (this.currentMessage.get(rk) === r.id) {
-              this.running.delete(rk);
-              this.currentMessage.delete(rk);
-              this.processes.delete(rk);
-              this.startedAt.delete(rk);
-              this.lastOutputAt.delete(rk);
-            }
-          }
+          this.running.delete(r.key);
+          this.currentMessage.delete(r.key);
+          this.processes.delete(r.key);
+          this.startedAt.delete(r.key);
+          this.lastOutputAt.delete(r.key);
         }
-        log.info(`engine: reconciler parked ${dead.length} zombie running row(s) (no live process)`);
+        log.info(`engine: reconciler parked ${dead.length} zombie running row(s) (orphaned claim)`);
         void this.drainGlobalPending();
       }
     } catch (err) {
