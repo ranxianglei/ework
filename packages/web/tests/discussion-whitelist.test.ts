@@ -14,12 +14,12 @@ const HOOK = "http://hook.local/cb";
 const originalFetch = globalThis.fetch;
 
 function gd(n: number, over: Partial<any> = {}): any {
-  const ts = `2026-10-18T00:00:${String(n).padStart(2, "0")}Z`;
+  const ts = `2026-10-18T00:00:${String(n % 60).padStart(2, "0")}Z`;
   return { number: n, title: `disc ${n}`, body: "b", state: "open", user: { login: "u" }, created_at: ts, updated_at: ts, ...over };
 }
 
 function gi(n: number, over: Partial<any> = {}): any {
-  const ts = `2026-10-18T00:00:${String(n).padStart(2, "0")}Z`;
+  const ts = `2026-10-18T00:00:${String(n % 60).padStart(2, "0")}Z`;
   return { number: n, title: `issue ${n}`, body: "b", state: "open", user: { login: "u" }, created_at: ts, updated_at: ts, ...over };
 }
 
