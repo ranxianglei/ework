@@ -2790,7 +2790,11 @@ export class Engine {
       } catch { /* transient store error — next cycle retries */ }
       return;
     }
-    const pending = await this.store.getGlobalPendingMessages(slotsAvailable);
+    // The fetch is a candidate window, not a slot reservation — yields and
+    // skips put rows straight back without consuming a slot, so a window
+    // equal to slotsAvailable let yield-prone infra heads starve everything
+    // behind them (2026-10-23, ~2h outage). running-size guard caps spawns.
+    const pending = await this.store.getGlobalPendingMessages(Math.max(slotsAvailable, 64));
     for (const msg of pending) {
       if (this.destroyed) return;
       if (this.running.size >= this.maxConcurrent) break;
