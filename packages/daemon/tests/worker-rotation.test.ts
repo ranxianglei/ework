@@ -106,7 +106,7 @@ describe("queue fairness guard", () => {
     self.drainGlobalPending = async () => { drained = true; };
     const msg = { id: "m1", createdAt: newer, pendingSince: newer };
     await (self as { dequeueOrIdle(k: string, s: unknown, i: unknown, m: unknown): Promise<void> }).dequeueOrIdle("k@git:x/y#1@ework-daemon", { id: "s1", name: "ework-daemon" }, { id: "i1", trackerType: "gitea", trackerScopeKey: "x/y", trackerIssueId: 1 }, msg as never);
-    expect(drained).toBe(true);
+    expect(drained).toBe(false);
     expect(updateMessageStatus).toHaveBeenCalledWith("m1", "pending");
     expect(updateSession).toHaveBeenCalledWith("s1", { state: "idle" });
   });

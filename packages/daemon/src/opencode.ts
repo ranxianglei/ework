@@ -2848,7 +2848,10 @@ export class Engine {
           // stranded-resurrect sweep revives every cycle — the
           // claim→yield→park→resurrect carousel (2026-10-23). Follow-up
           // rows (from the expiry chain below) were fetched from pending
-          // and need no release.
+          // and need no release. No drain re-trigger here: the in-flight
+          // drain loop already advances to the next (older) candidate, and
+          // a fresh drain would re-pick this same just-released message
+          // infra-first — the recursive yield storm (2026-10-23, 0.4.136).
           if (next.id === msg.id) {
             await this.store.updateMessageStatus(next.id, "pending");
             this.running.delete(k);
@@ -2856,7 +2859,6 @@ export class Engine {
             await this.store.updateSession(session.id, { state: "idle" });
             log.info(`engine: fairness yield — released claim on msg ${next.id.slice(0, 8)} for ${k} (older work waiting)`);
           }
-          void this.drainGlobalPending();
           return;
         }
         // Age from pending_since (when it entered/last re-entered pending),
