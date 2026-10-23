@@ -2773,8 +2773,14 @@ export class Engine {
         for (const msg of waiting) {
           const session = await this.store.getSession(msg.sessionId);
           if (!session) continue;
-          const issue = await this.store.getIssue(session.issueId);
-          if (!issue || issue.state === "closed") continue;
+      const issue = await this.store.getIssue(session.issueId);
+      if (!issue) continue;
+      if (issue.state === "closed") {
+        // Dead letter: FIFO head blocked on a closed issue would starve
+        // everything behind it forever (queue surgery 2026-10-23 found 82).
+        await this.store.updateMessageStatus(msg.id, "failed", "issue closed").catch(() => {});
+        continue;
+      }
           if (this.running.has(this.sessionKey(session, issue))) continue;
           const parts = issue.trackerScopeKey.split("/");
           if (parts.length < 2) continue;
@@ -3075,8 +3081,17 @@ export class Engine {
       const now = Date.now();
       const dead: { id: string; key: string }[] = [];
       for (const r of rows) {
-        if (this.running.has(r.key)) continue;
         if (now - r.updatedAt.getTime() < 3 * 60_000) continue;
+        if (this.running.has(r.key)) {
+          // In-memory slot — normally trusted, but a process that died
+          // without its exit handler running leaks the slot forever
+          // (#4352). Park only when the recorded pid is verifiably dead;
+          // null pid = claimed but not yet spawned, keep waiting.
+          if (r.pid == null) continue;
+          let alive = false;
+          try { process.kill(r.pid, 0); alive = true; } catch { /* dead */ }
+          if (alive) continue;
+        }
         // A live session pid only proves SOME run on that session is alive —
         // a stuck claimed row on the same session hides behind it forever
         // (carousel relief 2026-10-23). A running row this engine is not

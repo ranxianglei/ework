@@ -348,7 +348,7 @@ export class Store {
 
   async getRunningWithPid(): Promise<{ id: string; pid: number | null; updatedAt: Date; key: string }[]> {
     const rows = await getDB().all<{ id: string; pid: number | null; updated_at: string; key: string }>(
-      `SELECT m.id AS id, s.opencode_pid AS pid, m.updated_at AS updated_at,
+      `SELECT m.uid AS id, s.opencode_pid AS pid, m.updated_at AS updated_at,
               i.tracker_type || ':' || i.tracker_scope_key || '#' || i.tracker_issue_id || '@' || s.name AS key
        FROM {{messages}} m JOIN {{op_sessions}} s ON s.uid = m.session_id
        JOIN {{issues}} i ON i.uid = s.issue_id
