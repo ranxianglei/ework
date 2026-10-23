@@ -753,6 +753,15 @@ export class Engine {
   private processes = new Map<string, RuntimeHandle>();
   // Issues pinned to the front of the global pending queue by owner boost (web ⚡).
   private readonly boostedIssueIds = new Set<string>();
+
+  // Boost is an explicit owner action: it must jump the queue even when the
+  // API-active slots are saturated (owner policy 2026-10-23). Oversubscribing
+  // is bounded by the hard 2× process ceiling so a boost can never blow past
+  // maxConcurrent*2 live agents (model endpoint has separate, larger limits).
+  private boostSlotAvailable(sourceCommentId?: string): boolean {
+    const cap = sourceCommentId ? this.effectiveGlobalCap(sourceCommentId) : this.maxConcurrent;
+    return this.running.size < cap * 2;
+  }
   private running = new Set<string>();
   // generation-scoped: a stale flag from a preempted/killed run must not
   // suppress finishRun for the replacement run spawned afterwards
@@ -1432,7 +1441,7 @@ export class Engine {
     }
     let dispatched = 0;
     for (const msg of pendings) {
-      if (!this.slotAvailable(msg.sourceCommentId)) break;
+      if (!this.boostSlotAvailable(msg.sourceCommentId)) break;
       const session = await this.store.getSession(msg.sessionId);
       if (!session || session.state === "running") continue;
       const k = this.sessionKey(session, issue);
@@ -2755,9 +2764,9 @@ export class Engine {
     await this.refreshPendingInfraCount();
     // Owner-boosted issues jump the queue: dispatch their pending messages
     // before the global priority query sees anything else.
-    if (this.boostedIssueIds.size > 0 && this.slotAvailable()) {
+    if (this.boostedIssueIds.size > 0 && this.boostSlotAvailable()) {
       for (const issueId of [...this.boostedIssueIds]) {
-        if (!this.slotAvailable()) break;
+        if (!this.boostSlotAvailable()) break;
         let pendings: Awaited<ReturnType<Store["getPendingForIssue"]>>;
         try {
           pendings = await this.store.getPendingForIssue(issueId);
@@ -2774,7 +2783,7 @@ export class Engine {
           continue;
         }
         for (const msg of pendings) {
-          if (!this.slotAvailable()) break;
+          if (!this.boostSlotAvailable()) break;
           const session = await this.store.getSession(msg.sessionId);
           if (!session || session.state === "running") continue;
           const k = this.sessionKey(session, issue);

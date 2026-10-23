@@ -38,8 +38,18 @@ describe("owner boost (web ⚡ button)", () => {
     expect((self.boostedIssueIds as Set<string>).size).toBe(0);
   });
 
-  it("slots full → pins issue to front of queue, no claim", async () => {
+  it("API-saturated but below 2× process ceiling → still dispatches (owner policy 2026-10-23)", async () => {
     const self = makeSelf(8);
+    const now = Date.now();
+    for (let i = 0; i < 8; i++) self.lastOutputAt.set(`k-${i}`, now);
+    await Engine.prototype.handleBoost.call(self, ref, "acme/widgets", { title: "t", body: "", state: "open", author: "dog" }, null);
+    expect(self.store.claimMessage).toHaveBeenCalledTimes(1);
+    expect(self.dequeueOrIdle).toHaveBeenCalledTimes(1);
+    expect((self.boostedIssueIds as Set<string>).size).toBe(0);
+  });
+
+  it("process ceiling (2× cap) full → pins issue to front of queue, no claim", async () => {
+    const self = makeSelf(16);
     await Engine.prototype.handleBoost.call(self, ref, "acme/widgets", { title: "t", body: "", state: "open", author: "dog" }, null);
     expect(self.store.claimMessage).not.toHaveBeenCalled();
     expect(self.dequeueOrIdle).not.toHaveBeenCalled();
