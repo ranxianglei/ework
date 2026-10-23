@@ -404,7 +404,10 @@ const REPO_VISIBILITY_RE = /^\/([^/]+)\/([^/]+)\/settings\/visibility$/;
 const REPO_DISPATCH_RE = /^\/([^/]+)\/([^/]+)\/settings\/dispatch$/;
 
 const REPO_WAKE_LOGINS_RE = /^\/([^/]+)\/([^/]+)\/settings\/ai\/wake-logins$/;
+const REPO_DECIDERS_RE = /^\/([^/]+)\/([^/]+)\/settings\/ai\/deciders$/;
 const REPO_COMMUNITY_WAKE_RE = /^\/([^/]+)\/([^/]+)\/settings\/ai\/community-wake$/;
+// GitHub login: 1-39 chars, alphanumeric + hyphen, no leading/trailing hyphen.
+const VALID_GITHUB_LOGIN_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38}[A-Za-z0-9])?$/;
 const REPO_CONCURRENCY_RE = /^\/([^/]+)\/([^/]+)\/settings\/ai\/concurrency$/;
 const REPO_HALT_ALL_RE = /^\/([^/]+)\/([^/]+)\/settings\/ai\/halt-all$/;
 const SETTINGS_DISPATCH_RE = /^\/settings\/dispatch$/;
@@ -637,10 +640,11 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
       const repo = url.searchParams.get("repo") ?? "";
       if (!owner || !repo) return json({ error: "owner, repo required" }, 400);
       const cfgKv = await getConfigAll();
-      const logins = (cfgKv[`wakeLogins:${owner}/${repo}`] ?? "")
-        .split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
+      const parseList = (v: string | undefined) => (v ?? "").split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
+      const logins = parseList(cfgKv[`wakeLogins:${owner}/${repo}`]);
+      const deciders = parseList(cfgKv[`deciders:${owner}/${repo}`]);
       const communityWake = cfgKv[`communityWake:${owner}/${repo}`] === "1";
-      return json({ logins, communityWake });
+      return json({ logins, deciders, communityWake });
     }
     // Machine route: daemons admit new wake logins (thread-trust contagion —
     // a whitelisted participant engaging an external author endorses them).
@@ -2341,6 +2345,7 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
 
     const repoConcurrencyMatch = url.pathname.match(REPO_CONCURRENCY_RE);
     const repoWakeLoginsMatch = url.pathname.match(REPO_WAKE_LOGINS_RE);
+    const repoDecidersMatch = url.pathname.match(REPO_DECIDERS_RE);
     if (repoConcurrencyMatch) {
       const [, owner, repo] = repoConcurrencyMatch;
       if (!(owner && repo)) return html(errorPage("bad path", ""), 400);
@@ -2394,11 +2399,10 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
       const key = `wakeLogins:${owner}/${repo}`;
       const current = ((await getConfigAll())[key] ?? "")
         .split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
-      const validLogin = (l: string) => /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38}[A-Za-z0-9])?$/.test(l);
       let next: string[];
       const add = String(fd.get("add") ?? "").trim();
       if (add) {
-        if (!validLogin(add)) {
+        if (!VALID_GITHUB_LOGIN_RE.test(add)) {
           if (wantsJson) return json({ error: "无效的用户名" }, 400);
           return Response.redirect(`${aiBack}?err=${encodeURIComponent(`无效的用户名：${add}`)}`, 303);
         }
@@ -2410,7 +2414,7 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
         next = String(fd.get("logins") ?? "")
           .split(/[\s,]+/).map((s) => s.trim()).filter(Boolean)
           .filter((l) => {
-            if (!validLogin(l)) return false;
+            if (!VALID_GITHUB_LOGIN_RE.test(l)) return false;
             const lower = l.toLowerCase();
             if (seen.has(lower)) return false;
             seen.add(lower);
@@ -2425,6 +2429,40 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
       const sep = back.includes("?") ? "&" : "?";
       return Response.redirect(
         `${back}${sep}ok=1&ok_msg=${encodeURIComponent(add ? `已把 ${add} 加入唤醒白名单` : "唤醒白名单已保存")}`,
+        303,
+      );
+    }
+    if (repoDecidersMatch) {
+      const [, owner, repo] = repoDecidersMatch;
+      if (!(owner && repo)) return html(errorPage("bad path", ""), 400);
+      const project = await getProject(owner, repo);
+      if (!project) return html(errorPage("项目不存在", ""), 404);
+      const aiBack = `${url.origin}/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/settings/ai`;
+      const wantsJson = url.searchParams.get("json") === "1";
+      if (!(await canAdminProject(project.id, ctx.user))) {
+        if (wantsJson) return json({ error: "需要该项目 admin 角色" }, 403);
+        return Response.redirect(`${aiBack}?err=${encodeURIComponent("无权限")}`, 303);
+      }
+      const fd = await req.formData();
+      const key = `deciders:${owner}/${repo}`;
+      const seen = new Set<string>();
+      const next = String(fd.get("deciders") ?? "")
+        .split(/[\s,]+/).map((s) => s.trim()).filter(Boolean)
+        .filter((l) => {
+          if (!VALID_GITHUB_LOGIN_RE.test(l)) return false;
+          const lower = l.toLowerCase();
+          if (seen.has(lower)) return false;
+          seen.add(lower);
+          return true;
+        });
+      if (next.length === 0) await deleteConfig(key);
+      else await setConfig(key, next.join(","));
+      if (wantsJson) return json({ ok: true, deciders: next });
+      const backRaw = String(fd.get("back") ?? "").trim();
+      const back = backRaw && backRaw.startsWith("/") ? backRaw : aiBack;
+      const sep = back.includes("?") ? "&" : "?";
+      return Response.redirect(
+        `${back}${sep}ok=1&ok_msg=${encodeURIComponent(next.length > 0 ? "决策者已保存" : "决策者名单已清空")}`,
         303,
       );
     }
@@ -2735,7 +2773,8 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     const wakeLoginsRaw = dispatchCfg[`wakeLogins:${owner}/${repo}`] ?? "";
       const communityWake = dispatchCfg[`communityWake:${owner}/${repo}`] === "1";
     const concurrencyLimit = dispatchCfg[`concurrency:${owner}/${repo}`] ?? "";
-    return html(buildProjectAiPage(project, dispatchOff, globalDispatchOff, processingCount, wakeLoginsRaw, concurrencyLimit, communityWake).html);
+    const decidersRaw = dispatchCfg[`deciders:${owner}/${repo}`] ?? "";
+    return html(buildProjectAiPage(project, dispatchOff, globalDispatchOff, processingCount, wakeLoginsRaw, concurrencyLimit, communityWake, decidersRaw).html);
   }
 
   const upstreamsPage = url.pathname.match(REPO_UPSTREAMS_RE);
