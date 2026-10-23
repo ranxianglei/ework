@@ -1418,7 +1418,6 @@ export class Engine {
       case "ci_failed":
         return this.handleCiFailed(ref, scopeKey, issueData, tracker, event.ci ?? { sha: "", checks: [] }, event.model);
       case "issue_boosted":
-        log.info(`engine: boost diag — case reached for ${scopeKey}#${ref.issueId}`);
         return this.handleBoost(ref, scopeKey, issueData, tracker);
     }
   }
@@ -1430,15 +1429,12 @@ export class Engine {
   // messages immediately if a slot is free; otherwise pin the issue to the
   // absolute front of the global queue (owner policy 2026-10-17).
   private async handleBoost(ref: TrackerRef, scopeKey: string, _issueData: NonNullable<TrackerEvent["issue"]>, _tracker: unknown): Promise<void> {
-    log.info(`engine: boost diag — handleBoost entered for ${scopeKey}#${ref.issueId}`);
     const issue = await this.store.findIssue(ref.trackerType, scopeKey, ref.issueId);
-    log.info(`engine: boost diag — findIssue returned ${issue ? issue.id : "null"} for ${scopeKey}#${ref.issueId}`);
     if (!issue) {
       log.info(`engine: boost — no local issue state for ${scopeKey}#${ref.issueId}, nothing to boost`);
       return;
     }
     const pendings = await this.store.getPendingForIssue(issue.id);
-    log.info(`engine: boost diag — getPendingForIssue returned ${pendings.length} for ${scopeKey}#${ref.issueId}`);
     if (pendings.length === 0) {
       log.info(`engine: boost — ${scopeKey}#${ref.issueId} has no pending messages (running or idle)`);
       return;
