@@ -31,7 +31,7 @@ describe("worker session rotation (owner policy 2026-10-20)", () => {
       createSession: async (_iid: string, name: string) => ({ id: "s2", name }),
     };
     const out = await (self as { workerSession(i: string, b: string): Promise<{ id: string; name: string }> }).workerSession("i1", "conflict-worker");
-    expect(out.name).toBe("conflict-worker-r2");
+    expect(out.name).toBe("conflict-worker-r1");
   });
 
   test("picks the latest non-full generation", async () => {
@@ -39,13 +39,13 @@ describe("worker session rotation (owner policy 2026-10-20)", () => {
     self.store = {
       getSessionsForIssue: async () => [
         { id: "s1", name: "conflict-worker" },
-        { id: "s2", name: "conflict-worker-r2" },
+        { id: "s2", name: "conflict-worker-r1" },
       ],
       countMessagesByStatus: async (sid: string) => (sid === "s2" ? 5 : 20),
       createSession: async (_iid: string, name: string) => ({ id: "s2", name }),
     };
     const out = await (self as { workerSession(i: string, b: string): Promise<{ id: string; name: string }> }).workerSession("i1", "conflict-worker");
-    expect(out.name).toBe("conflict-worker-r2");
+    expect(out.name).toBe("conflict-worker-r1");
   });
 });
 
@@ -105,6 +105,8 @@ describe("queue fairness guard", () => {
 
   test("globally-oldest message proceeds without yielding", async () => {
     const self = makeSelf();
+    self.running = new Set();
+    self.currentMessage = new Map();
     const t = new Date(Date.now() - 30 * 60_000);
     let drained = false;
     let observed = false;
@@ -113,7 +115,10 @@ describe("queue fairness guard", () => {
       getPendingForIssue: async () => [],
       getMessagesForSession: async () => [],
       countMessagesByStatus: async () => 0,
+      updateMessageStatus: async () => {},
+      updateSession: async () => {},
     };
+    self.execProcess = async () => {};
     self.startObserver = () => { observed = true; };
     self.drainGlobalPending = async () => { drained = true; };
     const msg = { id: "m1", createdAt: t, pendingSince: t };

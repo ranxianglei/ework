@@ -37,6 +37,7 @@ describe("infra night boost (00:00-08:00 CST)", () => {
     expect(quietNight.effectiveGlobalCap(undefined)).toBe(8);
     const busyNight = makeSelf(17);
     busyNight.pendingInfraCount = 2;
+    busyNight.running = new Map();
     expect(busyNight.effectiveGlobalCap(undefined)).toBe(4);
     expect(busyNight.effectiveGlobalCap("merge-conflict-123-1")).toBe(8);
     expect(busyNight.effectiveGlobalCap("ci-fail-9-abc")).toBe(8);

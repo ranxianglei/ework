@@ -48,7 +48,10 @@ describe("handleMergeConflict gating", () => {
     self.store = {
       findIssue: vi.fn(async () => ({ id: 7, state: opts.issueState ?? "active" })),
       createSession,
+      getSessionsForIssue: vi.fn(async () => [{ id: "w1", name: "conflict-worker-N" }]),
+      countMessagesByStatus: vi.fn(async () => 5),
     };
+    self.conflictCategory = () => "N";
     self.ensureOwned = vi.fn(async () => true);
     self.sessionRef = () => "ses_link";
     self.resolveWorkdir = async () => "/w";
@@ -64,7 +67,7 @@ describe("handleMergeConflict gating", () => {
     const { self, enqueueOrRun, createSession, worker } = makeSelf({});
     const tracker = { createComment: vi.fn(async () => ({ id: "c1" })), getTrackerInstructions: () => ({ issueRef: "acme/widgets#42" }) };
     await call(self, tracker);
-    expect(createSession).toHaveBeenCalledWith(7, "conflict-worker");
+    expect(createSession).toHaveBeenCalledWith(7, "conflict-worker-N");
     expect(enqueueOrRun).toHaveBeenCalledTimes(1);
     const [s, i, prompt, , , sourceCommentId] = enqueueOrRun.mock.calls[0] as unknown as [unknown, { id: number }, string, unknown, unknown, string];
     expect(s).toBe(worker);
@@ -79,11 +82,12 @@ describe("handleMergeConflict gating", () => {
     const { self, createSession } = makeSelf({ existingWorker: existing });
     const tracker = { createComment: vi.fn(async () => ({ id: "c1" })), getTrackerInstructions: () => ({ issueRef: "x" }) };
     await call(self, tracker);
-    expect(createSession).toHaveBeenCalledWith(7, "conflict-worker");
+    expect(createSession).toHaveBeenCalledWith(7, "conflict-worker-N");
   });
 
   test("manual PRs with no prior sessions still get a conflict worker (24/7 coverage)", async () => {
     const { self, enqueueOrRun } = makeSelf({});
+    (self.store as { getSessionsForIssue: ReturnType<typeof vi.fn> }).getSessionsForIssue = vi.fn(async () => []);
     const tracker = { createComment: vi.fn(async () => ({ id: "c1" })), getTrackerInstructions: () => ({ issueRef: "x" }) };
     await call(self, tracker);
     expect(enqueueOrRun).toHaveBeenCalledTimes(1);

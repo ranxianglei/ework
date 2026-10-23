@@ -57,7 +57,10 @@ describe("execProcess merge-conflict concurrency cap", () => {
     };
     self.gateChecker = gateChecker;
     self.conflictMaxConcurrent = opts.cap;
-    self.running = new Map();
+    // A busy ordinary fleet pins freeGlobal to 0 so infraIdleExpandedCap
+    // resolves to the configured cap instead of expanding it.
+    self.maxConcurrent = opts.cap;
+    self.running = new Map([["gitea:acme/widgets#1@ework-daemon", {}]]);
     self.currentMessage = new Map();
     self.currentModel = new Map();
     self.generation = new Map();

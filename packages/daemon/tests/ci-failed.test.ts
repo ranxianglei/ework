@@ -15,6 +15,8 @@ describe("handleCiFailed routing", () => {
     self.store = {
       findIssue: vi.fn(async () => ({ id: 7, state: opts.issueState ?? "active" })),
       createSession: vi.fn(async () => ({ id: "w1", name: "ci-worker" })),
+      getSessionsForIssue: vi.fn(async () => []),
+      countMessagesByStatus: vi.fn(async () => 0),
     };
     self.ensureOwned = vi.fn(async () => true);
     self.sessionRef = () => "ses_link";
@@ -66,7 +68,8 @@ describe("execProcess ci-fix cap", () => {
     self.gateChecker = gateChecker;
     self.ciMaxConcurrent = 1;
     self.conflictMaxConcurrent = 1;
-    self.running = new Map();
+    self.maxConcurrent = 1;
+    self.running = new Map([["gitea:acme/widgets#1@ework-daemon", {}]]);
     self.currentMessage = new Map();
     self.currentModel = new Map();
     self.generation = new Map();

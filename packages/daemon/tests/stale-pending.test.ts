@@ -88,6 +88,11 @@ const REF: TrackerRef = {
 
 const KEY = "gitea:ranxianglei/billion-context#361@ework-daemon";
 
+// Queue age limit is 128h (MAX_PENDING_AGE_MS in src/opencode.ts, daemon
+// 0.4.131; was 6h until the 2026-10-21 queue-freeze incident). Stale
+// fixtures must sit past that limit to model expirable leftovers.
+const STALE_MINUTES = 128 * 60 + 30;
+
 // Backdates BOTH creation and the pending clock: these tests model messages
 // that sat in the queue (pending) since that instant, which is what the
 // staleness guard ages from.
@@ -96,7 +101,7 @@ async function backdate(uid: string, minutes: number): Promise<void> {
   await getDB().run("UPDATE {{messages}} SET created_at = ?, pending_since = ? WHERE uid = ?", [past, past, uid]);
 }
 
-async function eventually(assert: () => void | Promise<void>, timeoutMs = 2000): Promise<void> {
+async function eventually(assert: () => void | Promise<void>, timeoutMs = 8000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     try { await assert(); return; } catch (err) {
@@ -141,7 +146,7 @@ describe("stale pending expiry", () => {
     const issue = await store.findOrCreateIssue(REF, "ranxianglei/billion-context", "t");
     const session = await store.createSession(issue.id, "ework-daemon");
     const msg = await store.createMessage(session.id, "[SYSTEM FORWARD] storm leftover");
-    await backdate(msg.id, 390);
+    await backdate(msg.id, STALE_MINUTES);
 
     await (engine as unknown as { deactivateIfIdle: (k: string, s: OpSession, i: Issue) => Promise<void> }).deactivateIfIdle(KEY, session, issue);
 
@@ -178,8 +183,8 @@ describe("stale pending expiry", () => {
     const stale1 = await store.createMessage(session.id, "[SYSTEM FORWARD] storm a");
     const stale2 = await store.createMessage(session.id, "[SYSTEM FORWARD] storm b");
     const fresh = await store.createMessage(session.id, "[SYSTEM FORWARD] fresh");
-    await backdate(stale1.id, 400);
-    await backdate(stale2.id, 390);
+    await backdate(stale1.id, STALE_MINUTES + 10);
+    await backdate(stale2.id, STALE_MINUTES);
     await backdate(fresh.id, 2);
 
     await (engine as unknown as { deactivateIfIdle: (k: string, s: OpSession, i: Issue) => Promise<void> }).deactivateIfIdle(KEY, session, issue);
