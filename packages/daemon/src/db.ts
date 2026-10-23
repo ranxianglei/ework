@@ -17,7 +17,7 @@ import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { createPool, type Pool, type PoolConnection, type ResultSetHeader } from "mysql2/promise";
 import { mkdirSync, readFileSync, existsSync } from "fs";
 import { dirname, join } from "path";
-import { homedir } from "os";
+import { homedir, tmpdir } from "os";
 import { log } from "./logger";
 
 const RETRYABLE_CODES = ["ETIMEDOUT", "ECONNRESET", "PROTOCOL_CONNECTION_LOST", "PROTOCOL_SEQUENCE_TIMEOUT", "EPIPE"];
@@ -307,6 +307,18 @@ let _driver: AsyncDatabase | null = null;
 /** Initialize + connect the database. MUST be awaited once at boot. */
 export async function initDB(): Promise<AsyncDatabase> {
   if (_driver) return _driver;
+  // Tests must never touch a real database. Preload (packages/daemon/bunfig.toml
+  // → tests/setup.ts) isolates WORK_DB_PATH per PID, but bun resolves the
+  // preload only when the test run starts from packages/daemon — running from
+  // the repo root (`bun test tests/concurrency.test.ts`) skips it entirely and
+  // the process inherits whatever WORK_DB_PATH the caller had. That exact shape
+  // wiped the production fleet DB on 2026-10-23 (ework incident, ghost daemon
+  // host-V). Refuse instead of opening.
+  if (process.env.BUN_TEST && DB_DRIVER !== "mysql" && !DB_PATH.startsWith(tmpdir())) {
+    throw new Error(
+      `refusing to open non-temp database ${DB_PATH} under BUN_TEST — tests must run with an isolated WORK_DB_PATH (start bun test from packages/daemon so the preload applies)`,
+    );
+  }
   if (DB_DRIVER === "mysql") {
     _driver = await MysqlDriver.create({
       host: process.env.WORK_DB_HOST ?? "127.0.0.1",
