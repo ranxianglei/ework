@@ -1439,6 +1439,10 @@ export class Engine {
       log.info(`engine: boost — ${scopeKey}#${ref.issueId} has no pending messages (running or idle)`);
       return;
     }
+    // Pin before dispatching: the fairness yield in dequeueOrIdle exempts
+    // boosted issues, so direct dispatches here must already carry the pin
+    // or the first attempt is yielded right back to pending.
+    this.boostedIssueIds.add(issue.id);
     let dispatched = 0;
     for (const msg of pendings) {
       if (!this.boostSlotAvailable(msg.sourceCommentId)) break;
@@ -1453,8 +1457,9 @@ export class Engine {
       dispatched++;
     }
     if (dispatched < pendings.length) {
-      this.boostedIssueIds.add(issue.id);
       log.info(`engine: boost — ${scopeKey}#${ref.issueId} pinned to front of queue (${pendings.length - dispatched} waiting for a slot)`);
+    } else {
+      this.boostedIssueIds.delete(issue.id);
     }
   }
 
@@ -2869,12 +2874,16 @@ export class Engine {
         // another session — #3975 starved ~10h while spawns flowed via this
         // path. Yield to the global drain (age grace 10min to avoid thrash
         // when a batch clusters in time).
+        // Owner boost (web ⚡, 2026-10-23) is an explicit per-issue override:
+        // the pinned issue's dispatches are exempt, else the guard eternally
+        // re-yields boosted work while any older backlog message pends.
         let yieldToOlder = false;
         try {
           const oldest = await this.store.getOldestPendingCreatedAt();
           if (
             oldest &&
-            next.createdAt.getTime() > oldest.getTime() + 10 * 60_000
+            next.createdAt.getTime() > oldest.getTime() + 10 * 60_000 &&
+            !this.boostedIssueIds.has(issue.id)
           ) {
             yieldToOlder = true;
           }

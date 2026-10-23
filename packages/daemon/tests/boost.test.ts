@@ -63,4 +63,36 @@ describe("owner boost (web ⚡ button)", () => {
     expect(self.store.claimMessage).not.toHaveBeenCalled();
     expect((self.boostedIssueIds as Set<string>).size).toBe(0);
   });
+
+  it("pinned issue is exempt from the fairness yield (2026-10-23 #4373 regression)", async () => {
+    const self = makeSelf(0);
+    self.running = new Set();
+    self.currentMessage = new Map();
+    self.startedAt = new Map();
+    self.lastOutputAt = new Map();
+    self.apiIdleGraceMs = 180_000;
+    const older = new Date(Date.now() - 30 * 60_000);
+    const newer = new Date(Date.now() - 1 * 60_000);
+    const updateMessageStatus = vi.fn(async () => {});
+    self.store = {
+      getOldestPendingCreatedAt: async () => older,
+      getPendingForIssue: async () => [],
+      getMessagesForSession: async () => [],
+      countMessagesByStatus: async () => 0,
+      updateMessageStatus,
+      updateSession: async () => {},
+    };
+    self.startObserver = () => {};
+    self.drainGlobalPending = async () => {};
+    self.execProcess = vi.fn(async () => {});
+    self.sessionRef = () => "x/y#7";
+    self.resolveWorkdir = async () => "/tmp/wd";
+    self.buildPrompt = async () => "p";
+    self.spawn = async () => ({ exited: Promise.resolve(0) });
+    self.ensureOwned = async () => {};
+    (self.boostedIssueIds as Set<string>).add("iss-1");
+    const msg = { id: "m1", createdAt: newer, pendingSince: newer };
+    await Engine.prototype.dequeueOrIdle.call(self, "gitea:acme/widgets#7@ework-daemon", { id: "ses-1", name: "ework-daemon" }, issue, msg as never);
+    expect(updateMessageStatus).not.toHaveBeenCalledWith("m1", "pending");
+  });
 });
