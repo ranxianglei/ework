@@ -29,7 +29,9 @@ export class GiteaClient {
 
     if (!res.ok) {
       const text = await res.text();
-      throw new Error(`Gitea API ${method} ${path} → ${res.status}: ${text}`);
+      const err = new Error(`Gitea API ${method} ${path} → ${res.status}: ${text}`) as Error & { status: number };
+      err.status = res.status;
+      throw err;
     }
 
     if (res.status === 204) return undefined as T;
