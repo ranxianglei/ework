@@ -472,10 +472,16 @@ export class Store {
 
   async getPendingForIssue(issueId: string): Promise<Message[]> {
     const nowIso = new Date().toISOString();
-    return getDB().all<Message>(
+    // Must map through rowToMessage like getGlobalPendingMessages: raw rows
+    // carry snake_case + INTEGER id, so callers reading msg.id / msg.sessionId
+    // (claimMessage matches WHERE uid; sessionId feeds getSession) would break
+    // or crash — handleBoost's diag log surfaced this as "msg.id.slice is not
+    // a function" on 2026-10-23.
+    const rows = await getDB().all<MessageRow>(
       "SELECT m.* FROM {{messages}} m JOIN {{op_sessions}} s ON s.uid = m.session_id WHERE s.issue_id = ? AND m.status = 'pending' AND (m.retry_after IS NULL OR m.retry_after <= ?) ORDER BY m.created_at ASC",
       [issueId, nowIso],
     );
+    return rows.map(rowToMessage);
   }
 
   async countRunningConflictMessages(excludeUid: string): Promise<number> {
