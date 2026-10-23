@@ -253,3 +253,69 @@ test("machine POST /api/v1/wake-logins admits and dedups; communityWake flag rou
   expect(data.communityWake).toBe(true);
   expect(data.logins).toEqual(["NewContributor"]);
 });
+
+// Deciders (ework#1): per-project decision-makers. First entry = primary owner.
+// Strict trust mode engages on the daemon side once any project list exists.
+
+test("GET returns empty deciders; POST textarea saves, dedups case-insensitively, clearing deletes", async () => {
+  const get0 = await fetch(`${BASE}/api/v1/wake-logins?owner=${OWNER}&repo=${REPO}`, {
+    headers: { Cookie: cookie },
+  });
+  expect(((await get0.json()) as { deciders: string[] }).deciders).toEqual([]);
+
+  const save = await fetch(`${BASE}/${OWNER}/${REPO}/settings/ai/deciders?json=1`, {
+    method: "POST",
+    headers: { Cookie: cookie },
+    body: new URLSearchParams({ deciders: "ranxianglei, jensenojs\nstirp RanXiangLei" }),
+  });
+  expect(save.status).toBe(200);
+  expect(((await save.json()) as { deciders: string[] }).deciders).toEqual(["ranxianglei", "jensenojs", "stirp"]);
+
+  const get1 = await fetch(`${BASE}/api/v1/wake-logins?owner=${OWNER}&repo=${REPO}`, {
+    headers: { Cookie: cookie },
+  });
+  expect(((await get1.json()) as { deciders: string[] }).deciders).toEqual(["ranxianglei", "jensenojs", "stirp"]);
+
+  const clear = await fetch(`${BASE}/${OWNER}/${REPO}/settings/ai/deciders?json=1`, {
+    method: "POST",
+    headers: { Cookie: cookie },
+    body: new URLSearchParams({ deciders: "" }),
+  });
+  expect(((await clear.json()) as { deciders: string[] }).deciders).toEqual([]);
+});
+
+test("invalid decider entries are dropped, valid ones kept in order", async () => {
+  const res = await fetch(`${BASE}/${OWNER}/${REPO}/settings/ai/deciders?json=1`, {
+    method: "POST",
+    headers: { Cookie: cookie },
+    body: new URLSearchParams({ deciders: "bad!login, dog" }),
+  });
+  expect(res.status).toBe(200);
+  expect(((await res.json()) as { deciders: string[] }).deciders).toEqual(["dog"]);
+
+  await fetch(`${BASE}/${OWNER}/${REPO}/settings/ai/deciders?json=1`, {
+    method: "POST",
+    headers: { Cookie: cookie },
+    body: new URLSearchParams({ deciders: "" }),
+  });
+});
+
+test("AI settings page renders the deciders card with current entries", async () => {
+  await fetch(`${BASE}/${OWNER}/${REPO}/settings/ai/deciders?json=1`, {
+    method: "POST",
+    headers: { Cookie: cookie },
+    body: new URLSearchParams({ deciders: "ranxianglei\njensenojs" }),
+  });
+  const page = await fetch(`${BASE}/${OWNER}/${REPO}/settings/ai`, { headers: { Cookie: cookie } });
+  const text = await page.text();
+  expect(page.status).toBe(200);
+  expect(text).toContain("决策者");
+  expect(text).toContain("ranxianglei");
+  expect(text).toContain("jensenojs");
+
+  await fetch(`${BASE}/${OWNER}/${REPO}/settings/ai/deciders?json=1`, {
+    method: "POST",
+    headers: { Cookie: cookie },
+    body: new URLSearchParams({ deciders: "" }),
+  });
+});

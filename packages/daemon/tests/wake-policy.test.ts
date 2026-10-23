@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { wakePolicySkips, externalWakeAllotment } from "../src/opencode";
+import { wakePolicySkips, externalWakeAllotment, type ProjectAuthority } from "../src/opencode";
 
 const cfg = (over: Partial<Parameters<typeof wakePolicySkips>[0]> = {}) => ({
   nonWakingAuthors: [] as string[],
@@ -47,7 +47,52 @@ describe("wakePolicySkips (comments + issue_opened share it)", () => {
   });
 });
 
-describe("buildForwardPrompt trust marker", () => {
+describe("authorRole (ework#1)", () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const { Engine } = require("../src/opencode") as { Engine: any };
+  const mk = (wakeLogins: string[], noWakeLogins: string[] = []) => {
+    const self = Object.create(Engine.prototype) as { cfg: unknown };
+    self.cfg = { daemon: { wakeLogins, noWakeLogins, nonWakingAuthors: [] } };
+    return self as never;
+  };
+  const role = (self: never, login: string, auth?: ProjectAuthority) =>
+    Engine.prototype.authorRole.call(self, login, auth) as string;
+  const auth = (over: Partial<ProjectAuthority> = {}): ProjectAuthority => ({
+    ownerLogin: "ranxianglei", logins: [], deciders: [], ...over,
+  });
+
+  test("unconfigured project keeps legacy fail-open (global empty ⇒ trusted)", () => {
+    expect(role(mk([]), "anyone")).toBe("trusted");
+    expect(role(mk([]), "anyone", auth())).toBe("trusted");
+  });
+
+  test("unconfigured project falls back to the global whitelist", () => {
+    expect(role(mk(["dog"]), "dog")).toBe("trusted");
+    expect(role(mk(["dog"]), "stranger")).toBe("external");
+  });
+
+  test("decider outranks everyone in strict mode", () => {
+    expect(role(mk([]), "ranxianglei", auth({ deciders: ["ranxianglei", "jensenojs"] }))).toBe("decider");
+    expect(role(mk([]), "jensenojs", auth({ deciders: ["ranxianglei"] }))).toBe("external");
+  });
+
+  test("strict mode trusts only project members — global-only members demote", () => {
+    const a = auth({ logins: ["stirp"] });
+    expect(role(mk(["dog"]), "stirp", a)).toBe("trusted");
+    expect(role(mk(["dog"]), "dog", a)).toBe("external");
+    expect(role(mk(["dog"]), "stranger", a)).toBe("external");
+  });
+
+  test("matching is case-insensitive; blacklists always force external", () => {
+    expect(role(mk([]), "RanXiangLei", auth({ deciders: ["ranxianglei"] }))).toBe("decider");
+    expect(role(mk(["dog"]), "dog", auth())).toBe("trusted");
+    const blocked = mk([], ["dog"]);
+    expect(role(blocked, "dog", auth({ deciders: ["dog"] }))).toBe("external");
+    expect(role(blocked, "dog")).toBe("external");
+  });
+});
+
+describe("authority block + forward labels (ework#1)", () => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const { Engine } = require("../src/opencode") as { Engine: any };
   const mk = (wakeLogins: string[]) => {
@@ -55,28 +100,58 @@ describe("buildForwardPrompt trust marker", () => {
     self.cfg = { daemon: { wakeLogins, noWakeLogins: [], nonWakingAuthors: [] } };
     return self as never;
   };
+  const fwd = (self: never, user: string, authArg?: ProjectAuthority) =>
+    Engine.prototype.buildForwardPrompt.call(self, "fwd", "do x", user, "human", "T", "/w", { issueRef: "o/r#1" }, authArg) as string;
+  const init = (self: never, author: string, authArg?: ProjectAuthority) =>
+    Engine.prototype.buildInitialPrompt.call(self, "bot", "T", "body", author, "/w", { clone: "git clone x .", issueRef: "o/r#1" }, authArg) as string;
 
-  const call = (self: never, user: string) =>
-    Engine.prototype.buildForwardPrompt.call(self, "fwd", "do x", user, "human", "T", "/w", { issueRef: "o/r#1" }) as string;
+  const decidersAuth: ProjectAuthority = { ownerLogin: "ranxianglei", logins: ["stirp"], deciders: ["ranxianglei", "jensenojs"] };
 
-  test("whitelisted author renders plain", () => {
-    const p = call(mk(["dog"]), "dog");
-    expect(p).toContain("@dog (user) posted");
+  test("whitelisted author renders the trusted-collaborator label", () => {
+    const p = fwd(mk(["dog"]), "dog");
+    expect(p).toContain("@dog (user · trusted collaborator) posted");
     expect(p).not.toContain("unverified");
   });
 
-  test("stranger renders unverified + injection warning", () => {
-    const p = call(mk(["dog"]), "evil-stranger");
-    expect(p).toContain("(unverified outside user)");
+  test("stranger renders unverified label + injection warning", () => {
+    const p = fwd(mk(["dog"]), "evil-stranger");
+    expect(p).toContain("(user · unverified outside user)");
     expect(p).toContain("prompt injection");
   });
 
   test("blacklisted author is untrusted even without whitelist", () => {
-    const { Engine } = require("../src/opencode") as { Engine: any };
-    const self = Object.create(Engine.prototype) as { cfg: unknown };
-    self.cfg = { daemon: { wakeLogins: [], noWakeLogins: ["evil-bot"], nonWakingAuthors: [] } };
-    const p = Engine.prototype.buildForwardPrompt.call(self, "fwd", "do x", "evil-bot", "human", "T", "/w", { issueRef: "o/r#1" }) as string;
-    expect(p).toContain("unverified");
+    const self = mk([]);
+    (self as { cfg: { daemon: { noWakeLogins: string[] } } }).cfg.daemon.noWakeLogins = ["evil-bot"];
+    expect(fwd(self, "evil-bot")).toContain("unverified");
+  });
+
+  test("initial prompt names the deciders and pins the decision rule", () => {
+    const p = init(mk([]), "stranger", decidersAuth);
+    expect(p).toContain("Authority: the final decision-makers for this project are @ranxianglei (primary owner), @jensenojs.");
+    expect(p).toContain('never claim "owner decided"');
+    expect(p).toContain("- Author: @stranger (user · unverified outside user)");
+  });
+
+  test("initial prompt labels a decider author as project owner", () => {
+    const p = init(mk([]), "jensenojs", decidersAuth);
+    expect(p).toContain("- Author: @jensenojs (user · project owner)");
+  });
+
+  test("without deciders the repo owner is the fallback decision-maker", () => {
+    const p = init(mk([]), "someone", { ownerLogin: "ranxianglei", logins: [], deciders: [] });
+    expect(p).toContain("this project belongs to @ranxianglei, the final decision-maker");
+  });
+
+  test("forward prompt carries the same authority block", () => {
+    const p = fwd(mk([]), "stirp", decidersAuth);
+    expect(p).toContain("@stirp (user · trusted collaborator) posted");
+    expect(p).toContain("Authority: the final decision-makers for this project are @ranxianglei (primary owner), @jensenojs.");
+  });
+
+  test("legacy callers without authority keep the old prompt shape", () => {
+    const p = fwd(mk(["dog"]), "dog");
+    expect(p).not.toContain("Authority:");
+    expect(init(mk([]), "x")).not.toContain("Authority:");
   });
 });
 
@@ -219,16 +294,16 @@ describe("buildForwardPrompt backlog rendering", () => {
 
   test("backlog entries render with per-author trust framing", () => {
     const p = Engine.prototype.buildForwardPrompt.call(
-      self, "fwd", "继续", "dog", "human", "T", "/w", { issueRef: "o/r#1" }, [],
+      self, "fwd", "继续", "dog", "human", "T", "/w", { issueRef: "o/r#1" }, undefined,
       [{ author: "Bunny4Don", authorKind: "human", body: "如何排查", createdAt: "2026-09-21T08:53:58Z" }],
     ) as string;
     expect(p).toContain("not been answered yet");
-    expect(p).toContain("@Bunny4Don (user) (unverified outside user");
+    expect(p).toContain("@Bunny4Don (user · unverified outside user)");
     expect(p).toContain("如何排查");
   });
 
   test("empty backlog keeps the prompt identical in shape", () => {
-    const p = Engine.prototype.buildForwardPrompt.call(self, "fwd", "hi", "dog", "human", "T", "/w", { issueRef: "o/r#1" }, [], []) as string;
+    const p = Engine.prototype.buildForwardPrompt.call(self, "fwd", "hi", "dog", "human", "T", "/w", { issueRef: "o/r#1" }) as string;
     expect(p).not.toContain("not been answered yet");
     expect(p).toContain("Reply using the `reply` tool.");
   }

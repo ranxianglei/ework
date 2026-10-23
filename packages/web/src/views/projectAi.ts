@@ -10,6 +10,7 @@ export function buildProjectAiPage(
   wakeLoginsRaw = "",
   concurrencyLimit = "",
   communityWake = false,
+  decidersRaw = "",
 ): { html: string } {
   const aiBase = `/${encodeURIComponent(project.owner)}/${encodeURIComponent(project.name)}/settings/ai`;
   const dispatchAction = `/${encodeURIComponent(project.owner)}/${encodeURIComponent(project.name)}/settings/dispatch`;
@@ -48,6 +49,14 @@ ${hint}
 <div class="hint">默认只有平台成员能唤醒 AI。把外部 GitHub 用户加进来（逗号或换行分隔），他们在<b>本项目</b>的新 issue / 评论就会自动触发 AI 处理。bot 账号（如 github-actions[bot]）永远无效；全局与项目接单开关仍是总闸。issue 评论区对外部用户也有「＋白名单」一键按钮。清空内容保存即删除白名单。</div>
 <textarea name="logins" rows="4" style="width:100%;box-sizing:border-box;background:var(--bg-muted);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:.5rem;font-family:inherit;font-size:13px" placeholder="stirp&#10;Rika-xie">${escapeHtml(wakeList.join("\n"))}</textarea>
 <button type="submit" class="primary" style="margin-top:.5rem">保存白名单${wakeList.length > 0 ? `（当前 ${wakeList.length} 人）` : ""}</button>
+</form>`;
+
+  const decidersList = decidersRaw.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
+  const decidersCard = `<form class="card" method="POST" action="${escapeAttr(`${aiBase}/deciders`)}">
+<h2>👑 决策者（Deciders）</h2>
+<div class="hint">本项目<b>最终决策者</b>的账号（逗号或换行分隔，<b>第一位为主 owner</b>）。AI 收到的每条指令都会带上这份名单：只有他们的明确表态算「最终决定」，其他人的确认/同意/拍板一律是参考意见——防止外部用户的一句话被当成 owner 拍板。不配置时 AI 默认视仓库 owner 为决策者；配置后进入严格模式：不在唤醒白名单/决策者里的外部用户评论会被标记为不可信数据。</div>
+<textarea name="deciders" rows="3" style="width:100%;box-sizing:border-box;background:var(--bg-muted);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:.5rem;font-family:inherit;font-size:13px" placeholder="owner&#10;core-maintainer">${escapeHtml(decidersList.join("\n"))}</textarea>
+<button type="submit" class="primary" style="margin-top:.5rem">保存决策者${decidersList.length > 0 ? `（当前 ${decidersList.length} 人）` : ""}</button>
 </form>`;
 
   const concurrencyCard = `<form class="card" method="POST" action="${escapeAttr(`${aiBase}/concurrency`)}">
@@ -107,6 +116,7 @@ ${projectSettingsTabsHTML(project.owner, project.name, "ai")}
 <p class="hint">两个独立控制：<b>🔔 自动接单</b>控制是否自动派新单（不影响运行中）；<b>⏹️ 停止</b>杀死当前所有运行中AI会话（不影响接单状态）。模型选择请去 <a href="${escapeAttr(`/${encodeURIComponent(project.owner)}/${encodeURIComponent(project.name)}/settings/model`)}">⚙️ 模型</a> 标签页。</p>
 ${dispatchCard}
 ${wakeCard}
+${decidersCard}
 ${communityCard}
 ${concurrencyCard}
 ${haltCard}
