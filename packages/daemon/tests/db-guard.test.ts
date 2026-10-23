@@ -16,7 +16,7 @@ describe("db guard: BUN_TEST must not open non-temp databases", () => {
       cmd: [
         process.execPath,
         "-e",
-        `process.env.BUN_TEST = "1"; process.env.WORK_DB_PATH = ${JSON.stringify(sentinel)};
+        `process.env.NODE_ENV = "test"; process.env.WORK_DB_PATH = ${JSON.stringify(sentinel)};
          const { initDB } = require("./src/db.ts");
          initDB().then(
            () => { console.error("OPENED"); process.exit(0); },
@@ -38,7 +38,7 @@ describe("db guard: BUN_TEST must not open non-temp databases", () => {
       cmd: [
         process.execPath,
         "-e",
-        `process.env.BUN_TEST = "1"; process.env.WORK_DB_PATH = ${JSON.stringify(okPath)};
+        `process.env.NODE_ENV = "test"; process.env.WORK_DB_PATH = ${JSON.stringify(okPath)};
          const { initDB } = require("./src/db.ts");
          initDB().then(
            () => { console.error("OK"); process.exit(0); },

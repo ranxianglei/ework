@@ -313,8 +313,10 @@ export async function initDB(): Promise<AsyncDatabase> {
   // the repo root (`bun test tests/concurrency.test.ts`) skips it entirely and
   // the process inherits whatever WORK_DB_PATH the caller had. That exact shape
   // wiped the production fleet DB on 2026-10-23 (ework incident, ghost daemon
-  // host-V). Refuse instead of opening.
-  if (process.env.BUN_TEST && DB_DRIVER !== "mysql" && !DB_PATH.startsWith(tmpdir())) {
+  // host-V). Note the runner sets NODE_ENV=test (NOT BUN_TEST — verified on the
+  // fleet VM with an env probe). Refuse instead of opening.
+  const underTest = process.env.NODE_ENV === "test" || !!process.env.BUN_TEST;
+  if (underTest && DB_DRIVER !== "mysql" && !DB_PATH.startsWith(tmpdir())) {
     throw new Error(
       `refusing to open non-temp database ${DB_PATH} under BUN_TEST — tests must run with an isolated WORK_DB_PATH (start bun test from packages/daemon so the preload applies)`,
     );
