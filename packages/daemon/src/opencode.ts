@@ -2828,17 +2828,36 @@ export class Engine {
         // another session — #3975 starved ~10h while spawns flowed via this
         // path. Yield to the global drain (age grace 10min to avoid thrash
         // when a batch clusters in time).
+        let yieldToOlder = false;
         try {
           const oldest = await this.store.getOldestPendingCreatedAt();
           if (
             oldest &&
             next.createdAt.getTime() > oldest.getTime() + 10 * 60_000
           ) {
-            void this.drainGlobalPending();
-            return;
+            yieldToOlder = true;
           }
         } catch {
           /* fairness check is best-effort */
+        }
+        if (yieldToOlder) {
+          // Release the claim before yielding. The initially dispatched
+          // message was already claimed running by the caller (drain CAS /
+          // webhook dispatch); bailing out without releasing leaves a
+          // running row with no process that the reconciler parks and the
+          // stranded-resurrect sweep revives every cycle — the
+          // claim→yield→park→resurrect carousel (2026-10-23). Follow-up
+          // rows (from the expiry chain below) were fetched from pending
+          // and need no release.
+          if (next.id === msg.id) {
+            await this.store.updateMessageStatus(next.id, "pending");
+            this.running.delete(k);
+            this.currentMessage.delete(k);
+            await this.store.updateSession(session.id, { state: "idle" });
+            log.info(`engine: fairness yield — released claim on msg ${next.id.slice(0, 8)} for ${k} (older work waiting)`);
+          }
+          void this.drainGlobalPending();
+          return;
         }
         // Age from pending_since (when it entered/last re-entered pending),
         // NOT created_at: recover() shifts pending_since to now on restart,

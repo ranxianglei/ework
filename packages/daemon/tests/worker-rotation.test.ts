@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach, vi } from "bun:test";
 import { Engine } from "../src/opencode";
 
 const makeSelf = () => {
@@ -90,17 +90,25 @@ describe("infra idle-fill (owner policy 2026-10-20)", () => {
 describe("queue fairness guard", () => {
   test("newer per-session candidate yields to older global pending", async () => {
     const self = makeSelf();
+    self.running = new Set();
+    self.currentMessage = new Map();
     const older = new Date(Date.now() - 30 * 60_000);
     const newer = new Date(Date.now() - 1 * 60_000);
     let drained = false;
+    const updateMessageStatus = vi.fn(async () => {});
+    const updateSession = vi.fn(async () => {});
     self.store = {
       getOldestPendingCreatedAt: async () => older,
+      updateMessageStatus,
+      updateSession,
     };
     self.startObserver = () => {};
     self.drainGlobalPending = async () => { drained = true; };
     const msg = { id: "m1", createdAt: newer, pendingSince: newer };
     await (self as { dequeueOrIdle(k: string, s: unknown, i: unknown, m: unknown): Promise<void> }).dequeueOrIdle("k@git:x/y#1@ework-daemon", { id: "s1", name: "ework-daemon" }, { id: "i1", trackerType: "gitea", trackerScopeKey: "x/y", trackerIssueId: 1 }, msg as never);
     expect(drained).toBe(true);
+    expect(updateMessageStatus).toHaveBeenCalledWith("m1", "pending");
+    expect(updateSession).toHaveBeenCalledWith("s1", { state: "idle" });
   });
 
   test("globally-oldest message proceeds without yielding", async () => {
