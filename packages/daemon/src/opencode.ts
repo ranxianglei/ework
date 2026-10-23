@@ -2272,8 +2272,11 @@ export class Engine {
         // superseded by a newer dispatch — if its row is still 'running'
         // (the replacement claimed its own row), park it so the zombie
         // factory stops. Same row reused by the replacement is untouched
-        // (currentMessage then equals msg.id).
-        if (this.currentMessage.get(k) !== msg.id) {
+        // (currentMessage then equals msg.id). destroy() clears
+        // currentMessage before SIGKILL — a shutdown kill is NOT
+        // supersession; leave the row 'running' for recover() to settle
+        // (it only closes stale ⏳ for running rows, #420).
+        if (!this.destroyed && this.currentMessage.get(k) !== msg.id) {
           await this.store.updateMessageStatus(msg.id, "interrupted").catch(() => {});
         }
         return;
