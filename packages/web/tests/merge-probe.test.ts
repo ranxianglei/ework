@@ -18,14 +18,15 @@ describe("mergeProbeCandidates", () => {
     expect(got).toEqual([1, 2, 7]);
   });
 
-  test("skips PRs older than 48h, closed PRs, and plain issues", () => {
+  test("keeps 72h-old PRs in the 5d window but skips older, closed, and plain issues", () => {
     const issues = [
-      pr(3, "2026-10-03T11:00:00Z"), // 49h old — outside the 48h window
+      pr(3, "2026-10-02T13:00:00Z"), // 3 days old — inside the 5-day window
+      pr(8, "2026-09-29T11:00:00Z"), // 6 days old — outside the 5-day window
       pr(4, "2026-10-05T11:00:00Z", "closed"),
       { ...pr(5, "2026-10-05T11:00:00Z"), pull_request: undefined },
     ];
     const got = mergeProbeCandidates(issues, new Map(), now);
-    expect(got).toEqual([]);
+    expect(got).toEqual([3]);
   });
 
   test("skips PRs whose updated_at has not moved since the last probe", () => {

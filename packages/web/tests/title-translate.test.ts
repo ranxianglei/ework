@@ -11,7 +11,7 @@ let labelPosts: { n: number }[] = [];
 let labelCreates: number[] = [];
 
 function gi(n: number, over: Partial<any> = {}): any {
-  const ts = `2026-10-01T00:00:${String(n).padStart(2, "0")}Z`;
+  const ts = `2026-10-01T00:00:${String(n % 60).padStart(2, "0")}Z`;
   return {
     number: n,
     title: `entry ${n}`,
@@ -25,11 +25,12 @@ function gi(n: number, over: Partial<any> = {}): any {
 }
 
 function mockFetch() {
-  globalThis.fetch = (async (input: any) => {
+  globalThis.fetch = (async (input: any, init?: any) => {
     const url = String(input instanceof Request ? input.url : input);
+    const method = String((input instanceof Request ? input.method : init?.method) ?? "GET");
     if (url.includes("/issues?")) return Response.json(issueList);
     if (/\/issues\/\d+\/comments/.test(url)) return Response.json([]);
-    if (/POST/.test(String(input.method ?? "GET"))) {
+    if (/POST/.test(method)) {
       const m = url.match(/\/issues\/(\d+)\/labels$/);
       if (m) { labelPosts.push({ n: Number(m[1]) }); return Response.json([]); }
       if (url.endsWith("/labels")) { labelCreates.push(1); return Response.json({}); }
@@ -56,6 +57,8 @@ async function setup(cursor: string | null = "2026-09-30T00:00:00Z") {
     "http://origin.local",
     false,
     true,
+    undefined,
+    true,
   );
   return { sync, projectId: project.id };
 }
@@ -80,7 +83,7 @@ describe("ingest title translation", () => {
     const { sync, projectId } = await setup();
     await sync.pollOnce();
     const row = await getIssueByUpstreamNumber(projectId, 11);
-    expect(row?.title).toBe("Fix session reset leak 12 | 修复会话重置后指针残留");
+    expect(row?.title).toBe("Fix session reset leak 11 | 修复会话重置后指针残留");
   });
 
   test("non-CJK titles pass through untouched", async () => {
@@ -159,7 +162,7 @@ describe("ingest title translation", () => {
       calls += 1;
       return `Translation of ${t}`;
     });
-    const { sync } = await setup();
+    const { sync, projectId } = await setup();
     // Round 1: plain EN PR title.
     issueList = [gi(21, { title: "Enrich auto-filed diagnostics reports", pull_request: {} })];
     mockFetch();
@@ -167,7 +170,7 @@ describe("ingest title translation", () => {
     // Simulate write-back: upstream now returns our own composed title.
     issueList = [gi(21, { title: "[PR] Enrich auto-filed diagnostics reports", pull_request: {}, updated_at: "2026-10-01T00:02:00Z" })];
     await sync.pollOnce();
-    const row = await getIssueByUpstreamNumber((await setup()).projectId, 21);
+    const row = await getIssueByUpstreamNumber(projectId, 21);
     expect(row?.title).toBe("[PR] Enrich auto-filed diagnostics reports");
     // CJK variant: bilingual title comes back — lead reused, not re-translated.
     issueList = [gi(22, { title: "排队缺陷", pull_request: {} })];
@@ -190,7 +193,7 @@ describe("ingest title translation", () => {
     await ensureIssueHasLabel(projectId, row.id, "bug", "#d73a4a");
     await ensureIssueHasLabel(projectId, row.id, "p2", "#d93f0b");
     // Upstream already shows the composed title AND an existing GH label.
-    issueList = [gi(81, { title: "EN 排队缺陷 | 排队缺陷", labels: [{ name: "bug" }] })];
+    issueList = [gi(81, { title: "EN 排队缺陷 | 排队缺陷", labels: [{ name: "bug" }], updated_at: "2026-10-01T00:03:00Z" })];
     labelPosts = []; labelCreates = [];
     await sync.pollOnce();
     // bug already upstream -> only p2 must be posted; no repo-label creation needed.

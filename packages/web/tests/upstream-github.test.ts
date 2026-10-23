@@ -33,7 +33,7 @@ afterEach(async () => {
   const db = getDB();
   const mysql = db.dialect === "mysql";
   await db.exec(mysql ? "SET FOREIGN_KEY_CHECKS = 0" : "PRAGMA foreign_keys = OFF");
-  for (const t of ["comments", "issues", "webhook_deliveries", "upstream_sync", "projects", "users"]) {
+  for (const t of ["comments", "issues", "webhook_deliveries", "webhooks", "upstream_sync", "projects", "users"]) {
     await db.exec(`DELETE FROM {{${t}}}`);
   }
   await db.exec(mysql ? "SET FOREIGN_KEY_CHECKS = 1" : "PRAGMA foreign_keys = ON");
@@ -70,6 +70,7 @@ function mockFetch() {
   globalThis.fetch = (async (input: any) => {
     const url = String(input instanceof Request ? input.url : input);
     calledUrls.push(url);
+    if (url.startsWith("http://hook.local/")) return new Response("{}", { status: 200 });
     if (url.startsWith("https://api.github.com/repos/acme/widget/issues/comments")) {
       return Response.json(repoComments);
     }
