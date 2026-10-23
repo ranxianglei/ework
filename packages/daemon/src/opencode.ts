@@ -836,7 +836,8 @@ export class Engine {
   private replyStamps = new Map<string, number[]>();
   private wakeWhitelistCache = new Map<string, { at: number; logins: string[]; communityWake: boolean; deciders: string[] }>();
   // One fail-open warn per project per process (see projectAuthority).
-  private readonly failOpenWarned = new Set<string>();
+  // Not readonly: ??= below re-creates it for prototype-only instances (Object.create(Engine.prototype) skips field initializers).
+  private failOpenWarned = new Set<string>();
   private externalWakeStamps = new Map<string, number[]>();
 
   private static MAX_INLINE_SIZE = 4000;
@@ -940,14 +941,15 @@ export class Engine {
   // still honored (it was a prior web decision) but an empty first fetch
   // fails closed.
   private async projectWakeConfig(scopeKey: string): Promise<{ logins: string[]; communityWake: boolean; deciders: string[] }> {
-    const hit = this.wakeWhitelistCache.get(scopeKey);
+    const cache = (this.wakeWhitelistCache ??= new Map());
+    const hit = cache.get(scopeKey);
     if (hit && Date.now() - hit.at < 60_000) return { logins: hit.logins, communityWake: hit.communityWake, deciders: hit.deciders };
     const parts = scopeKey.split("/");
     const owner = parts[0] ?? "";
     const repo = parts.slice(1).join("/");
     if (!owner || !repo) return { logins: [], communityWake: false, deciders: [] };
-    const url = `${this.cfg.gitea.url}/api/v1/wake-logins?owner=${encodeURIComponent(owner)}&repo=${encodeURIComponent(repo)}`;
     try {
+      const url = `${this.cfg.gitea.url}/api/v1/wake-logins?owner=${encodeURIComponent(owner)}&repo=${encodeURIComponent(repo)}`;
       const resp = await fetch(url, { signal: AbortSignal.timeout(5000), headers: { Authorization: `token ${this.cfg.gitea.token}` } });
       if (!resp.ok) throw new Error(`web returned ${resp.status}`);
       const data = await resp.json() as { logins?: unknown; communityWake?: boolean; deciders?: unknown };
@@ -956,7 +958,7 @@ export class Engine {
       const logins = parseList(data.logins);
       const deciders = parseList(data.deciders);
       const communityWake = data.communityWake === true;
-      this.wakeWhitelistCache.set(scopeKey, { at: Date.now(), logins, communityWake, deciders });
+      cache.set(scopeKey, { at: Date.now(), logins, communityWake, deciders });
       return { logins, communityWake, deciders };
     } catch (err) {
       log.warn(`engine: wake whitelist query failed for ${scopeKey}: ${(err as Error).message}${hit ? " — using stale cache" : " — fail-closed"}`);
@@ -972,9 +974,10 @@ export class Engine {
   private async projectAuthority(scopeKey: string): Promise<ProjectAuthority> {
     const ownerLogin = scopeKey.split("/")[0] ?? "";
     const cfg = await this.projectWakeConfig(scopeKey);
+    const warned = (this.failOpenWarned ??= new Set());
     if (cfg.logins.length === 0 && cfg.deciders.length === 0 && this.cfg.daemon.wakeLogins.length === 0
-      && !this.failOpenWarned.has(scopeKey)) {
-      this.failOpenWarned.add(scopeKey);
+      && !warned.has(scopeKey)) {
+      warned.add(scopeKey);
       log.warn(`engine: no wake whitelist or deciders configured for ${scopeKey} — every author is treated as trusted (fail-open). Configure 唤醒白名单/决策者 on the 🤖 AI settings page to tighten.`);
     }
     return { ownerLogin, logins: cfg.logins, deciders: cfg.deciders };
