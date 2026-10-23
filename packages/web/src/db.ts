@@ -146,10 +146,40 @@ function migrateIssuesTable(db: Database): void {
   if (!have.has("upstream_merge_checked_at")) {
     db.exec(applyPrefix("ALTER TABLE {{issues}} ADD COLUMN upstream_merge_checked_at TEXT"));
   }
+  if (!have.has("upstream_conflict_state")) {
+    db.exec(applyPrefix("ALTER TABLE {{issues}} ADD COLUMN upstream_conflict_state TEXT"));
+  }
+  if (!have.has("upstream_ci_state")) {
+    db.exec(applyPrefix("ALTER TABLE {{issues}} ADD COLUMN upstream_ci_state TEXT"));
+  }
+  if (!have.has("kind")) {
+    db.exec(applyPrefix("ALTER TABLE {{issues}} ADD COLUMN kind TEXT NOT NULL DEFAULT 'issue'"));
+  }
+  // The pre-discussions unique index keyed (project_id, upstream_issue_number)
+  // only; GitHub numbers issues and discussions independently, so a mirrored
+  // discussion can legally collide with an issue number. Recreate the index
+  // scoped by kind when the on-disk version predates that column.
+  const idx = db.query(
+    "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?",
+  ).get(DB_PREFIX + "issues_project_upstream") as { sql: string } | undefined;
+  if (idx && !/kind/.test(idx.sql)) {
+    db.exec(applyPrefix("DROP INDEX issues_project_upstream"));
+    db.exec(applyPrefix(
+      "CREATE UNIQUE INDEX issues_project_upstream ON {{issues}} (project_id, upstream_issue_number, kind) WHERE upstream_issue_number IS NOT NULL"
+    ));
+  }
 }
 
 // SQLite cannot ALTER a column constraint, so dropping attachments.issue_id
 // NOT NULL (new-issue orphan uploads) requires a table rebuild.
+function migrateUpstreamSyncTable(db: Database): void {
+  const have = tableColumns(db, "upstream_sync");
+  if (have.size === 0) return;
+  if (!have.has("discussion_cursor")) {
+    db.exec(applyPrefix("ALTER TABLE {{upstream_sync}} ADD COLUMN discussion_cursor TEXT"));
+  }
+}
+
 function migrateAttachmentsTable(db: Database): void {
   const rows = db.query(applyPrefix("PRAGMA table_info({{attachments}})")).all() as { name: string; notnull: number }[];
   if (rows.length === 0) return;
@@ -288,6 +318,7 @@ class SqliteDriver implements AsyncDatabase {
   migratePatTable(db);
   migrateProjectsTable(db);
   migrateIssuesTable(db);
+  migrateUpstreamSyncTable(db);
   migrateCommentsTable(db);
   migrateLabelsTable(db);
   migrateAttachmentsTable(db);
@@ -422,6 +453,25 @@ async function migrateMysqlAttachmentsNullable(pool: Pool): Promise<void> {
   }
 }
 
+async function migrateMysqlDiscussions(pool: Pool): Promise<void> {
+  await migrateMysqlColumn(pool, "issues", "upstream_ci_state", "upstream_ci_state VARCHAR(512) DEFAULT NULL");
+  await migrateMysqlColumn(pool, "issues", "upstream_conflict_state", "upstream_conflict_state VARCHAR(128) DEFAULT NULL");
+  await migrateMysqlColumn(pool, "issues", "kind", "kind VARCHAR(16) NOT NULL DEFAULT 'issue'");
+  await migrateMysqlColumn(pool, "upstream_sync", "discussion_cursor", "discussion_cursor VARCHAR(40) DEFAULT NULL");
+  try {
+    const [cols] = await pool.query(
+      `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND INDEX_NAME = 'uq_issues_project_upstream' GROUP BY COLUMN_NAME`
+    );
+    const names = new Set((Array.isArray(cols) ? (cols as { COLUMN_NAME: string }[]) : []).map((r) => r.COLUMN_NAME));
+    if (!names.has("kind")) {
+      await pool.query(applyPrefix("DROP INDEX uq_issues_project_upstream ON {{issues}}"));
+      await pool.query(applyPrefix("CREATE UNIQUE INDEX uq_issues_project_upstream ON {{issues}} (project_id, upstream_issue_number, kind)"));
+    }
+  } catch (e) {
+    console.warn("[db] MySQL issues upstream index re-scope failed:", (e as Error).message);
+  }
+}
+
 async function migrateMysqlColumn(pool: Pool, table: string, column: string, ddl: string): Promise<void> {  try {
     const [cols] = await pool.query(
       `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?`,
@@ -508,6 +558,7 @@ class MysqlDriver implements AsyncDatabase {
       await migrateMysqlProjectsVisibility(pool);
       await migrateMysqlIssuesAiStatus(pool);
       await migrateMysqlAttachmentsNullable(pool);
+      await migrateMysqlDiscussions(pool);
     }
     return new MysqlDriver(pool);
   }

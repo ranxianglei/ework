@@ -139,6 +139,64 @@ export async function addComment(
   );
 }
 
+export async function addDiscussionComment(
+  cfg: Config,
+  target: GiteaRepo,
+  discussionNumber: number,
+  body: string
+): Promise<GiteaCommentCreateResponse> {
+  if (isGithubTarget(cfg)) {
+    // GitHub has no REST route to create discussion comments (POST → 404).
+    // Use the GraphQL addDiscussionComment mutation with the discussion node id.
+    const discussion = await giteaFetch<{ node_id: string }>(
+      cfg,
+      `${apiPrefix(cfg)}/repos/${encodeURIComponent(target.owner)}/${encodeURIComponent(target.repo)}/discussions/${discussionNumber}`
+    );
+    const gqlUrl = "https://api.github.com/graphql";
+    const res = await fetch(gqlUrl, {
+      method: "POST",
+      headers: {
+        Authorization: `token ${cfg.GITEA_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        query:
+          "mutation($d: ID!, $b: String!) { addDiscussionComment(input: {discussionId: $d, body: $b}) { comment { id databaseId } } }",
+        variables: { d: discussion.node_id, b: body },
+      }),
+    });
+    const text = await res.text();
+    if (!res.ok) {
+      throw new GiteaApiError(
+        res.status,
+        text,
+        `GitHub GraphQL addDiscussionComment → ${res.status}`
+      );
+    }
+    const parsed = JSON.parse(text) as {
+      data?: { addDiscussionComment?: { comment?: { databaseId?: number; id?: string } } };
+      errors?: { message: string }[];
+    };
+    if (parsed.errors?.length) {
+      throw new GiteaApiError(
+        422,
+        text,
+        `GitHub GraphQL addDiscussionComment errors: ${parsed.errors.map((e) => e.message).join("; ")}`
+      );
+    }
+    const dbId = parsed.data?.addDiscussionComment?.comment?.databaseId ?? 0;
+    return { id: dbId } as GiteaCommentCreateResponse;
+  }
+  return giteaFetch<GiteaCommentCreateResponse>(
+    cfg,
+    `${apiPrefix(cfg)}/repos/${encodeURIComponent(target.owner)}/${encodeURIComponent(target.repo)}/discussions/${discussionNumber}/comments`,
+    {
+      method: "POST",
+      body: JSON.stringify({ body }),
+    }
+  );
+}
+
 export async function addReaction(
   cfg: Config,
   target: GiteaRepo,

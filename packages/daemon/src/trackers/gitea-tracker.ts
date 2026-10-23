@@ -226,6 +226,26 @@ export class GiteaTracker implements IssueTracker {
       };
     }
 
+    if (action === "ci_failed") {
+      const ci = (payload as Record<string, unknown>).ci as
+        | { sha?: string; checks?: { name: string; html_url?: string; conclusion: string }[] }
+        | undefined;
+      return {
+        type: "ci_failed",
+        ref,
+        dispatch_off: dispatchOff,
+        issue: {
+          title: issue.title as string,
+          body: (issue.body as string) ?? "",
+          state: (issue.state as string) ?? "open",
+          author: issueUser?.login ?? "",
+          ai_status: aiStatus,
+        },
+        ci: { sha: ci?.sha ?? "", checks: ci?.checks ?? [] },
+        model,
+      };
+    }
+
     if (action === "merge_conflict") {
       const mergeState = typeof (payload as Record<string, unknown>).merge_state === "string"
         ? (payload as Record<string, unknown>).merge_state as string
@@ -245,6 +265,21 @@ export class GiteaTracker implements IssueTracker {
         model,
         runtime,
         cloneUrl,
+        sender,
+      };
+    }
+
+    if (action === "boosted") {
+      return {
+        type: "issue_boosted" as const,
+        ref,
+        issue: {
+          title: issue.title as string,
+          body: (issue.body as string) ?? "",
+          state: (issue.state as string) ?? "open",
+          author: issueUser?.login ?? "",
+          ai_status: aiStatus,
+        },
         sender,
       };
     }

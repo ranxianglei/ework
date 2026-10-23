@@ -79,6 +79,9 @@ export interface IssueRow {
   upstream_issue_number: number | null;
   upstream_mergeable_state: string | null;
   upstream_merge_checked_at: string | null;
+  upstream_ci_state: string | null;
+  upstream_conflict_state: string | null;
+  kind: "issue" | "discussion";
 }
 
 export interface IssueWithMeta extends IssueRow {
@@ -463,6 +466,7 @@ export interface CreateIssueOpts {
   model?: string;
   runtime?: string;
   upstreamIssueNumber?: number;
+  kind?: "issue" | "discussion";
 }
 
 function isoOr(value: string | undefined, fallback: string): string {
@@ -499,8 +503,8 @@ export async function createIssue(
           "SELECT COALESCE(MAX(number), 0) + 1 AS n FROM {{issues}} WHERE project_id = ?", [projectId]
         ))!;
     const info = await getDB().run(
-      "INSERT INTO {{issues}} (project_id, number, title, body, state, author, created_at, updated_at, closed_at, model, runtime, upstream_issue_number) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      [projectId, next.n, title, body, state, author, createdAt, updatedAt, closedAt, opts.model ?? "", opts.runtime ?? "", opts.upstreamIssueNumber ?? null]
+      "INSERT INTO {{issues}} (project_id, number, title, body, state, author, created_at, updated_at, closed_at, model, runtime, upstream_issue_number, kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [projectId, next.n, title, body, state, author, createdAt, updatedAt, closedAt, opts.model ?? "", opts.runtime ?? "", opts.upstreamIssueNumber ?? null, opts.kind ?? "issue"]
     );
     await getDB().run("UPDATE {{projects}} SET updated_at = ? WHERE id = ?", [updatedAt, projectId]);
     return (await getIssueById(info.insertId))!;
@@ -528,6 +532,14 @@ export async function setIssueState(
 
 export async function updateIssueAiStatus(issueId: number, status: string): Promise<void> {
   await getDB().run("UPDATE {{issues}} SET ai_status = ? WHERE id = ?", [status, issueId]);
+}
+
+export async function updateIssueConflictState(issueId: number, v: string | null): Promise<void> {
+  await getDB().run("UPDATE {{issues}} SET upstream_conflict_state = ? WHERE id = ?", [v, issueId]);
+}
+
+export async function updateIssueCiState(issueId: number, ciState: string | null): Promise<void> {
+  await getDB().run("UPDATE {{issues}} SET upstream_ci_state = ? WHERE id = ?", [ciState, issueId]);
 }
 
 export async function updateIssueMergeState(
@@ -575,6 +587,7 @@ export interface UpstreamSyncRow {
   poll_interval_ms: number;
   issue_cursor: string | null;
   comment_cursor: string | null;
+  discussion_cursor: string | null;
   last_poll_at: string | null;
   last_error: string | null;
   created_at: string;
@@ -637,7 +650,7 @@ export async function upsertUpstreamSync(projectId: number, opts: UpsertUpstream
 
 export async function updateUpstreamSyncState(
   projectId: number,
-  patch: { issueCursor?: string | null; commentCursor?: string | null; lastError?: string | null }
+  patch: { issueCursor?: string | null; commentCursor?: string | null; discussionCursor?: string | null; lastError?: string | null }
 ): Promise<void> {
   const sets: string[] = [];
   const args: (string | number | null)[] = [];
@@ -649,6 +662,10 @@ export async function updateUpstreamSyncState(
     sets.push("comment_cursor = ?");
     args.push(patch.commentCursor);
   }
+  if (patch.discussionCursor !== undefined) {
+    sets.push("discussion_cursor = ?");
+    args.push(patch.discussionCursor);
+  }
   if (patch.lastError !== undefined) {
     sets.push("last_error = ?");
     args.push(patch.lastError);
@@ -659,10 +676,14 @@ export async function updateUpstreamSyncState(
   await getDB().run(`UPDATE {{upstream_sync}} SET ${sets.join(", ")} WHERE project_id = ?`, args);
 }
 
-export async function getIssueByUpstreamNumber(projectId: number, upstreamNumber: number): Promise<IssueRow | null> {
+export async function getIssueByUpstreamNumber(
+  projectId: number,
+  upstreamNumber: number,
+  kind: "issue" | "discussion" = "issue"
+): Promise<IssueRow | null> {
   return await getDB().get<IssueRow>(
-    "SELECT * FROM {{issues}} WHERE project_id = ? AND upstream_issue_number = ?",
-    [projectId, upstreamNumber]
+    "SELECT * FROM {{issues}} WHERE project_id = ? AND upstream_issue_number = ? AND kind = ?",
+    [projectId, upstreamNumber, kind]
   );
 }
 
@@ -993,6 +1014,22 @@ function validateLabel(t: LabelInput): { name: string; color: string; descriptio
   if (!LABEL_NAME_RE.test(name)) throw new StoreError(400, "标签名仅允许字母数字、空格、_ - . /，且不能以 / 开头");
   if (!LABEL_COLOR_RE.test(t.color)) throw new StoreError(400, "颜色须为 #RRGGBB");
   return { name, color: t.color, description: (t.description ?? "").trim(), exclusive: t.exclusive ? 1 : 0 };
+}
+
+/** Idempotently ensure a project label exists and is attached to the issue
+ *  (upstream sync uses this for the "pr" mirror badge, owner policy 2026-10-16). */
+export async function ensureIssueHasLabel(projectId: number, issueId: number, name: string, color: string): Promise<void> {
+  let label = await getDB().get<LabelRow>("SELECT * FROM {{labels}} WHERE project_id = ? AND name = ?", [projectId, name]);
+  if (!label) {
+    await getDB().run(
+      "INSERT OR IGNORE INTO {{labels}} (project_id, name, color, description, exclusive) VALUES (?, ?, ?, '', 0)",
+      [projectId, name, color],
+    );
+    label = await getDB().get<LabelRow>("SELECT * FROM {{labels}} WHERE project_id = ? AND name = ?", [projectId, name]);
+  }
+  if (label) {
+    await getDB().run("INSERT OR IGNORE INTO {{issue_labels}} (issue_id, label_id) VALUES (?, ?)", [issueId, label.id]);
+  }
 }
 
 export async function createLabel(projectId: number, input: LabelInput): Promise<LabelRow> {

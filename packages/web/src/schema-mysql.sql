@@ -59,8 +59,11 @@ CREATE TABLE IF NOT EXISTS {{issues}} (
   upstream_issue_number INT DEFAULT NULL,
   upstream_mergeable_state VARCHAR(32) DEFAULT NULL,
   upstream_merge_checked_at VARCHAR(40) DEFAULT NULL,
+  upstream_ci_state VARCHAR(512) DEFAULT NULL,
+  upstream_conflict_state VARCHAR(128) DEFAULT NULL,
+  kind       VARCHAR(16) NOT NULL DEFAULT 'issue',
   UNIQUE (project_id, number),
-  UNIQUE uq_issues_project_upstream (project_id, upstream_issue_number),
+  UNIQUE uq_issues_project_upstream (project_id, upstream_issue_number, kind),
   CONSTRAINT {{fk_issues_project}} FOREIGN KEY (project_id) REFERENCES {{projects}}(id) ON DELETE CASCADE,
   CONSTRAINT {{fk_issues_author}} FOREIGN KEY (author)     REFERENCES {{users}}(login)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -98,6 +101,7 @@ CREATE TABLE IF NOT EXISTS {{upstream_sync}} (
   poll_interval_ms INT NOT NULL DEFAULT 60000,
   issue_cursor     VARCHAR(40) DEFAULT NULL,
   comment_cursor   VARCHAR(40) DEFAULT NULL,
+  discussion_cursor VARCHAR(40) DEFAULT NULL,
   last_poll_at     VARCHAR(40) DEFAULT NULL,
   last_error       TEXT,
   created_at       VARCHAR(40) NOT NULL,

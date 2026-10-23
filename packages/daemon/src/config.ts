@@ -58,6 +58,10 @@ export const configSchema = z.object({
     capacity: z.coerce.number().int().positive().default(4),
     maxConcurrent: z.coerce.number().int().positive().default(4),
     maxConcurrentExplicit: z.boolean().default(false),
+    // API-slot accounting (owner policy 2026-10-23): a session silent for longer
+    // than this grace no longer occupies an API slot (long tool run); slots track
+    // real model concurrency, not process count.
+    apiIdleGraceMs: z.coerce.number().int().positive().default(180_000),
     heartbeatMs: z.coerce.number().int().positive().default(10_000),
     leaseTtlMs: z.coerce.number().int().positive().default(60_000),
     // Infra-failure auto-retry budget (web unreachable / ENOSPC / signal-kill).
@@ -66,6 +70,9 @@ export const configSchema = z.object({
     infraRetryBaseMs: z.coerce.number().int().positive().default(15_000),
     recoveryReport: z.boolean().default(true),
     projectPriorities: z.array(z.object({ scope: z.string().min(1), priority: z.number().int().min(0).max(1000) })).default([]),
+    conflictMaxConcurrent: z.coerce.number().int().min(1).max(8).default(1),
+    ciMaxConcurrent: z.coerce.number().int().min(1).max(8).default(1),
+    infraNightBoost: z.boolean().default(true),
   }),
   db: z.object({
     driver: z.enum(["sqlite", "mysql"]).default("sqlite"),
@@ -120,10 +127,14 @@ const TEST_DEFAULTS = {
 function readWorkSection() {
   const capacity = process.env.WORK_DAEMON_CAPACITY ? Number(process.env.WORK_DAEMON_CAPACITY) : 4;
   const maxConcurrentExplicit = process.env.WORK_MAX_CONCURRENT != null;
+  const apiIdleGraceMs = process.env.WORK_API_IDLE_GRACE_MS
+    ? Number(process.env.WORK_API_IDLE_GRACE_MS)
+    : 180_000;
   return {
     capacity,
     maxConcurrent: maxConcurrentExplicit ? Number(process.env.WORK_MAX_CONCURRENT) : capacity,
     maxConcurrentExplicit,
+    apiIdleGraceMs,
     heartbeatMs: process.env.WORK_DAEMON_HEARTBEAT_MS ? Number(process.env.WORK_DAEMON_HEARTBEAT_MS) : 10_000,
     leaseTtlMs: process.env.WORK_DAEMON_LEASE_TTL_MS ? Number(process.env.WORK_DAEMON_LEASE_TTL_MS) : 60_000,
     infraRetryMax: process.env.WORK_INFRA_RETRY_MAX != null && process.env.WORK_INFRA_RETRY_MAX !== ""
@@ -132,6 +143,13 @@ function readWorkSection() {
     infraRetryBaseMs: process.env.WORK_INFRA_RETRY_BASE_MS ? Math.max(1, Number(process.env.WORK_INFRA_RETRY_BASE_MS)) : 15_000,
     recoveryReport: !(process.env.WORK_RECOVERY_REPORT === "false" || process.env.WORK_RECOVERY_REPORT === "0"),
     projectPriorities: parseProjectPriorities(process.env.WORK_PROJECT_PRIORITIES),
+    infraNightBoost: process.env.WORK_INFRA_NIGHT_BOOST !== "0",
+    conflictMaxConcurrent: process.env.WORK_CONFLICT_MAX_CONCURRENT != null && process.env.WORK_CONFLICT_MAX_CONCURRENT !== ""
+      ? Math.min(8, Math.max(1, Math.trunc(Number(process.env.WORK_CONFLICT_MAX_CONCURRENT))))
+      : 1,
+    ciMaxConcurrent: process.env.WORK_CI_MAX_CONCURRENT != null && process.env.WORK_CI_MAX_CONCURRENT !== ""
+      ? Math.min(8, Math.max(1, Math.trunc(Number(process.env.WORK_CI_MAX_CONCURRENT))))
+      : 1,
   };
 }
 

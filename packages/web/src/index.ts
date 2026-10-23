@@ -102,6 +102,7 @@ import {
   emitIssueEvent,
   emitCommentEvent,
   emitStatusChanged,
+  emitIssueBoost,
   emitPingEvent,
   migrateWebhookEvents,
   listWebhooks,
@@ -418,11 +419,12 @@ const REPO_AI_RE = /^\/([^/]+)\/([^/]+)\/settings\/ai$/;
 const REPO_LABELS_RE = /^\/([^/]+)\/([^/]+)\/settings\/labels$/;
 const REPO_LABEL_ADD_RE = /^\/([^/]+)\/([^/]+)\/settings\/labels\/add$/;
 const REPO_LABEL_ACTION_RE = /^\/([^/]+)\/([^/]+)\/settings\/labels\/(\d+)\/(update|archive|unarchive|delete)$/;
-const REPO_ISSUE_HALT_RE = /^\/([^/]+)\/([^/]+)\/issues\/(\d+)\/(halt|resume|dispatch-off|dispatch-on|reset-session)$/;
+const REPO_ISSUE_HALT_RE = /^\/([^/]+)\/([^/]+)\/issues\/(\d+)\/(halt|resume|dispatch-off|dispatch-on|reset-session|boost)$/;
 const REPO_ISSUE_MODEL_RE = /^\/([^/]+)\/([^/]+)\/issues\/(\d+)\/model$/;
 const REPO_ISSUE_RUNTIME_RE = /^\/([^/]+)\/([^/]+)\/issues\/(\d+)\/runtime$/;
 const REPO_ISSUE_STATUS_RE = /^\/([^/]+)\/([^/]+)\/issues\/(\d+)\/ai-status$/;
 const API_ISSUE_LABELS_RE = /^\/api\/([^/]+)\/([^/]+)\/issues\/(\d+)\/labels$/;
+const API_REPO_LABELS_RE = /^\/api\/([^/]+)\/([^/]+)\/labels$/;
 const WH_ACTION_RE = /^\/__wh\/(\d+)\/(delete|toggle|test)$/;
 const SESSIONS_RE = /^\/sessions$/;
 const SESSION_VIEW_RE = /^\/sessions\/([A-Za-z0-9_-]+)$/;
@@ -1913,6 +1915,35 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     return json({ aiStatus: issue.ai_status ?? "", commentCount: issue.comment_count ?? 0 });
   }
 
+  const repoLabelsApi = url.pathname.match(API_REPO_LABELS_RE);
+  if (repoLabelsApi) {
+    const [, owner, repo] = repoLabelsApi;
+    if (!(owner && repo)) return json({ error: "bad path" }, 404);
+    const project = await getProject(owner, repo);
+    if (!project) return json({ error: "project not found" }, 404);
+    if (req.method === "GET") {
+      return json({ labels: await listLabels(project.id) });
+    }
+    if (req.method === "POST") {
+      if (!ctx.user || !(await canWriteProject(project.id, ctx.user))) {
+        return json({ error: "forbidden: needs writer role on project" }, 403);
+      }
+      const body = await req.json().catch(() => ({}));
+      try {
+        const created = await createLabel(project.id, {
+          name: String(body.name ?? ""),
+          color: String(body.color ?? "#666666"),
+          description: body.description === undefined ? undefined : String(body.description),
+          exclusive: body.exclusive === undefined ? undefined : Boolean(body.exclusive),
+        });
+        return json({ label: created }, 201);
+      } catch (e) {
+        return json({ error: errMsg(e) }, e instanceof StoreError ? e.status : 500);
+      }
+    }
+    return json({ error: "method not allowed" }, 405);
+  }
+
   const issueLabelsApi = url.pathname.match(API_ISSUE_LABELS_RE);
   if (issueLabelsApi) {
     const [, owner, repo, numStr] = issueLabelsApi;
@@ -2107,6 +2138,13 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
         const issue = await getIssueWithMeta(project.id, number);
         if (!issue) return json({ error: "issue not found" }, 404);
         const statusMap: Record<string, string> = { halt: "halted", resume: "", "dispatch-off": "dispatch_off", "dispatch-on": "" };
+      if (action === "boost") {
+        if (!(await canWriteProject(project.id, ctx.user))) {
+          return json({ error: "write role required" }, 403);
+        }
+        void emitIssueBoost(project.id, issue.id, ctx.user!.login, url.origin);
+        return json({ ok: true, boosted: true });
+      }
       if (action === "reset-session") {
         if (!(await canAdminProject(project.id, ctx.user))) {
           return json({ error: "admin role required" }, 403);

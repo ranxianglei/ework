@@ -5,18 +5,23 @@ import {
   getProjectById,
   getIssue,
   getIssueByUpstreamNumber,
+  listLabelsForIssue,
   linkIssueToUpstream,
   getCommentByUpstreamId,
   createIssue,
   ensureUser,
   postComment,
   editIssue,
+  ensureIssueHasLabel,
   updateIssueAiStatus,
   updateIssueMergeState,
+  updateIssueCiState,
   updateUpstreamSyncState,
   listEnabledUpstreamSyncs,
+  updateIssueConflictState,
 } from "./store";
-import { emitIssueEvent, emitCommentEvent, emitMergeConflictEvent } from "./webhooks";
+import { emitIssueEvent, emitCommentEvent, emitMergeConflictEvent, emitCiFailedEvent } from "./webhooks";
+import { getConfigAll } from "./db";
 import { log } from "./logger";
 import type { Config } from "./config";
 
@@ -59,13 +64,14 @@ function upstreamIssueNumberFromComment(gc: GiteaComment): number | null {
   return m ? Number(m[1]) : null;
 }
 
-export const MERGE_PROBE_WINDOW_MS = 86_400_000;
+export const MERGE_PROBE_WINDOW_MS = 432_000_000;
 export const MERGE_PROBE_PER_POLL = 5;
 
 // PR conflict state only changes when head or base moves, and any move bumps
 // the PR's updated_at — so probing only PRs whose updated_at advanced past the
 // last probe covers every transition with zero requests for quiet PRs
-// (owner policy: activity window is the trailing 24h, older PRs are skipped).
+// (owner policy 2026-10-19: activity window is the trailing 5 days — was 48h;
+// older PRs are skipped).
 export function mergeProbeCandidates(
   issues: GiteaIssue[],
   checkedAtByNumber: Map<number, string>,
@@ -87,6 +93,46 @@ export function mergeProbeCandidates(
 interface PullRequestPayload {
   mergeable?: boolean | null;
   mergeable_state?: string | null;
+  head?: { sha?: string | null } | null;
+}
+
+interface CheckRunPayload {
+  name?: string;
+  html_url?: string;
+  status?: string;
+  conclusion?: string | null;
+}
+
+// Per-PR CI-fix bookkeeping (owner policy 2026-10-14): sha tracks the last
+// failing head we dispatched for; attempts caps auto-fix cycles at 2 per PR
+// so a hopeless CI never loops the worker. Green builds reset the state.
+export interface CiProbeState {
+  sha: string;
+  attempts: number;
+}
+
+// Pure transition rule: emit on a NEW failing sha until 2 fix attempts per PR
+// are spent; green clears state; same sha never re-emits (loop guard).
+export function ciProbeDecision(
+  stored: CiProbeState | null,
+  sha: string,
+  failedCount: number,
+): { emit: boolean; next: CiProbeState | null } {
+  if (failedCount === 0) return { emit: false, next: null };
+  if (stored?.sha === sha) return { emit: false, next: stored };
+  if ((stored?.attempts ?? 0) >= 2) return { emit: false, next: stored };
+  return { emit: true, next: { sha, attempts: (stored?.attempts ?? 0) + 1 } };
+}
+
+export interface GithubDiscussion {
+  number: number;
+  title: string;
+  body: string | null;
+  state: string;
+  user: { login: string } | null;
+  created_at: string;
+  updated_at: string;
+  category?: { name?: string } | null;
 }
 
 // Canonical short states: dirty (real conflicts), behind (base moved, clean
@@ -105,15 +151,74 @@ export function syncOrigin(cfg: Config): string {
   return `http://127.0.0.1:${cfg.port}`;
 }
 
+function clipTitle(t: string): string {
+  // Mirror titles must fit the tracker's 255-char ceiling; a single overlong
+  // upstream title otherwise aborts the whole poll batch (observed wedge
+  // 2026-10-17: b-c#3476's 355-char title froze the comment stream).
+  return t.length > 255 ? t.slice(0, 254) + "…" : t;
+}
+
+const CJK_RE = /[\u4e00-\u9fff\u3040-\u30ff]/;
+
+async function defaultTranslateTitle(raw: string): Promise<string | null> {
+  // Ingest-time deterministic rename (owner policy 2026-10-17): CJK upstream
+  // titles get an English lead segment at import, composed by the pipeline
+  // instead of relying on agents (agent renames drifted in both format and
+  // order — b-c#3373 appended the translation at the tail).
+  try {
+    const proc = Bun.spawn(["ework-translate", raw], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const timer = setTimeout(() => proc.kill(), 10_000);
+    const out = await new Response(proc.stdout).text();
+    clearTimeout(timer);
+    const line = out
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean)[0];
+    if (!line) return null;
+    return line.replace(/\s+/g, " ").slice(0, 120);
+  } catch {
+    return null;
+  }
+}
+
+let titleTranslator: (raw: string) => Promise<string | null> = defaultTranslateTitle;
+
+export function setTitleTranslator(fn: (raw: string) => Promise<string | null>): void {
+  titleTranslator = fn;
+}
+
 export class UpstreamSync {
   private readonly sync: UpstreamSyncRow;
   private readonly project: ProjectRow;
   private readonly origin: string;
+  private readonly discussionsEnabled: boolean;
+  private readonly issuesEnabled: boolean;
+  private readonly discussionWhitelist: string[] | null;
+  private readonly titleTranslate: boolean;
+  private readonly titleCache = new Map<string, string>();
 
-  constructor(sync: UpstreamSyncRow, project: ProjectRow, origin: string) {
+  constructor(
+    sync: UpstreamSyncRow,
+    project: ProjectRow,
+    origin: string,
+    discussionsEnabled = false,
+    issuesEnabled = true,
+    discussionWhitelist?: string,
+    titleTranslate = false,
+  ) {
     this.sync = sync;
     this.project = project;
     this.origin = origin;
+    const githubUpstream = sync.base_url.toLowerCase().includes("github.com");
+    this.discussionsEnabled = discussionsEnabled && githubUpstream;
+    this.issuesEnabled = issuesEnabled;
+    this.discussionWhitelist = discussionWhitelist
+      ? discussionWhitelist.split(",").map((x) => x.trim()).filter(Boolean)
+      : null;
+    this.titleTranslate = titleTranslate && githubUpstream;
   }
 
   private headers(): Record<string, string> {
@@ -128,6 +233,25 @@ export class UpstreamSync {
         : this.sync.base_url;
       const prefix = base === "https://api.github.com" ? "" : "/api/v1";
       return `${base}${prefix}/repos/${this.sync.upstream_owner}/${this.sync.upstream_repo}${path}`;
+  }
+
+  // Push the composed bilingual title back to the upstream issue so GitHub
+  // (what the owner reads) matches the mirror. Best-effort: failures log and
+  // skip — the mirror stays authoritative for our own display either way.
+  private async patchUpstreamTitle(gi: GiteaIssue, title: string): Promise<void> {
+    try {
+      const resp = await fetch(this.api(`/issues/${gi.number}`), {
+        method: "PATCH",
+        headers: { ...this.headers(), "Content-Type": "application/json" },
+        body: JSON.stringify({ title }),
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (!resp.ok) {
+        log.warn("upstream-sync: title write-back failed", { n: gi.number, status: resp.status });
+      }
+    } catch (err) {
+      log.warn("upstream-sync: title write-back error", { n: gi.number, err: String(err) });
+    }
   }
 
   private async fetchJson<T>(path: string): Promise<T | null> {
@@ -153,6 +277,44 @@ export class UpstreamSync {
     return this.sync.issue_cursor === null;
   }
 
+  // The pipeline PATCHes composed titles back upstream, so a later poll can
+  // see its own output as input. composeTitle must therefore be idempotent:
+  //  - strip repeated "[PR] " leads (else every cycle prepends another one —
+  //    the billion-context#3623 title storm, 2026-10-17);
+  //  - recognize an already-bilingual "EN | 原题" lead and reuse it instead of
+  //    re-translating the whole string (which would double the lead).
+  private static stripPrLeads(t: string): string {
+    return t.replace(/^(\[PR\] )+/g, "");
+  }
+
+  private async composeTitle(rawTitle: string | undefined, isPr: boolean, number: number): Promise<string> {
+    const stripped = UpstreamSync.stripPrLeads(rawTitle || `#${number}`);
+    const prefix = isPr ? "[PR] " : "";
+    if (!this.titleTranslate || !CJK_RE.test(stripped)) return clipTitle(prefix + stripped);
+    const composed = stripped.match(/^(.*?) \| ([^|]*)$/);
+    const lead = composed?.[1];
+    const tail = composed?.[2];
+    if (lead !== undefined && tail !== undefined && CJK_RE.test(lead) && !CJK_RE.test(tail) && tail.trim().length > 8) {
+      // Agent-mangled "CJK | EN" (English appended at the tail): normalize to
+      // the canonical "EN | CJK" shape by reusing the tail. Never translate
+      // the whole string here — a translator echo would duplicate the title
+      // on every poll (incident 2026-10-19 #3842).
+      return clipTitle(prefix + tail.trim() + " | " + lead.trim());
+    }
+    const raw = tail !== undefined && CJK_RE.test(tail) ? tail : stripped;
+    const cachedEn = lead ?? this.titleCache.get(raw);
+    let en = cachedEn;
+    if (en === undefined) {
+      en = (await titleTranslator(raw)) ?? "";
+      this.titleCache.set(raw, en);
+    }
+    // Echo guard: a "translation" that is still CJK (or identical to raw)
+    // must not be composed — `${en} | ${raw}` would then duplicate the title
+    // each poll cycle (incident 2026-10-19 #3842).
+    if (!en || en === raw || CJK_RE.test(en)) return clipTitle(prefix + raw);
+    return clipTitle(prefix + en + " | " + raw);
+  }
+
   private async importIssue(gi: GiteaIssue, emit: boolean): Promise<void> {
     const body = gi.body ?? "";
     // Issues ework-mirror created upstream reference their origin issue by
@@ -171,9 +333,10 @@ export class UpstreamSync {
     }
     if (body.includes("<!-- ework-mirror -->")) return;
     await ensureUser(gi.user?.login ?? "upstream", fromGithubBot(gi.user?.login) ? "bot" : "human");
+    const composedImportTitle = await this.composeTitle(gi.title, !!gi.pull_request, gi.number);
     await createIssue(
       this.project.id,
-      (gi.pull_request ? "[PR] " : "") + (gi.title || `#${gi.number}`),
+      composedImportTitle,
       gi.body ?? "",
       gi.user?.login ?? "upstream",
       {
@@ -191,9 +354,15 @@ export class UpstreamSync {
     // authorship: it silently ate PRs the owner opened themselves (or via an
     // agent-prepared body). Self-recognition now lives at the session level
     // (AGENTS.md: marker-PR = verify + report, don't redo).
-    if (emit) {
-      const created = await getIssueByUpstreamNumber(this.project.id, gi.number);
-      if (created) void emitIssueEvent(this.project.id, created.id, "opened", this.origin);
+    const created = await getIssueByUpstreamNumber(this.project.id, gi.number);
+    if (this.titleTranslate && composedImportTitle !== gi.title) {
+      await this.patchUpstreamTitle(gi, composedImportTitle);
+    }
+    if (gi.pull_request && created) {
+      await ensureIssueHasLabel(this.project.id, created.id, "pr", "#576699");
+    }
+    if (emit && created) {
+      void emitIssueEvent(this.project.id, created.id, "opened", this.origin);
     }
   }
 
@@ -220,10 +389,85 @@ export class UpstreamSync {
     if (state === "pending") return;
     const was = existing.upstream_mergeable_state;
     await updateIssueMergeState(existing.id, state, gi.updated_at ?? new Date().toISOString());
-    if (state === "dirty" && was !== "dirty") {
-      log.info(`upstream-sync: merge conflict detected on upstream PR #${gi.number} (${this.project.owner}/${this.project.name})`);
-      await emitMergeConflictEvent(this.project.id, existing.id, this.origin, state);
-      result.issuesUpdated++;
+    if (state === "dirty") {
+      // One-shot transition emission loses conflicts whose single event died in
+      // an outage window — the row then sticks at dirty forever (PR#3873 sat
+      // conflicted for a day with zero dispatch). Re-arm: while the conflict
+      // persists, re-emit every 6h until the state turns clean.
+      let lastEmit: number | null = null;
+      try {
+        lastEmit = existing.upstream_conflict_state
+          ? (JSON.parse(existing.upstream_conflict_state) as { lastEmit: number }).lastEmit
+          : null;
+      } catch {
+        lastEmit = null;
+      }
+      const REARM_MS = 6 * 60 * 60 * 1000;
+      if (was !== "dirty" || lastEmit === null || Date.now() - lastEmit > REARM_MS) {
+        log.info(`upstream-sync: merge conflict detected on upstream PR #${gi.number} (${this.project.owner}/${this.project.name})`);
+        await emitMergeConflictEvent(this.project.id, existing.id, this.origin, state);
+        await updateIssueConflictState(existing.id, JSON.stringify({ lastEmit: Date.now() }));
+        result.issuesUpdated++;
+      }
+    } else if (existing.upstream_conflict_state) {
+      await updateIssueConflictState(existing.id, null);
+    }
+  }
+
+  // CI-failure wake (owner policy 2026-10-14): probe check-runs for the PR's
+  // head sha; on a NEW failing sha (max 2 auto-fix attempts per PR) emit a
+  // ci_failed event so the daemon routes a sticky ci-worker at it. Conflicts
+  // got their auto lane first; CI failures now have one too.
+  private async probeCiState(gi: GiteaIssue, existing: IssueRow, result: UpstreamSyncPollResult): Promise<void> {
+    if (!this.isGithub || existing.kind !== "issue" || !gi.title.startsWith("[PR]")) return;
+    // CI probing is auxiliary telemetry: any failure here (network, API shape
+    // surprises, timeouts) must never abort the whole poll — the sync lanes
+    // are the primary payload (incident 2026-10-20: checks.filter TypeError
+    // killed every b-c poll for an hour).
+    try {
+    const pull = await this.fetchJson<PullRequestPayload>(`/pulls/${gi.number}`);
+    const sha = pull?.head?.sha ?? null;
+    if (!sha) return;
+    const checksResp = await this.fetchJson<CheckRunPayload[] | { check_runs?: CheckRunPayload[] }>(`/commits/${sha}/check-runs?filter=latest`);
+    if (!checksResp) return;
+    // The check-runs endpoint wraps the list in {total_count, check_runs};
+    // tolerate both shapes.
+    const checks: CheckRunPayload[] = Array.isArray(checksResp) ? checksResp : (checksResp.check_runs ?? []);
+    // In-progress runs have conclusion=null and must read as NEITHER green nor
+    // red — deciding here green-resets the attempt state, re-arming emission
+    // for the same logical failure after CI re-runs a superseded head
+    // (PR#3886 duplicate dispatch 2026-10-20). Wait for completion instead.
+    const allCompleted =
+      checks.length > 0 && checks.every((c: CheckRunPayload) => c.status === "completed");
+    if (!allCompleted) return;
+    const failed = checks.filter((c: CheckRunPayload) => c.conclusion === "failure");
+    if (failed.length === 0) {
+      if (existing.upstream_ci_state) await updateIssueCiState(existing.id, null);
+      return;
+    }
+    let stored: CiProbeState | null = null;
+    try {
+      stored = existing.upstream_ci_state ? (JSON.parse(existing.upstream_ci_state) as CiProbeState) : null;
+    } catch {
+      stored = null;
+    }
+    const decision = ciProbeDecision(stored, sha, failed.length);
+    if (!decision.emit) {
+      if (decision.next !== stored) await updateIssueCiState(existing.id, decision.next ? JSON.stringify(decision.next) : null);
+      return;
+    }
+    log.info(`upstream-sync: CI failure detected on upstream PR #${gi.number} (${this.project.owner}/${this.project.name})`);
+    await emitCiFailedEvent(
+      this.project.id,
+      existing.id,
+      this.origin,
+      sha,
+      failed.map((c) => ({ name: c.name ?? "check", html_url: c.html_url ?? "", conclusion: "failure" })),
+    );
+    await updateIssueCiState(existing.id, decision.next ? JSON.stringify(decision.next satisfies CiProbeState) : null);
+    result.issuesUpdated++;
+    } catch (err) {
+      log.warn(`upstream-sync: CI probe skipped for PR #${gi.number} (${this.project.owner}/${this.project.name}): ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -267,12 +511,16 @@ export class UpstreamSync {
       );
       if (!issues || issues.length === 0) break;
       for (const gi of issues) {
-        if (!(await getIssueByUpstreamNumber(this.project.id, gi.number))) {
-          await this.importIssue(gi, false);
-          result.issuesImported++;
+        try {
+          if (!(await getIssueByUpstreamNumber(this.project.id, gi.number))) {
+            await this.importIssue(gi, false);
+            result.issuesImported++;
+          }
+          result.commentsImported += await this.importIssueComments(gi, false);
+          if (gi.updated_at && (!cursor || gi.updated_at > cursor)) cursor = gi.updated_at;
+        } catch (err) {
+          log.warn(`upstream-sync: backfill item failed for #${gi.number}: ${String(err)} — skipping`);
         }
-        result.commentsImported += await this.importIssueComments(gi, false);
-        if (gi.updated_at && (!cursor || gi.updated_at > cursor)) cursor = gi.updated_at;
       }
       if (issues.length < 50) break;
     }
@@ -295,6 +543,7 @@ export class UpstreamSync {
     const prCandidates: { gi: GiteaIssue; existing: IssueRow }[] = [];
     if (issues) {
       for (const gi of issues) {
+       try {
         const existing = await getIssueByUpstreamNumber(this.project.id, gi.number);
         // Identity beats the cursor for imports: GitHub's sort=updated listing
         // lags seconds behind creation, so a fresh issue can sit below a cursor
@@ -310,11 +559,67 @@ export class UpstreamSync {
           await this.importIssue(gi, true);
           result.issuesImported++;
           result.commentsImported += await this.importIssueComments(gi, true);
-        } else if (await this.syncIssueState(existing, gi, true)) {
-          result.issuesUpdated++;
+        } else {
+          const composedTitle = await this.composeTitle(gi.title, !!gi.pull_request, gi.number);
+          // Repair-only recompose: if the mirror already carries a translated
+          // lead segment ("EN | 原题"), never rewrite it — translator output is
+          // not deterministic, so re-composing every poll would churn every
+          // title. Recompose only when the lead is missing (stripped/mangled).
+          const missingLead = !existing.title.includes(" | ");
+          if (missingLead && existing.title !== composedTitle) {
+            await editIssue(existing.id, { title: composedTitle });
+          }
+          // Label write-back: push agent-applied mirror labels to GitHub (add-only,
+          // never removes owner's GitHub-side labels). Creates missing repo-level
+          // taxonomy labels first. Owner policy 2026-10-18.
+          try {
+            const want = (await listLabelsForIssue(existing.id)).map((l) => l.name).filter((n) => n && n !== "pr");
+            if (want.length > 0) {
+              const gh = (await this.fetchJson<any[]>(`/issues/${gi.number}/labels`)) ?? [];
+              const have = new Set((gh as any[]).map((l: any) => String(l?.name)));
+              const missing = want.filter((n) => !have.has(n));
+              if (missing.length > 0) {
+                const repoLabels = (await this.fetchJson<any[]>(`/labels`)) ?? [];
+                const repoNames = new Set((repoLabels as any[]).map((l: any) => String(l?.name)));
+                for (const n of missing) {
+                  if (!repoNames.has(n)) {
+                    await fetch(this.api(`/labels`), {
+                      method: "POST",
+                      headers: { ...this.headers(), "Content-Type": "application/json" },
+                      body: JSON.stringify({ name: n, color: "0e8a16" }),
+                      signal: AbortSignal.timeout(15_000),
+                    });
+                    repoNames.add(n);
+                  }
+                }
+                await fetch(this.api(`/issues/${gi.number}/labels`), {
+                  method: "POST",
+                  headers: { ...this.headers(), "Content-Type": "application/json" },
+                  body: JSON.stringify({ labels: missing }),
+                  signal: AbortSignal.timeout(15_000),
+                });
+              }
+            }
+          } catch {
+            // best-effort: label sync must never break the poll cycle
+          }
+            if (this.titleTranslate && composedTitle !== gi.title) {
+              await this.patchUpstreamTitle(gi, composedTitle);
+            }
+          if (gi.pull_request) {
+            await ensureIssueHasLabel(this.project.id, existing.id, "pr", "#576699");
+          }
+          if (await this.syncIssueState(existing, gi, true)) {
+            result.issuesUpdated++;
+          }
         }
         if (existing && gi.pull_request && gi.state !== "closed") prCandidates.push({ gi, existing });
         if (gi.updated_at && (!issueCursor || gi.updated_at > issueCursor)) issueCursor = gi.updated_at;
+       } catch (err) {
+        // One bad item must never wedge the whole stream (2026-10-17 wedge
+        // lesson): log, skip its cursor advance, keep the batch moving.
+        log.warn(`upstream-sync: item failed for #${gi.number}: ${String(err)} — skipping this cycle`);
+       }
       }
     }
     const probeNumbers = mergeProbeCandidates(
@@ -325,6 +630,7 @@ export class UpstreamSync {
     for (const c of prCandidates) {
       if (!probeNumbers.includes(c.gi.number)) continue;
       await this.probeMergeState(c.gi, c.existing, result);
+      await this.probeCiState(c.gi, c.existing, result);
     }
 
     let commentCursor = this.sync.comment_cursor;
@@ -368,26 +674,157 @@ export class UpstreamSync {
     return result;
   }
 
+  private async importDiscussion(d: GithubDiscussion, emit: boolean): Promise<void> {
+    await ensureUser(d.user?.login ?? "upstream", fromGithubBot(d.user?.login) ? "bot" : "human");
+    const category = d.category?.name ? `[${d.category.name}] ` : "";
+    await createIssue(
+      this.project.id,
+      clipTitle(`${category}${d.title || `#${d.number}`}`),
+      d.body ?? "",
+      d.user?.login ?? "upstream",
+      {
+        createdAt: d.created_at,
+        updatedAt: d.updated_at,
+        state: d.state === "closed" ? "closed" : "open",
+        upstreamIssueNumber: d.number,
+        number: d.number,
+        kind: "discussion",
+      }
+    );
+    if (emit) {
+      const created = await getIssueByUpstreamNumber(this.project.id, d.number, "discussion");
+      if (created) void emitIssueEvent(this.project.id, created.id, "opened", this.origin);
+    }
+  }
+
+  private async importDiscussionComments(d: GithubDiscussion, emit: boolean): Promise<number> {
+    const local = await getIssueByUpstreamNumber(this.project.id, d.number, "discussion");
+    if (!local) return 0;
+    const comments = await this.fetchJson<GiteaComment[]>(`/discussions/${d.number}/comments?per_page=50`);
+    if (!comments) return 0;
+    let n = 0;
+    for (const gc of comments) {
+      if (await getCommentByUpstreamId(gc.id)) continue;
+      if ((gc.body ?? "").includes("<!-- ework-mirror -->")) continue;
+      const gcAuthor = gc.user?.login ?? "upstream";
+      await ensureUser(gcAuthor, fromGithubBot(gcAuthor) ? "bot" : "human");
+      const body = (gc.body ?? "") + "\n\n<!-- upstream-sync -->";
+      const row = await postComment(local.id, body, gcAuthor, {
+        createdAt: gc.created_at,
+        updatedAt: gc.updated_at,
+        upstreamCommentId: gc.id,
+      });
+      if (emit) void emitCommentEvent(this.project.id, local.id, row.id, this.origin);
+      n++;
+    }
+    return n;
+  }
+
+  private async syncDiscussionState(existing: IssueRow, d: GithubDiscussion, emit: boolean): Promise<boolean> {
+    const target: "open" | "closed" = d.state === "closed" ? "closed" : "open";
+    if (existing.state === target) return false;
+    await editIssue(existing.id, { state: target });
+    if (target === "closed" && existing.ai_status && existing.ai_status !== "completed") {
+      await updateIssueAiStatus(existing.id, "");
+    }
+    if (emit) {
+      void emitIssueEvent(this.project.id, existing.id, target === "closed" ? "closed" : "reopened", this.origin);
+    }
+    return true;
+  }
+
+  // Single-thread listening (owner policy 2026-10-18): when a whitelist is
+  // configured only listed discussion numbers sync; everything else in the
+  // repo (discussions AND issues, via issuesEnabled=false) stays untouched.
+  private discussionAllowed(n: number): boolean {
+    return !this.discussionWhitelist || this.discussionWhitelist.includes(String(n));
+  }
+
+  private async discussionsBackfill(): Promise<void> {
+    const list = await this.fetchJson<GithubDiscussion[]>("/discussions?per_page=50");
+    if (!list) {
+      await updateUpstreamSyncState(this.project.id, { discussionCursor: new Date().toISOString() });
+      return;
+    }
+    let cursor: string | null = null;
+    for (const d of list) {
+      if (!this.discussionAllowed(d.number)) continue;
+      if (!(await getIssueByUpstreamNumber(this.project.id, d.number, "discussion"))) {
+        await this.importDiscussion(d, false);
+      }
+      await this.importDiscussionComments(d, false);
+      if (d.updated_at && (!cursor || d.updated_at > cursor)) cursor = d.updated_at;
+    }
+    await updateUpstreamSyncState(this.project.id, { discussionCursor: cursor ?? new Date().toISOString() });
+  }
+
+  private async discussionsLive(): Promise<void> {
+    let cursor = this.sync.discussion_cursor;
+    // The REST discussions list has no updated-desc ordering guarantee; a
+    // fixed first page silently hides recently-active threads that sit deeper
+    // in the list (incident: #5795 at index 45 invisible to per_page=30,
+    // 2026-10-19). Walk up to 3 pages of 100 per poll.
+    for (let page = 1; page <= 3; page++) {
+      const list = await this.fetchJson<GithubDiscussion[]>(`/discussions?per_page=100&page=${page}`);
+      if (!list || list.length === 0) break;
+      for (const d of list) {
+        if (!this.discussionAllowed(d.number)) continue;
+        const existing = await getIssueByUpstreamNumber(this.project.id, d.number, "discussion");
+        if (existing && this.sync.discussion_cursor && d.updated_at <= this.sync.discussion_cursor) continue;
+        if (!existing) {
+          await this.importDiscussion(d, true);
+          await this.importDiscussionComments(d, true);
+        } else {
+          if (await this.syncDiscussionState(existing, d, true)) {
+            log.info(`upstream-sync: discussion #${d.number} state -> ${d.state} (${this.project.owner}/${this.project.name})`);
+          }
+          await this.importDiscussionComments(d, true);
+        }
+        if (d.updated_at && (!cursor || d.updated_at > cursor)) cursor = d.updated_at;
+      }
+      if (list.length < 100) break;
+    }
+    if (cursor && cursor !== this.sync.discussion_cursor) {
+      await updateUpstreamSyncState(this.project.id, { discussionCursor: cursor });
+    }
+  }
+
   async pollOnce(): Promise<UpstreamSyncPollResult> {
+    if (this.discussionsEnabled) {
+      if (this.sync.discussion_cursor === null) await this.discussionsBackfill();
+      else await this.discussionsLive();
+    }
+    if (!this.issuesEnabled) return { issuesImported: 0, issuesUpdated: 0, commentsImported: 0 };
     return this.isBackfill ? await this.backfillOnce() : await this.liveOnce();
   }
 }
 
 let tickTimer: ReturnType<typeof setInterval> | null = null;
-const inFlight = new Set<number>();
+// project_id -> tick start time. A stale entry (>10 min) means the previous
+// poll never settled (hung fetch/subprocess despite per-call timeouts) — the
+// watchdog re-arms the project instead of dropping it from polling forever
+// (incident: awesome-dsh-plugin silent stop 2026-10-18).
+const inFlight = new Map<number, number>();
+const IN_FLIGHT_TTL_MS = 10 * 60_000;
 
 async function tick(cfg: Config): Promise<void> {
   const rows = await listEnabledUpstreamSyncs();
   for (const row of rows) {
-    if (inFlight.has(row.project_id)) continue;
+    const startedAt = inFlight.get(row.project_id);
+    if (startedAt !== undefined && Date.now() - startedAt < IN_FLIGHT_TTL_MS) continue;
     const interval = Math.max(10_000, row.poll_interval_ms);
     if (row.last_poll_at && Date.now() - Date.parse(row.last_poll_at) < interval) continue;
-    inFlight.add(row.project_id);
+    inFlight.set(row.project_id, Date.now());
     void (async () => {
       try {
         const project = await getProjectById(row.project_id);
         if (!project) return;
-        const sync = new UpstreamSync(row, project, syncOrigin(cfg));
+        const cfgKv = await getConfigAll();
+        const discussionsEnabled = cfgKv[`discussions:${project.owner}/${project.name}`] === "1";
+        const titleTranslate = cfgKv[`titleTranslate:${project.owner}/${project.name}`] === "1";
+        const issuesEnabled = cfgKv[`issuesSync:${project.owner}/${project.name}`] !== "0";
+        const discussionWhitelist = cfgKv[`discussionWhitelist:${project.owner}/${project.name}`] || undefined;
+        const sync = new UpstreamSync(row, project, syncOrigin(cfg), discussionsEnabled, issuesEnabled, discussionWhitelist, titleTranslate);
         const r = await sync.pollOnce();
         if (r.issuesImported || r.issuesUpdated || r.commentsImported) {
           log.info("upstream-sync: polled", {

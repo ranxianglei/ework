@@ -325,6 +325,46 @@ export class Store {
     return row ? rowToMessage(row) : undefined;
   }
 
+  async countMessagesByStatus(sessionId: string, status: string): Promise<number> {
+    const rows = await getDB().all<{ n?: number }>(
+      "SELECT COUNT(*) AS n FROM {{messages}} WHERE session_id = ? AND status = ?",
+      [sessionId, status],
+    );
+    return Number(rows[0]?.n ?? 0);
+  }
+
+  async countPendingWorkerMessages(names: string[]): Promise<number> {
+    // Prefix matching: worker sessions rotate (conflict-worker-N-r1) and are
+    // categorized (conflict-worker-E) — exact IN() missed every suffixed
+    // generation, skewing the night-boost demand count (owner 2026-10-21).
+    const likes = ["conflict-worker%", "ci-worker%", "release-worker%"];
+    const where = likes.map(() => "s.name LIKE ?").join(" OR ");
+    const rows = await getDB().all<{ n?: number }>(
+      `SELECT COUNT(*) AS n FROM {{messages}} m JOIN {{op_sessions}} s ON s.uid = m.session_id WHERE m.status = 'pending' AND (${where})`,
+      likes,
+    );
+    return Number((rows[0] as { n?: number } | undefined)?.n ?? 0);
+  }
+
+  async getRunningWithPid(): Promise<{ id: string; pid: number | null; updatedAt: Date; key: string }[]> {
+    const rows = await getDB().all<{ id: string; pid: number | null; updated_at: string; key: string }>(
+      `SELECT m.uid AS id, s.opencode_pid AS pid, m.updated_at AS updated_at,
+              i.tracker_type || ':' || i.tracker_scope_key || '#' || i.tracker_issue_id || '@' || s.name AS key
+       FROM {{messages}} m JOIN {{op_sessions}} s ON s.uid = m.session_id
+       JOIN {{issues}} i ON i.uid = s.issue_id
+       WHERE m.status = 'running'`,
+    );
+    return rows.map((r) => ({ id: r.id, pid: r.pid ?? null, updatedAt: new Date(r.updated_at), key: r.key }));
+  }
+
+  async getOldestPendingCreatedAt(): Promise<Date | undefined> {
+    const rows = await getDB().all<{ oldest?: string }>(
+      `SELECT MIN(created_at) AS oldest FROM {{messages}} WHERE status = 'pending'`,
+    );
+    const v = (rows[0] as { oldest?: string } | undefined)?.oldest;
+    return v ? new Date(v) : undefined;
+  }
+
   async getGlobalPendingMessages(limit: number): Promise<Message[]> {
     const now = new Date().toISOString();
     const rows = this.projectPriorities.length > 0
@@ -355,7 +395,8 @@ export class Store {
        JOIN {{op_sessions}} s ON s.uid = m.session_id
        JOIN {{issues}} i ON i.uid = s.issue_id
        WHERE m.status = 'pending' AND (m.retry_after IS NULL OR m.retry_after <= ?)
-       ORDER BY CASE ${whens.join(" ")} ELSE 0 END DESC, m.created_at ASC
+       ORDER BY CASE WHEN s.name LIKE 'conflict-worker%' OR s.name LIKE 'ci-worker%' OR s.name LIKE 'release-worker%' THEN 1 ELSE 0 END DESC,
+         CASE ${whens.join(" ")} ELSE 0 END DESC, m.created_at ASC
        LIMIT ?`,
       [nowIso, ...caseParams, limit]
     );
@@ -427,6 +468,30 @@ export class Store {
       "UPDATE {{messages}} SET status = ?, attempts = ?, pending_since = ?, retry_after = NULL, error = ?, updated_at = ? WHERE uid = ?",
       [status, attempts, status === "pending" ? now : null, error ?? null, now, id]
     );
+  }
+
+  async getPendingForIssue(issueId: string): Promise<Message[]> {
+    const nowIso = new Date().toISOString();
+    return getDB().all<Message>(
+      "SELECT m.* FROM {{messages}} m JOIN {{op_sessions}} s ON s.uid = m.session_id WHERE s.issue_id = ? AND m.status = 'pending' AND (m.retry_after IS NULL OR m.retry_after <= ?) ORDER BY m.created_at ASC",
+      [issueId, nowIso],
+    );
+  }
+
+  async countRunningConflictMessages(excludeUid: string): Promise<number> {
+    const res = await getDB().get<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM {{messages}} WHERE status = 'running' AND source_comment_id LIKE 'merge-conflict-%' AND uid != ?",
+      [excludeUid]
+    );
+    return res?.n ?? 0;
+  }
+
+  async countRunningCiMessages(excludeUid: string): Promise<number> {
+    const res = await getDB().get<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM {{messages}} WHERE status = 'running' AND source_comment_id LIKE 'ci-fail-%' AND uid != ?",
+      [excludeUid]
+    );
+    return res?.n ?? 0;
   }
 
   async getMessagesForSession(sessionId: string): Promise<Message[]> {

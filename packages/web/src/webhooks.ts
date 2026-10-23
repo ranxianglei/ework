@@ -34,7 +34,7 @@ import {
   type CommentRow,
 } from "./store";
 
-export type WebhookEventName = "issues" | "issue_comment" | "status_changed";
+export type WebhookEventName = "issues" | "issue_comment" | "status_changed" | "issue_boosted";
 export type IssueAction = "opened" | "closed" | "reopened";
 
 export interface WebhookRow {
@@ -65,7 +65,7 @@ export interface WebhookDeliveryRow {
 const DEFAULT_EVENTS: WebhookEventName[] = ["issues", "issue_comment", "status_changed"];
 const MAX_RESPONSE_LOG_BYTES = 8192;
 const HTTP_TIMEOUT_MS = 10_000;
-const RETRY_DELAYS_MS = [0, 2_000, 8_000];
+const RETRY_DELAYS_MS = [0, 5_000, 30_000, 60_000];
 
 // Global cap on concurrent in-flight webhook HTTP deliveries. Without this, a
 // flood of events against dead targets (e.g. daemon down during migration)
@@ -123,7 +123,7 @@ function parseEvents(events: unknown): WebhookEventName[] {
   try {
     const arr = JSON.parse(events) as unknown[];
     const valid = arr.filter(
-      (v): v is WebhookEventName => v === "issues" || v === "issue_comment" || v === "status_changed"
+      (v): v is WebhookEventName => v === "issues" || v === "issue_comment" || v === "status_changed" || v === "issue_boosted"
     );
     return valid.length > 0 ? valid : DEFAULT_EVENTS;
   } catch {
@@ -287,6 +287,7 @@ interface PayloadIssue {
   html_url: string;
   number: number;
   upstream_issue_number?: number | null;
+  kind?: "issue" | "discussion";
   title: string;
   body: string;
   labels: PayloadLabel[];
@@ -326,7 +327,7 @@ interface PayloadComment {
 
 interface IssueEventPayload {
   event_id?: string;
-  action: IssueAction | "merge_conflict";
+  action: IssueAction | "merge_conflict" | "ci_failed";
   issue: PayloadIssue;
   repository: PayloadRepository;
   sender: PayloadUser;
@@ -335,6 +336,7 @@ interface IssueEventPayload {
   url?: string;
   dispatch_off?: boolean;
   merge_state?: string;
+  ci?: { sha: string; checks: { name: string; html_url?: string; conclusion: string }[] };
 }
 
 interface CommentEventPayload {
@@ -447,6 +449,7 @@ function buildIssue(
     html_url: issueUrl,
     number: issue.number,
     upstream_issue_number: issue.upstream_issue_number ?? null,
+    kind: issue.kind ?? "issue",
     title: issue.title,
     body: issue.body ?? "",
     labels,
@@ -559,6 +562,41 @@ export async function emitMergeConflictEvent(
     await fanOut(projectId, "issues", rawBody);
   } catch (e) {
     log.error("webhook: emitMergeConflictEvent failed", { err: e as Error, projectId, issueId });
+  }
+}
+
+// Upstream PR CI-failure wake: same shape as the merge-conflict wake, action
+// "ci_failed", carrying the failing head sha + failed check list. Emitted at
+// most twice per PR (web-side attempt cap) so the ci-worker cannot loop.
+export async function emitCiFailedEvent(
+  projectId: number,
+  issueId: number,
+  origin: string,
+  sha: string,
+  checks: { name: string; html_url: string; conclusion: string }[],
+): Promise<void> {
+  try {
+    const project = await getProjectById(projectId);
+    if (!project) return;
+    const issue = await getIssueById(issueId);
+    if (!issue) return;
+    const cfg = await getConfigAll();
+    const scopeKey = `${project.owner}/${project.name}`;
+    const globalOff = cfg["dispatchEnabled"] === "false";
+    const projectOff = cfg[`dispatchOff:${scopeKey}`] === "1";
+    const issueOff = issue.ai_status === "dispatch_off" || issue.ai_status === "halted";
+    if (globalOff || projectOff || issueOff) return;
+    const commentCount = await countCommentsSafe(issueId);
+    const globalDefault = (await loadConfig()).defaultModel;
+    const model = resolveModel(project.model, globalDefault, issue.model);
+    const payload = buildIssuePayload(issue, project, commentCount, "opened", origin, model);
+    (payload as IssueEventPayload).action = "ci_failed";
+    (payload as IssueEventPayload).ci = { sha, checks };
+    (payload as IssueEventPayload).event_id = randomUUID();
+    const rawBody = JSON.stringify(payload);
+    await fanOut(projectId, "issues", rawBody);
+  } catch (e) {
+    log.error("webhook: emitCiFailedEvent failed", { err: e as Error, projectId, issueId });
   }
 }
 
@@ -832,6 +870,30 @@ export async function emitStatusChanged(
       from,
       to,
     });
+  }
+}
+
+export async function emitIssueBoost(projectId: number, issueId: number, actor: string, origin: string): Promise<void> {
+  try {
+    const project = await getProjectById(projectId);
+    if (!project) return;
+    const issue = await getIssueById(issueId);
+    if (!issue) { log.warn(`emitIssueBoost: issue ${issueId} not found — silent skip prevented`); return; }
+    const commentCount = await countCommentsSafe(issueId);
+    const actorUser = await getUserByLogin(actor);
+    const sender = actorUser ? buildUserFromRow(actorUser, origin) : buildUser(actor, origin);
+    const repo = buildRepository(project, origin);
+    const issuePayload = buildIssue(issue, project, commentCount, origin);
+    const rawBody = JSON.stringify({
+      event_id: randomUUID(),
+      action: "boosted",
+      issue: issuePayload,
+      repository: repo,
+      sender,
+    });
+    await fanOut(projectId, "issue_boosted", rawBody);
+  } catch (e) {
+    log.error("webhook: emitIssueBoost failed", { err: e as Error, projectId, issueId });
   }
 }
 

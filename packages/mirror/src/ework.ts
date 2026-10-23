@@ -19,6 +19,7 @@ interface PayloadIssue {
   id?: number;
   number: number;
   upstream_issue_number?: number | null;
+  kind?: "issue" | "discussion";
   title: string;
   body?: string;
   state?: "open" | "closed";
@@ -60,11 +61,18 @@ export interface ParsedCommentEvent {
 export type ParsedEvent = ParsedIssueEvent | ParsedCommentEvent;
 
 export class ParseError extends Error {}
+export class IgnoredEventError extends Error {}
 
 export function parseEvent(
   rawBody: string,
   eventHeader: string
 ): ParsedEvent {
+  // Fleet-internal control events carry no write-back semantics — surface
+  // them as IgnoredEventError so the webhook answers 202 instead of erroring
+  // into endless retries (also retires the pre-existing status_changed noise).
+  if (eventHeader === "issue_boosted" || eventHeader === "status_changed") {
+    throw new IgnoredEventError(`control event: ${eventHeader}`);
+  }
   if (eventHeader !== "issues" && eventHeader !== "issue_comment") {
     throw new ParseError(`unsupported event: ${eventHeader}`);
   }

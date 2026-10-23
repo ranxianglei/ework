@@ -658,9 +658,137 @@ export class Engine {
   private heartbeatTimer?: ReturnType<typeof setInterval>;
   private maxConcurrent: number;
   private maxConcurrentExplicit: boolean;
+  private apiIdleGraceMs: number;
+  private conflictMaxConcurrent: number;
+  private ciMaxConcurrent: number;
+  private readonly infraNightBoost: boolean;
+
+  // Night window for infra lanes (owner policy 2026-10-20): 00:00-08:00
+  // Beijing time (UTC+8 => UTC 16:00-24:00). During the window conflict/CI
+  // caps double and ordinary issue lanes run at half the global cap, so
+  // quiet-night slots flow to rebase/CI work without raising the fleet cap.
+  infraNightActive(): boolean {
+    if (!this.infraNightBoost) return false;
+    const cstHour = (new Date().getUTCHours() + 8) % 24;
+    return cstHour < 8;
+  }
+
+  effectiveGlobalCap(sourceCommentId?: string): number {
+    if (
+      sourceCommentId &&
+      (sourceCommentId.startsWith("merge-conflict-") || sourceCommentId.startsWith("ci-fail-"))
+    ) {
+      return this.maxConcurrent;
+    }
+    if (!this.infraNightActive()) return this.maxConcurrent;
+    // Demand-aware halving: only squeeze ordinary lanes when infra work is
+    // actually waiting — otherwise quiet nights waste half the fleet. Infra
+    // demand = running infra keys + pending worker-session messages (counter
+    // refreshed by the drain loop; stale values only over-squeeze briefly).
+    let infraDemand = this.pendingInfraCount;
+    for (const k of this.running.keys()) {
+      if (k.includes("@conflict-worker") || k.includes("@ci-worker")) infraDemand++;
+    }
+    return infraDemand > 0 ? Math.floor(this.maxConcurrent / 2) : this.maxConcurrent;
+  }
+
+  // Pending message count for infra worker sessions; refreshed each drain
+  // cycle for effectiveGlobalCap's demand check (see above).
+  private pendingInfraCount = 0;
+
+  // Idle-fill (owner policy 2026-10-20): when ordinary lanes leave global slots
+  // free, conflict/ci work may occupy them — expanded cap = max(configured,
+  // free global slots). Keeps the fleet busy on CI-heavy idle periods.
+  private infraIdleExpandedCap(base: number): number {
+    const now = Date.now();
+    let ordinaryActive = 0;
+    for (const k of this.running.keys()) {
+      if (k.includes("@conflict-worker") || k.includes("@ci-worker")) continue;
+      const last = this.lastOutputAt.get(k) ?? this.startedAt.get(k) ?? now;
+      if (now - last <= this.apiIdleGraceMs) ordinaryActive++;
+    }
+    const freeGlobal = Math.max(0, this.maxConcurrent - ordinaryActive);
+    return Math.max(base, freeGlobal);
+  }
+
+  // API-slot accounting (owner policy 2026-10-23): slots track real model
+  // concurrency, not process count. A session with recent output (streaming
+  // tokens) occupies a slot; one silent past apiIdleGraceMs — typically inside
+  // a long tool run — temporarily releases it so the model never sits idle
+  // behind sleeping agents. A hard 2× process ceiling bounds the overshoot
+  // when several silent agents resume API calls at once.
+  private activeRunningCount(now = Date.now()): number {
+    let active = 0;
+    for (const k of this.running.keys()) {
+      const last = this.lastOutputAt.get(k) ?? this.startedAt.get(k) ?? now;
+      if (now - last <= this.apiIdleGraceMs) active++;
+    }
+    return active;
+  }
+
+  private slotAvailable(sourceCommentId?: string): boolean {
+    const cap = sourceCommentId ? this.effectiveGlobalCap(sourceCommentId) : this.maxConcurrent;
+    if (this.running.size >= cap * 2) return false;
+    return this.activeRunningCount() < cap;
+  }
+
+  // Sticky worker session with rotation (owner policy 2026-10-20): one session
+  // accumulates a PR's context, but long-lived sessions degrade — after 20
+  // completed tasks, rotate to a fresh generation (base-rN) so context rebuilds.
+  private conflictCategory(prNumber: string): string {
+    try {
+      const raw = require("fs").readFileSync(
+        "/var/lib/ework-web/share/status-board.json",
+        "utf8",
+      ) as string;
+      const cat = (JSON.parse(raw).pr_category ?? {})[String(prNumber)];
+      return typeof cat === "string" && cat ? cat : "N";
+    } catch {
+      return "N";
+    }
+  }
+
+  private async workerSession(issueId: string, base: string): Promise<OpSession> {
+    const sessions = await this.store.getSessionsForIssue(issueId);
+    const gens = sessions.filter((x) => x.name === base || new RegExp(`^${base}-r\d+$`).test(x.name));
+    for (let i = gens.length - 1; i >= 0; i--) {
+      const g = gens[i];
+      if (g && (await this.store.countMessagesByStatus(g.id, "done")) < 20) {
+        return this.store.createSession(issueId, g.name);
+      }
+    }
+    let maxGen = 0;
+    for (const g of gens) {
+      const m = /-r(\d+)$/.exec(g.name);
+      if (m) maxGen = Math.max(maxGen, Number(m[1]));
+    }
+    return this.store.createSession(issueId, `${base}-r${maxGen + 1}`);
+  }
+
+  private async refreshPendingInfraCount(): Promise<void> {
+    try {
+      this.pendingInfraCount = await this.store.countPendingWorkerMessages([
+        "conflict-worker",
+        "ci-worker",
+      ]);
+    } catch {
+      this.pendingInfraCount = 0;
+    }
+  }
 
   // Runtime state keyed by session key (trackerType:scopeKey#issueId@sessionName)
   private processes = new Map<string, RuntimeHandle>();
+  // Issues pinned to the front of the global pending queue by owner boost (web ⚡).
+  private readonly boostedIssueIds = new Set<string>();
+
+  // Boost is an explicit owner action: it must jump the queue even when the
+  // API-active slots are saturated (owner policy 2026-10-23). Oversubscribing
+  // is bounded by the hard 2× process ceiling so a boost can never blow past
+  // maxConcurrent*2 live agents (model endpoint has separate, larger limits).
+  private boostSlotAvailable(sourceCommentId?: string): boolean {
+    const cap = sourceCommentId ? this.effectiveGlobalCap(sourceCommentId) : this.maxConcurrent;
+    return this.running.size < cap * 2;
+  }
   private running = new Set<string>();
   // generation-scoped: a stale flag from a preempted/killed run must not
   // suppress finishRun for the replacement run spawned afterwards
@@ -725,7 +853,7 @@ export class Engine {
   // ework#957 lost 70 queued messages fleet-wide to a 30min cap that only
   // meant to reap downtime zombies — restart already resets pending_since,
   // so live saturation was the ONLY thing the short cap could still hit).
-  private static MAX_PENDING_AGE_MS = 6 * 60 * 60_000;
+  private static MAX_PENDING_AGE_MS = 128 * 60 * 60_000;
   private static MAX_STUCK_NUDGE_ROUNDS = 1;
   private static MAX_RUNTIME_MS = 3 * 60 * 60 * 1000;
   private static OBSERVER_INTERVAL_MS = 5 * 60 * 1000;
@@ -745,6 +873,10 @@ export class Engine {
     this.replyBurstCfg = opts.replyBurst ?? cfg.replyBurst;
     this.maxConcurrent = cfg.work.maxConcurrent;
     this.maxConcurrentExplicit = cfg.work.maxConcurrentExplicit;
+    this.apiIdleGraceMs = cfg.work.apiIdleGraceMs ?? 180_000;
+    this.conflictMaxConcurrent = cfg.work.conflictMaxConcurrent ?? 1;
+    this.ciMaxConcurrent = cfg.work.ciMaxConcurrent ?? 1;
+    this.infraNightBoost = cfg.work.infraNightBoost !== false;
     this.startGlobalObserver();
     if (opts.recoverOnBoot !== false) void this.recover();
   }
@@ -1198,18 +1330,35 @@ export class Engine {
       }
     }
 
-    if (this.paused && (event.type === "issue_opened" || event.type === "comment_created" || event.type === "merge_conflict")) {
+    if (this.paused && (event.type === "issue_opened" || event.type === "comment_created" || event.type === "merge_conflict" || event.type === "ci_failed")) {
       log.info(`engine: paused — skipping ${event.type} for ${ref.trackerType}:${scopeKey}#${ref.issueId}`);
       return;
     }
 
-    if ((issueData.ai_status === "halted" || issueData.ai_status === "dispatch_off") && (event.type === "issue_opened" || event.type === "comment_created" || event.type === "merge_conflict")) {
+    if ((issueData.ai_status === "halted" || issueData.ai_status === "dispatch_off") && (event.type === "issue_opened" || event.type === "comment_created" || event.type === "merge_conflict" || event.type === "ci_failed")) {
       log.info(`engine: issue ${issueData.ai_status} — skipping ${event.type} for ${ref.trackerType}:${scopeKey}#${ref.issueId}`);
       return;
     }
 
     if (event.dispatch_off && event.type === "issue_opened") {
       log.info(`engine: dispatch_off (global/project) — skipping issue_opened for ${ref.trackerType}:${scopeKey}#${ref.issueId}`);
+      return;
+    }
+
+    // Record-only issue (owner policy 2026-10-13): body carries the
+    // [no-dispatch] marker — the fix already ships in the linked PR; this
+    // issue exists for owner visibility only. Never spawn an AI for the
+    // opening event (later human comments still wake via wake policy).
+    if (event.type === "issue_opened" && (event.issue?.body ?? "").includes("[no-dispatch]")) {
+      log.info(`engine: issue body carries [no-dispatch] marker — skipping issue_opened for ${ref.trackerType}:${scopeKey}#${ref.issueId}`);
+      return;
+    }
+
+    // CI-titled issue (owner policy 2026-10-14): CI failure reports historically
+    // produced duplicate-issue storms; any issue whose title mentions CI waits
+    // for a human trigger. Later human comments still wake via wake policy.
+    if (event.type === "issue_opened" && /\bci\b/i.test(event.issue?.title ?? "")) {
+      log.info(`engine: issue title mentions CI — skipping auto dispatch for ${ref.trackerType}:${scopeKey}#${ref.issueId} (waits for human trigger)`);
       return;
     }
 
@@ -1262,6 +1411,15 @@ export class Engine {
           }
         }
       }
+      // Scheduled full-suite tracker (github-actions bot opens 「定时全量测试失败: <sha>」
+      // when the timed matrix goes red on master). Owner policy 2026-10-17: these ARE
+      // dispatched — the bot exists to surface master reds and the fleet fixes them
+      // promptly. Scoped to the tracker's exact title signature; every other bot
+      // issue/comment stays gated by the storm defenses.
+      if (skip && event.type === "issue_opened" && (wakeKind === "bot" || /\[bot\]$/i.test(wakeAuthor)) && /^定时全量测试失败[:：]/.test(event.issue?.title ?? "")) {
+        skip = null;
+        log.info(`engine: scheduled-CI tracker ${ref.trackerType}:${scopeKey}#${ref.issueId} — dispatching (owner policy 2026-10-17)`);
+      }
       if (skip) {
         log.info(`engine: ${skip} — skipping ${event.type} for ${ref.trackerType}:${scopeKey}#${ref.issueId}`);
         return;
@@ -1304,12 +1462,66 @@ export class Engine {
       }
       case "merge_conflict":
         return this.handleMergeConflict(ref, scopeKey, issueData, tracker, event.merge?.state ?? "dirty", event.model);
+      case "ci_failed":
+        return this.handleCiFailed(ref, scopeKey, issueData, tracker, event.ci ?? { sha: "", checks: [] }, event.model);
+      case "issue_boosted":
+        return this.handleBoost(ref, scopeKey, issueData, tracker);
     }
   }
 
   // Upstream PR conflict wake: the session that owns this PR rebase-pushes on
   // its own — no manual trigger. Only engages issues an agent already worked
   // (a session row exists); untouched PRs stay manual.
+  // Owner-driven queue boost (web ⚡ button): dispatch this issue's pending
+  // messages immediately if a slot is free; otherwise pin the issue to the
+  // absolute front of the global queue (owner policy 2026-10-17).
+  private async handleBoost(ref: TrackerRef, scopeKey: string, _issueData: NonNullable<TrackerEvent["issue"]>, _tracker: unknown): Promise<void> {
+    const issue = await this.store.findIssue(ref.trackerType, scopeKey, ref.issueId);
+    if (!issue) {
+      log.info(`engine: boost — no local issue state for ${scopeKey}#${ref.issueId}, nothing to boost`);
+      return;
+    }
+    const pendings = await this.store.getPendingForIssue(issue.id);
+    if (pendings.length === 0) {
+      log.info(`engine: boost — ${scopeKey}#${ref.issueId} has no pending messages (running or idle)`);
+      return;
+    }
+    // Pin before dispatching: the fairness yield in dequeueOrIdle exempts
+    // boosted issues, so direct dispatches here must already carry the pin
+    // or the first attempt is yielded right back to pending.
+    this.boostedIssueIds.add(issue.id);
+    let dispatched = 0;
+    for (const msg of pendings) {
+      if (!this.boostSlotAvailable(msg.sourceCommentId)) {
+        log.info(`engine: boost diag — no slot (procs ${this.running.size}/${(msg.sourceCommentId ? this.effectiveGlobalCap(msg.sourceCommentId) : this.maxConcurrent) * 2})`);
+        break;
+      }
+      const session = await this.store.getSession(msg.sessionId);
+      if (!session || session.state === "running") {
+        log.info(`engine: boost diag — skip msg ${msg.id.slice(0, 8)}: session ${session ? `state=${session.state}` : "missing"}`);
+        continue;
+      }
+      const k = this.sessionKey(session, issue);
+      if (this.running.has(k)) {
+        log.info(`engine: boost diag — skip msg ${msg.id.slice(0, 8)}: ${k} already in memory running set`);
+        continue;
+      }
+      const won = await this.store.claimMessage(msg.id);
+      if (!won) {
+        log.info(`engine: boost diag — skip msg ${msg.id.slice(0, 8)}: claim CAS lost`);
+        continue;
+      }
+      log.info(`engine: boost dispatched msg ${msg.id.slice(0, 8)} for ${k} (owner policy)`);
+      await this.dequeueOrIdle(k, session, issue, msg);
+      dispatched++;
+    }
+    if (dispatched < pendings.length) {
+      log.info(`engine: boost — ${scopeKey}#${ref.issueId} pinned to front of queue (${pendings.length - dispatched} waiting for a slot)`);
+    } else {
+      this.boostedIssueIds.delete(issue.id);
+    }
+  }
+
   private async handleMergeConflict(
     ref: TrackerRef,
     scopeKey: string,
@@ -1327,15 +1539,14 @@ export class Engine {
     if (issue.state === "closed") return;
     if (!(await this.ensureOwned(issue))) return;
 
-    let session = await this.store.getSessionByName(issue.id, this.cfg.bot.username);
-    if (!session) {
-      const sessions = await this.store.getSessionsForIssue(issue.id);
-      session = sessions[sessions.length - 1];
-    }
-    if (!session) {
-      log.info(`engine: merge_conflict on ${scopeKey}#${ref.issueId} has no prior session — skipping (manual PR)`);
-      return;
-    }
+    // Sticky conflict worker keyed by PR CATEGORY (owner policy 2026-10-20):
+    // conflicts in the same category share one specialist session so the
+    // agent resolves them class-by-class instead of rebuilding context per
+    // PR. Category comes from the status board's pr→category map; unknown
+    // PRs fall back to N (misc). Orthogonal to concurrency caps; the
+    // workerSession rotation (20 done → -r2) still applies per category.
+    const base = `conflict-worker-${this.conflictCategory(String(ref.issueId))}`;
+    const session = await this.workerSession(issue.id, base);
 
     const workdir = await this.resolveWorkdir(session, issue);
     const instructions = tracker.getTrackerInstructions(ref);
@@ -1358,6 +1569,53 @@ export class Engine {
 
     await tracker.createComment(ref, `[system] 🏷 ${this.sessionRef(session)} ⚠️ 上游 PR 冲突(${mergeState})— 已转发 **${session.name}** 处理 rebase。`).catch(() => {});
     await this.enqueueOrRun(session, issue, prompt, tracker, ref, `merge-conflict-${ref.issueId}-${Date.now()}`, model);
+  }
+
+  // Upstream PR CI-failure wake (owner policy 2026-10-14): the anti-storm
+  // gates keep CI-bot COMMENTS out of sessions; this is the sanctioned lane —
+  // a sticky ci-worker per PR fixes red CI directly on the PR branch (small
+  // fixes per the几行级小修 discipline). Web caps auto-fix cycles at 2 per PR;
+  // unfixable CI gets a verdict comment and stops for a human.
+  private async handleCiFailed(
+    ref: TrackerRef,
+    scopeKey: string,
+    issueData: TrackerEvent["issue"],
+    tracker: IssueTracker,
+    ci: NonNullable<TrackerEvent["ci"]>,
+    model?: string,
+  ) {
+    if (issueData.state !== "open") return;
+    const issue = await this.store.findIssue(ref.trackerType, scopeKey, ref.issueId);
+    if (!issue) {
+      log.info(`engine: ci_failed on untracked ${scopeKey}#${ref.issueId} — skipping`);
+      return;
+    }
+    if (issue.state === "closed") return;
+    if (!(await this.ensureOwned(issue))) return;
+
+    const session = await this.workerSession(issue.id, "ci-worker");
+
+    const workdir = await this.resolveWorkdir(session, issue);
+    const instructions = tracker.getTrackerInstructions(ref);
+    const checkList = ci.checks.map((c) => `- ${c.name}${c.html_url ? ` (${c.html_url})` : ""}`).join("\n");
+    const body =
+      `[SYSTEM] Upstream PR CI failure detected (head ${ci.sha.slice(0, 10)}).\n` +
+      `The PR mirror 「${issueData.title}」 has failing checks:\n${checkList}\n` +
+      `Fix the CI directly on the PR branch (fetch the check logs via the GitHub API as needed), ` +
+      `push, and reply with a 七问 summary. This is an auto-fix lane: at most 2 attempts per PR — ` +
+      `if the failure needs design decisions or is not a small fix, post a verdict comment instead and stop.`;
+    const prompt = this.buildForwardPrompt(
+      session.name,
+      this.handleLargeContent(workdir, body, `ci-fail-${ref.issueId}.txt`),
+      "ework-web",
+      "bot",
+      issueData.title,
+      workdir,
+      instructions,
+    );
+
+    await tracker.createComment(ref, `[system] 🏷 ${this.sessionRef(session)} ❌ CI 失败(${ci.checks.map((c) => c.name).join(", ")})— 已转发 **${session.name}** 修复。`).catch(() => {});
+    await this.enqueueOrRun(session, issue, prompt, tracker, ref, `ci-fail-${ref.issueId}-${ci.sha || Date.now()}`, model);
   }
 
   // Reply-burst circuit breaker: a looping session can re-perceive a standing
@@ -1417,8 +1675,16 @@ export class Engine {
     // Start observer for this issue
     this.startObserver(issue);
 
+    // Scheduled full-suite CI tracker issues are fleet-infrastructure work:
+    // route them to a dedicated sticky ci-worker session (owner policy
+    // 2026-10-17) so they rank in the infra pickup tier of the queue (op.ts).
+    const scheduledCiTracker = /\[bot\]$/i.test(issueData?.author ?? "") && /^定时全量测试失败[:：]/.test(issueData?.title ?? "");
+    // Release PRs (mirror titles look like "[PR] release vX.Y.Z") are
+    // fleet-infrastructure work: route to a sticky release-worker session
+    // (owner policy 2026-10-17) so they rank in the infra pickup tier (op.ts).
+    const releaseTracker = /release v?\d+\.\d+\.\d+/i.test(issueData?.title ?? "");
     // Create default session for bot user
-    const defaultSessionName = this.cfg.bot.username;
+    const defaultSessionName = scheduledCiTracker ? "ci-worker" : releaseTracker ? "release-worker" : this.cfg.bot.username;
     let session = await this.store.getSessionByName(issue.id, defaultSessionName);
     if (session && session.state === "running") {
       log.info(`engine: duplicate issue_opened — session already running for ${scopeKey}#${ref.issueId}`);
@@ -1468,6 +1734,16 @@ export class Engine {
 
     if (tracker.isBotUser(comment.author)) {
       log.info(`engine: ignoring own comment on ${scopeKey}#${ref.issueId}`);
+      return;
+    }
+
+    // Machine comments (CI bots, apps) are status plumbing, not user input.
+    // Injecting them into active sessions caused duplicate-issue storms: every
+    // running agent saw "master CI red" and filed its own copy (owner policy
+    // 2026-10-14). Idle wakes already skip bot authors; agents check CI
+    // themselves when their work depends on it.
+    if (comment.authorKind === "bot") {
+      log.info(`engine: bot comment from ${comment.author} on ${scopeKey}#${ref.issueId} — skipping`);
       return;
     }
 
@@ -1743,8 +2019,8 @@ export class Engine {
       return;
     }
 
-    if (this.running.size >= this.maxConcurrent) {
-      log.info(`engine: concurrency limit reached (${this.running.size}/${this.maxConcurrent}), message ${msg.id.slice(0, 8)} queued for ${k}`);
+    if (!this.slotAvailable(msg.sourceCommentId)) {
+      log.info(`engine: concurrency limit reached (api ${this.activeRunningCount()}/${this.effectiveGlobalCap(msg.sourceCommentId)}, procs ${this.running.size}), message ${msg.id.slice(0, 8)} queued for ${k}`);
       void tracker.updateStatus(ref, "queued");
       return;
     }
@@ -1884,6 +2160,35 @@ export class Engine {
       await this.clearRuntimeState(k);
       this.running.delete(k);
       return;
+    }
+    // Owner policy 2026-10-14: conflict-rebase work must not fan out across the
+    // whole fleet — cap concurrent merge-conflict runs so they never eat more
+    // than their share of slots (default 1). Deferred messages stay pending;
+    // the next completion event drains them.
+    if (msg.sourceCommentId?.startsWith("merge-conflict-")) {
+      const conflictCap = this.infraIdleExpandedCap(
+        this.infraNightActive() ? this.conflictMaxConcurrent * 2 : this.conflictMaxConcurrent,
+      );
+      const runningConflicts = await this.store.countRunningConflictMessages(msg.id);
+      if (runningConflicts >= conflictCap) {
+        log.info(`engine: merge-conflict cap (${conflictCap}) reached — deferring msg ${msg.id.slice(0, 8)} for ${k}`);
+        await this.store.updateMessageStatus(msg.id, "pending");
+        this.running.delete(k);
+        return;
+      }
+    }
+    // CI-fix lane shares the same discipline (owner policy 2026-10-14).
+    if (msg.sourceCommentId?.startsWith("ci-fail-")) {
+      const ciCap = this.infraIdleExpandedCap(
+        this.infraNightActive() ? this.ciMaxConcurrent * 2 : this.ciMaxConcurrent,
+      );
+      const runningCi = await this.store.countRunningCiMessages(msg.id);
+      if (runningCi >= ciCap) {
+        log.info(`engine: ci-fix cap (${ciCap}) reached — deferring msg ${msg.id.slice(0, 8)} for ${k}`);
+        await this.store.updateMessageStatus(msg.id, "pending");
+        this.running.delete(k);
+        return;
+      }
     }
     const gate = await this.gateChecker(issue);
     const [projOwner, ...projRest] = issue.trackerScopeKey.split("/");
@@ -2067,6 +2372,17 @@ export class Engine {
       if (this.processes.get(k) !== handle) {
         log.info(`engine: process replaced, skipping finishRun for ${k}`);
         this.stopping.delete(k);
+        // Ghost-row guard (owner 2026-10-21): this handle's message was
+        // superseded by a newer dispatch — if its row is still 'running'
+        // (the replacement claimed its own row), park it so the zombie
+        // factory stops. Same row reused by the replacement is untouched
+        // (currentMessage then equals msg.id). destroy() clears
+        // currentMessage before SIGKILL — a shutdown kill is NOT
+        // supersession; leave the row 'running' for recover() to settle
+        // (it only closes stale ⏳ for running rows, #420).
+        if (!this.destroyed && this.currentMessage.get(k) !== msg.id) {
+          await this.store.updateMessageStatus(msg.id, "interrupted").catch(() => {});
+        }
         return;
       }
 
@@ -2223,7 +2539,7 @@ export class Engine {
       if (!session) return;
       const pending = await this.store.getNextPendingMessage(session.id);
       if (!pending) return;
-      if (!this.running.has(k) && this.running.size < this.maxConcurrent) {
+      if (!this.running.has(k) && this.slotAvailable()) {
         await this.dequeueOrIdle(k, session, issue, pending);
       } else {
         // Busy elsewhere: stay pending; the observer cycle / next drain picks it up.
@@ -2242,12 +2558,35 @@ export class Engine {
     gen: number,
     opts: { infraRequeued?: boolean } = {},
   ) {
+    const superseded = () => this.generation.get(k) !== gen;
+
     if (this.stopping.get(k) === gen && this.stopping.delete(k)) {
       log.info(`engine: finishRun skipped (force-stopped) for ${k}`);
+      // Zombie-factory close-out (owner 2026-10-22, root cause: generation
+      // aliasing — see forceStop): this branch historically returned with NO
+      // cleanup, permanently leaking the running-slot entry and the session's
+      // running state, so drainGlobalPending could never redispatch the
+      // session again. Settle by outcome and always release the slot.
+      // (a) exit-0 already wrote done in execProcess — do NOT downgrade it to
+      //     interrupted (updateMessageStatus is an unconditional UPDATE).
+      // (b) non-zero/aborted exits park their still-running row as interrupted.
+      if (exitCode !== 0) {
+        const haltedMsgId = this.currentMessage.get(k);
+        if (haltedMsgId) {
+          await this.store.updateMessageStatus(haltedMsgId, "interrupted").catch(() => {});
+        }
+      }
+      if (!superseded()) {
+        // A successor (nudge/retry/forward) already re-seeded the key — leave
+        // its runtime state untouched; otherwise release the slot fully.
+        this.currentMessage.delete(k);
+        this.currentModel.delete(k);
+        this.running.delete(k);
+        await this.store.updateSession(session.id, { state: "idle", opencodePid: undefined }).catch(() => {});
+        void this.drainGlobalPending();
+      }
       return;
     }
-
-    const superseded = () => this.generation.get(k) !== gen;
 
     // running.delete deferred to dequeuePending
     const started = this.startedAt.get(k);
@@ -2455,8 +2794,8 @@ export class Engine {
     if (nextMsg) {
       const current = await this.store.getSession(session.id);
       if (current && current.state !== "idle") {
-        if (this.running.size >= this.maxConcurrent) {
-          log.info(`engine: concurrency limit (${this.running.size}/${this.maxConcurrent}), keeping msg ${nextMsg.id.slice(0, 8)} pending for ${k}`);
+        if (!this.slotAvailable()) {
+          log.info(`engine: concurrency limit (api ${this.activeRunningCount()}/${this.maxConcurrent}, procs ${this.running.size}), keeping msg ${nextMsg.id.slice(0, 8)} pending for ${k}`);
         } else {
           await this.dequeueOrIdle(k, current, issue, nextMsg);
           return;
@@ -2492,7 +2831,47 @@ export class Engine {
 
   private async drainGlobalPending(): Promise<void> {
     if (this.destroyed) return;
-    const slotsAvailable = this.maxConcurrent - this.running.size;
+    await this.refreshPendingInfraCount();
+    // Owner-boosted issues jump the queue: dispatch their pending messages
+    // before the global priority query sees anything else.
+    if (this.boostedIssueIds.size > 0 && this.boostSlotAvailable()) {
+      for (const issueId of [...this.boostedIssueIds]) {
+        if (!this.boostSlotAvailable()) break;
+        let pendings: Awaited<ReturnType<Store["getPendingForIssue"]>>;
+        try {
+          pendings = await this.store.getPendingForIssue(issueId);
+        } catch {
+          continue;
+        }
+        if (pendings.length === 0) {
+          this.boostedIssueIds.delete(issueId);
+          continue;
+        }
+        const issue = await this.store.getIssue(issueId);
+        if (!issue || issue.state === "closed") {
+          this.boostedIssueIds.delete(issueId);
+          continue;
+        }
+        for (const msg of pendings) {
+          if (!this.boostSlotAvailable()) break;
+          const session = await this.store.getSession(msg.sessionId);
+          if (!session || session.state === "running") continue;
+          const k = this.sessionKey(session, issue);
+          if (this.running.has(k)) continue;
+          const won = await this.store.claimMessage(msg.id);
+          if (!won) continue;
+          log.info(`engine: boost-front dispatched msg ${msg.id.slice(0, 8)} for ${k}`);
+          await this.dequeueOrIdle(k, session, issue, msg);
+        }
+        const remaining = await this.store.getPendingForIssue(issueId);
+        if (remaining.length === 0) this.boostedIssueIds.delete(issueId);
+      }
+      if (!this.slotAvailable()) return;
+    }
+    const slotsAvailable = Math.min(
+      this.maxConcurrent - this.activeRunningCount(),
+      this.maxConcurrent * 2 - this.running.size,
+    );
     if (slotsAvailable <= 0) {
       // Nothing can run — surface waiting work as ⏳ queued so the web does
       // not render these issues as idle while their messages sit behind the cap.
@@ -2501,8 +2880,14 @@ export class Engine {
         for (const msg of waiting) {
           const session = await this.store.getSession(msg.sessionId);
           if (!session) continue;
-          const issue = await this.store.getIssue(session.issueId);
-          if (!issue || issue.state === "closed") continue;
+      const issue = await this.store.getIssue(session.issueId);
+      if (!issue) continue;
+      if (issue.state === "closed") {
+        // Dead letter: FIFO head blocked on a closed issue would starve
+        // everything behind it forever (queue surgery 2026-10-23 found 82).
+        await this.store.updateMessageStatus(msg.id, "failed", "issue closed").catch(() => {});
+        continue;
+      }
           if (this.running.has(this.sessionKey(session, issue))) continue;
           const parts = issue.trackerScopeKey.split("/");
           if (parts.length < 2) continue;
@@ -2512,10 +2897,14 @@ export class Engine {
       } catch { /* transient store error — next cycle retries */ }
       return;
     }
-    const pending = await this.store.getGlobalPendingMessages(slotsAvailable);
+    // The fetch is a candidate window, not a slot reservation — yields and
+    // skips put rows straight back without consuming a slot, so a window
+    // equal to slotsAvailable let yield-prone infra heads starve everything
+    // behind them (2026-10-23, ~2h outage). running-size guard caps spawns.
+    const pending = await this.store.getGlobalPendingMessages(Math.max(slotsAvailable, 64));
     for (const msg of pending) {
       if (this.destroyed) return;
-      if (this.running.size >= this.maxConcurrent) break;
+      if (!this.slotAvailable()) break;
       const session = await this.store.getSession(msg.sessionId);
       if (!session || session.state === "running") continue;
       const issue = await this.store.getIssue(session.issueId);
@@ -2545,6 +2934,48 @@ export class Engine {
         ? { trackerType: issue.trackerType, scope: { owner: scopeParts[0]!, repo: scopeParts[1]! }, issueId: String(issue.trackerIssueId) }
         : undefined;
       while (next) {
+        // Fairness guard (owner 2026-10-21): per-session continuation and
+        // targeted pickups must not leapfrog a much older queued message in
+        // another session — #3975 starved ~10h while spawns flowed via this
+        // path. Yield to the global drain (age grace 10min to avoid thrash
+        // when a batch clusters in time).
+        // Owner boost (web ⚡, 2026-10-23) is an explicit per-issue override:
+        // the pinned issue's dispatches are exempt, else the guard eternally
+        // re-yields boosted work while any older backlog message pends.
+        let yieldToOlder = false;
+        try {
+          const oldest = await this.store.getOldestPendingCreatedAt();
+          if (
+            oldest &&
+            next.createdAt.getTime() > oldest.getTime() + 10 * 60_000 &&
+            !this.boostedIssueIds.has(issue.id)
+          ) {
+            yieldToOlder = true;
+          }
+        } catch {
+          /* fairness check is best-effort */
+        }
+        if (yieldToOlder) {
+          // Release the claim before yielding. The initially dispatched
+          // message was already claimed running by the caller (drain CAS /
+          // webhook dispatch); bailing out without releasing leaves a
+          // running row with no process that the reconciler parks and the
+          // stranded-resurrect sweep revives every cycle — the
+          // claim→yield→park→resurrect carousel (2026-10-23). Follow-up
+          // rows (from the expiry chain below) were fetched from pending
+          // and need no release. No drain re-trigger here: the in-flight
+          // drain loop already advances to the next (older) candidate, and
+          // a fresh drain would re-pick this same just-released message
+          // infra-first — the recursive yield storm (2026-10-23, 0.4.136).
+          if (next.id === msg.id) {
+            await this.store.updateMessageStatus(next.id, "pending");
+            this.running.delete(k);
+            this.currentMessage.delete(k);
+            await this.store.updateSession(session.id, { state: "idle" });
+            log.info(`engine: fairness yield — released claim on msg ${next.id.slice(0, 8)} for ${k} (older work waiting)`);
+          }
+          return;
+        }
         // Age from pending_since (when it entered/last re-entered pending),
         // NOT created_at: recover() shifts pending_since to now on restart,
         // so time spent down never expires a queued message (ework#5).
@@ -2563,7 +2994,13 @@ export class Engine {
         // Silent drops read as "no one picked this up" (ework#957) — the user
         // must see that work was discarded and how to re-trigger it.
         const hoursCap = Math.round(Engine.MAX_PENDING_AGE_MS / 3_600_000);
-        void this.getTracker(issue.trackerType).createComment(ref, `[system] 🏷 ${this.sessionRef(session)} ⚡ 排队超时：${expiredCount} 条消息在繁忙队列中等待超过 ${hoursCap} 小时，已被丢弃（未执行）。如仍需处理，请回复"继续"重新触发。`).catch((err) => log.warn(`engine: queue-timeout notice failed for ${k}:`, (err as Error).message));
+        const timeoutNotice = `[system] 🏷 ${this.sessionRef(session)} ⚡ 排队超时：${expiredCount} 条消息在繁忙队列中等待超过 ${hoursCap} 小时，已被丢弃（未执行）。如仍需处理，请回复"继续"重新触发。`;
+        void this.getTracker(issue.trackerType).createComment(ref, timeoutNotice).catch((err) => log.warn(`engine: queue-timeout notice failed for ${k}:`, (err as Error).message));
+        // Owner 2026-10-21: the drop must be visible on GitHub too — mirror-only
+        // notices are invisible without opening every issue by hand. Best-effort
+        // POST via the shared PAT; failure only logs (the mirror copy above is
+        // the source of truth).
+        void this.postGitHubNotice(issue, timeoutNotice);
       }
       if (!next) {
         this.clearRuntimeState(k);
@@ -2769,6 +3206,81 @@ export class Engine {
   private startGlobalObserver() {
     // Single global timer that checks all active issues
     this.observerTimer = setInterval(() => this.runObserverCycle(), Engine.OBSERVER_INTERVAL_MS);
+    // Zombie reconciliation (owner 2026-10-21): running rows whose backing
+    // process is gone (preempt/replace/crash paths that escaped the inline
+    // guards) are parked automatically instead of accumulating as ghosts
+    // that fool every count-based diagnostic. Grace 3min so spawn windows
+    // (claim → exec → pid persist) never trip it.
+    this.reconcileTimer = setInterval(() => void this.reconcileRunningRows(), Engine.OBSERVER_INTERVAL_MS);
+  }
+
+  private reconcileTimer?: ReturnType<typeof setInterval>;
+
+  private async postGitHubNotice(issue: Issue, body: string): Promise<void> {
+    try {
+      const pat = await Bun.file("/root/ework-gh-pat").text().catch(() => undefined);
+      if (!pat) return;
+      const scope = issue.trackerScopeKey.split("/");
+      if (scope.length !== 2) return;
+      const proc = Bun.spawnSync(["curl", "-sS", "-o", "/dev/null", "-w", "%{http_code}",
+        "-X", "POST",
+        "-H", `Authorization: Bearer ${pat.trim()}`,
+        "-H", "Accept: application/vnd.github+json",
+        "--proxy", "http://192.168.10.157:20176",
+        "--max-time", "20",
+        "-d", JSON.stringify({ body }),
+        `https://api.github.com/repos/${scope[0]}/${scope[1]}/issues/${issue.trackerIssueId}/comments`], {
+        env: { ...process.env },
+      });
+      const code = proc.stdout.toString().trim();
+      if (code !== "201") {
+        log.warn(`engine: GitHub queue-timeout notice for ${issue.trackerScopeKey}#${issue.trackerIssueId} → HTTP ${code}`);
+      }
+    } catch (err) {
+      log.warn(`engine: GitHub queue-timeout notice failed: ${(err as Error).message}`);
+    }
+  }
+
+  private async reconcileRunningRows(): Promise<void> {
+    if (this.destroyed) return;
+    try {
+      const rows = await this.store.getRunningWithPid();
+      const now = Date.now();
+      const dead: { id: string; key: string }[] = [];
+      for (const r of rows) {
+        if (now - r.updatedAt.getTime() < 3 * 60_000) continue;
+        if (this.running.has(r.key)) {
+          // In-memory slot — normally trusted, but a process that died
+          // without its exit handler running leaks the slot forever
+          // (#4352). Park only when the recorded pid is verifiably dead;
+          // null pid = claimed but not yet spawned, keep waiting.
+          if (r.pid == null) continue;
+          let alive = false;
+          try { process.kill(r.pid, 0); alive = true; } catch { /* dead */ }
+          if (alive) continue;
+        }
+        // A live session pid only proves SOME run on that session is alive —
+        // a stuck claimed row on the same session hides behind it forever
+        // (carousel relief 2026-10-23). A running row this engine is not
+        // itself executing is an orphan regardless of pid: park it, recovery
+        // re-dispatches.
+        dead.push({ id: r.id, key: r.key });
+      }
+      if (dead.length > 0) {
+        for (const r of dead) {
+          await this.store.updateMessageStatus(r.id, "interrupted");
+          this.running.delete(r.key);
+          this.currentMessage.delete(r.key);
+          this.processes.delete(r.key);
+          this.startedAt.delete(r.key);
+          this.lastOutputAt.delete(r.key);
+        }
+        log.info(`engine: reconciler parked ${dead.length} zombie running row(s) (orphaned claim)`);
+        void this.drainGlobalPending();
+      }
+    } catch (err) {
+      log.warn(`engine: zombie reconciliation failed: ${(err as Error).message}`);
+    }
   }
 
   private startObserver(issue: Issue) {
@@ -2896,7 +3408,7 @@ export class Engine {
     if (webReachable) {
       try {
         const pending = await this.store.getGlobalPendingMessages(1);
-        if (pending.length > 0 && this.running.size < this.maxConcurrent) {
+        if (pending.length > 0 && this.slotAvailable()) {
           log.info("engine: observer — found stranded pending messages, draining");
           void this.drainGlobalPending();
         }
@@ -3041,7 +3553,13 @@ export class Engine {
               err => log.error(`engine: stuck-nudge comment failed for ${k}:`, (err as Error).message)
             );
 
-            this.forceStop(k);
+            // Await the stop and only arm it against a run that still exists:
+            // the un-awaited variant raced execProcess's awaits, arming
+            // `stopping` after a healthy exit-0 had already settled done
+            // (zombie factory contributor, Oct 2026).
+            if (this.processes.get(k)) {
+              await this.forceStop(k);
+            }
 
             // A stuck hang is the dead-provider signature: open the circuit so
             // the pool stops picking it, and leave the nudge unpinned so the
@@ -3061,7 +3579,9 @@ export class Engine {
             await tracker.createComment(ref, `[system] ⛔ **${session.name}** stuck for ${minutes} min, gave up after ${this.maxStuckNudges} restart(s).`).catch(
               err => log.error(`engine: stuck-giveup comment failed for ${k}:`, (err as Error).message)
             );
-            this.forceStop(k);
+            if (this.processes.get(k)) {
+              await this.forceStop(k);
+            }
             this.stuckNudgeRounds.delete(k);
           }
         }
@@ -3480,8 +4000,8 @@ export class Engine {
     await this.store.updateMessageStatus(messageId, "pending");
     const k = this.sessionKey(session, issue);
     if (!this.running.has(k)) {
-      if (this.running.size >= this.maxConcurrent) {
-        log.info(`engine: retry queued for ${k} (concurrency ${this.running.size}/${this.maxConcurrent})`);
+      if (!this.slotAvailable()) {
+        log.info(`engine: retry queued for ${k} (concurrency api ${this.activeRunningCount()}/${this.maxConcurrent}, procs ${this.running.size})`);
       } else {
         await this.dequeueOrIdle(k, session, issue, msg, { force: true });
       }
@@ -3548,7 +4068,11 @@ export class Engine {
     this.currentPrompt.delete(key);
     this.processExitNudgeRounds.delete(key);
     this.stuckNudgeRounds.delete(key);
-    this.generation.delete(key);
+    // Bump (never delete) the generation: a deleted gen lets the next run
+    // re-mint the SAME number, aliasing the stale stopping flag onto an
+    // innocent successor — its normal exit-0 then hit "finishRun skipped
+    // (force-stopped)" and leaked the slot forever (zombie factory, Oct 2026).
+    this.generation.set(key, (this.generation.get(key) ?? 0) + 1);
     // Update session and messages
     const parsed = parseKey(key);
     if (parsed) {
@@ -3585,6 +4109,7 @@ export class Engine {
     this.destroyed = true;
     this.stopHeartbeat();
     if (this.observerTimer) clearInterval(this.observerTimer);
+    if (this.reconcileTimer) clearInterval(this.reconcileTimer);;
     this.observedIssues.clear();
     for (const [, proc] of this.processes) {
       try { process.kill(proc.pid, "SIGKILL"); } catch { /* dead */ }

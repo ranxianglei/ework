@@ -53,7 +53,11 @@ export function createServer(
 
     const event = tracker.parseWebhookEvent(rawBody);
     if (!event) {
-      return new Response("unrecognized event", { status: 400 });
+      // Unknown shapes are acked and dropped, not 400'd: a 400 makes the web's
+      // retry loop burn attempts on events we will never understand (e.g.
+      // action=edited), crowding out retries for events that matter.
+      log.info("webhook: unrecognized event — acking and ignoring");
+      return new Response("ok", { status: 200 });
     }
 
     log.info(

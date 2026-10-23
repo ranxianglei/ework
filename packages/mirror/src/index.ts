@@ -1,7 +1,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { loadConfig } from "./config";
 import { initDB } from "./db";
-import { parseEvent, ParseError } from "./ework";
+import { parseEvent, ParseError, IgnoredEventError } from "./ework";
 import { handleIssueEvent, handleCommentEvent } from "./mirror";
 
 const cfg = loadConfig();
@@ -62,6 +62,10 @@ const server = Bun.serve({
     try {
       parsed = parseEvent(rawBody, eventHeader);
     } catch (e) {
+      if (e instanceof IgnoredEventError) {
+        console.log(`[ework-mirror] ignoring webhook (${e.message})`);
+        return new Response("ignored", { status: 202 });
+      }
       const msg = e instanceof Error ? e.message : String(e);
       console.warn(`[ework-mirror] parse failed: ${msg}`);
       return new Response(`bad payload: ${msg}`, { status: 400 });

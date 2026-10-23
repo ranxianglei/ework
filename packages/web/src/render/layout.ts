@@ -3,6 +3,7 @@ import type { IssueAction } from "../issue-actions-hook";
 export interface LayoutProps {
   title: string;
   issueTitle: string;
+  issueKind?: "issue" | "discussion";
   repoPath: string;
   issueNumber: number;
   upstreamUrl?: string;
@@ -217,6 +218,9 @@ export function renderLayout(props: LayoutProps, inner: string, initialItems: st
         ? `<button type="button" class="action-btn dispatch-btn" data-action-href="${escapeAttr(repoIssuesHref)}/${props.issueNumber}/dispatch-on" title="允许自动接单">🔔 恢复接单</button>`
         : `<button type="button" class="action-btn dispatch-btn" data-action-href="${escapeAttr(repoIssuesHref)}/${props.issueNumber}/dispatch-off" data-action-confirm="设为不自动接单？" title="关闭此 issue 的自动接单">🔕 暂停接单</button>`
     : "";
+  const boostBtnHtml = showActions
+    ? `<button type="button" class="action-btn dispatch-btn" data-action-href="${escapeAttr(repoIssuesHref)}/${props.issueNumber}/boost" title="手动接单：排队消息立即提升到最前，有空位直接启动">⚡ 接单</button>`
+    : "";
   const resetBtnHtml = showActions
     ? `<button type="button" class="action-btn dispatch-btn" data-action-href="${escapeAttr(repoIssuesHref)}/${props.issueNumber}/reset-session" data-action-confirm="重置 AI 会话？下次触发将从全新会话开始（历史评论保留）" title="重置 AI 会话（下次触发开新会话）">🔄 重置会话</button>`
     : "";
@@ -252,14 +256,14 @@ export function renderLayout(props: LayoutProps, inner: string, initialItems: st
   ${props.upstreamUrl ? `<a href="${escapeAttr(props.upstreamUrl)}" target="_blank" rel="noopener" title="跳转到上游项目" style="color:var(--header-text);text-decoration:none;font-size:.85em">↗</a>` : ""}
 </header>
 <div class="meta-bar">
-  <h1>${escapeHtml(props.issueTitle)}</h1>
+  <h1>${props.issueKind === "discussion" ? `<span class="kind-tag" title="GitHub Discussion">💬</span> ` : ""}${escapeHtml(props.issueTitle)}</h1>
   ${props.authorLineHtml ?? ""}
   ${props.mergeStateHtml ?? ""}
   ${props.issueReactionsHtml ?? ""}
   <div class="meta-status">
     <span class="state-badge ${stateClass}">${stateLabel}</span>
     ${aiBadgeHtml}
-    ${(haltBtnHtml || dispatchBtnHtml || (props.customActions ?? []).length) ? `<span class="action-group">${haltBtnHtml}${dispatchBtnHtml}${resetBtnHtml}${runtimeSelectHtml}${modelSelectHtml}${(props.customActions ?? []).map((a) => {
+    ${(haltBtnHtml || dispatchBtnHtml || (props.customActions ?? []).length) ? `<span class="action-group">${haltBtnHtml}${dispatchBtnHtml}${resetBtnHtml}${boostBtnHtml}${runtimeSelectHtml}${modelSelectHtml}${(props.customActions ?? []).map((a) => {
       const attrs = [`data-action-href="${escapeAttr(a.href)}"`];
       if (a.method && a.method !== "POST") attrs.push(`data-action-method="${escapeAttr(a.method)}"`);
       if (a.confirm) attrs.push(`data-action-confirm="${escapeAttr(a.confirm)}"`);

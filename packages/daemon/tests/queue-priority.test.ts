@@ -121,3 +121,34 @@ describe("getGlobalPendingMessages ordering", () => {
     await store.close();
   });
 });
+
+it("infra worker sessions (conflict-worker/ci-worker) outrank project priority", async () => {
+  const store = new Store([{ scope: "acme/widgets", priority: 100 }]);
+  const issueA = await store.findOrCreateIssue(ref("1", "acme/widgets"), "acme/widgets", "normal");
+  const issueB = await store.findOrCreateIssue(ref("2", "acme/widgets"), "acme/widgets", "ci");
+  const normal = await store.createSession(issueA.id, "ework-daemon");
+  const worker = await store.createSession(issueB.id, "ci-worker");
+  const mOld = await store.createMessage(normal.id, "older normal msg");
+  const mNew = await store.createMessage(worker.id, "newer ci msg");
+  await getDB().run("UPDATE {{messages}} SET created_at = ? WHERE uid = ?", ["2026-10-17T01:00:00.000Z", mOld.id]);
+  await getDB().run("UPDATE {{messages}} SET created_at = ? WHERE uid = ?", ["2026-10-17T02:00:00.000Z", mNew.id]);
+  const pending = await store.getGlobalPendingMessages(5);
+  expect(pending[0]!.id).toBe(mNew.id);
+  expect(pending[1]!.id).toBe(mOld.id);
+  await store.close();
+});
+
+it("release-worker session ranks in the infra tier", async () => {
+  const store = new Store([{ scope: "acme/widgets", priority: 100 }]);
+  const issueA = await store.findOrCreateIssue(ref("1", "acme/widgets"), "acme/widgets", "normal");
+  const issueB = await store.findOrCreateIssue(ref("2", "acme/widgets"), "acme/widgets", "rel");
+  const normal = await store.createSession(issueA.id, "ework-daemon");
+  const rel = await store.createSession(issueB.id, "release-worker");
+  const mOld = await store.createMessage(normal.id, "older normal msg");
+  const mNew = await store.createMessage(rel.id, "newer release msg");
+  await getDB().run("UPDATE {{messages}} SET created_at = ? WHERE uid = ?", ["2026-10-17T03:00:00.000Z", mOld.id]);
+  await getDB().run("UPDATE {{messages}} SET created_at = ? WHERE uid = ?", ["2026-10-17T04:00:00.000Z", mNew.id]);
+  const pending = await store.getGlobalPendingMessages(5);
+  expect(pending[0]!.id).toBe(mNew.id);
+  await store.close();
+});
