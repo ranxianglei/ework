@@ -1445,13 +1445,25 @@ export class Engine {
     this.boostedIssueIds.add(issue.id);
     let dispatched = 0;
     for (const msg of pendings) {
-      if (!this.boostSlotAvailable(msg.sourceCommentId)) break;
+      if (!this.boostSlotAvailable(msg.sourceCommentId)) {
+        log.info(`engine: boost diag — no slot (procs ${this.running.size}/${(msg.sourceCommentId ? this.effectiveGlobalCap(msg.sourceCommentId) : this.maxConcurrent) * 2})`);
+        break;
+      }
       const session = await this.store.getSession(msg.sessionId);
-      if (!session || session.state === "running") continue;
+      if (!session || session.state === "running") {
+        log.info(`engine: boost diag — skip msg ${msg.id.slice(0, 8)}: session ${session ? `state=${session.state}` : "missing"}`);
+        continue;
+      }
       const k = this.sessionKey(session, issue);
-      if (this.running.has(k)) continue;
+      if (this.running.has(k)) {
+        log.info(`engine: boost diag — skip msg ${msg.id.slice(0, 8)}: ${k} already in memory running set`);
+        continue;
+      }
       const won = await this.store.claimMessage(msg.id);
-      if (!won) continue;
+      if (!won) {
+        log.info(`engine: boost diag — skip msg ${msg.id.slice(0, 8)}: claim CAS lost`);
+        continue;
+      }
       log.info(`engine: boost dispatched msg ${msg.id.slice(0, 8)} for ${k} (owner policy)`);
       await this.dequeueOrIdle(k, session, issue, msg);
       dispatched++;
