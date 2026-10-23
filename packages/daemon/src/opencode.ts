@@ -631,6 +631,7 @@ export class Engine {
   private heartbeatTimer?: ReturnType<typeof setInterval>;
   private maxConcurrent: number;
   private maxConcurrentExplicit: boolean;
+  private apiIdleGraceMs: number;
   private conflictMaxConcurrent: number;
   private ciMaxConcurrent: number;
   private readonly infraNightBoost: boolean;
@@ -672,13 +673,36 @@ export class Engine {
   // free, conflict/ci work may occupy them — expanded cap = max(configured,
   // free global slots). Keeps the fleet busy on CI-heavy idle periods.
   private infraIdleExpandedCap(base: number): number {
-    let infraRunning = 0;
+    const now = Date.now();
+    let ordinaryActive = 0;
     for (const k of this.running.keys()) {
-      if (k.includes("@conflict-worker") || k.includes("@ci-worker")) infraRunning++;
+      if (k.includes("@conflict-worker") || k.includes("@ci-worker")) continue;
+      const last = this.lastOutputAt.get(k) ?? this.startedAt.get(k) ?? now;
+      if (now - last <= this.apiIdleGraceMs) ordinaryActive++;
     }
-    const ordinary = this.running.size - infraRunning;
-    const freeGlobal = Math.max(0, this.maxConcurrent - ordinary);
+    const freeGlobal = Math.max(0, this.maxConcurrent - ordinaryActive);
     return Math.max(base, freeGlobal);
+  }
+
+  // API-slot accounting (owner policy 2026-10-23): slots track real model
+  // concurrency, not process count. A session with recent output (streaming
+  // tokens) occupies a slot; one silent past apiIdleGraceMs — typically inside
+  // a long tool run — temporarily releases it so the model never sits idle
+  // behind sleeping agents. A hard 2× process ceiling bounds the overshoot
+  // when several silent agents resume API calls at once.
+  private activeRunningCount(now = Date.now()): number {
+    let active = 0;
+    for (const k of this.running.keys()) {
+      const last = this.lastOutputAt.get(k) ?? this.startedAt.get(k) ?? now;
+      if (now - last <= this.apiIdleGraceMs) active++;
+    }
+    return active;
+  }
+
+  private slotAvailable(sourceCommentId?: string): boolean {
+    const cap = sourceCommentId ? this.effectiveGlobalCap(sourceCommentId) : this.maxConcurrent;
+    if (this.running.size >= cap * 2) return false;
+    return this.activeRunningCount() < cap;
   }
 
   // Sticky worker session with rotation (owner policy 2026-10-20): one session
@@ -811,6 +835,7 @@ export class Engine {
     this.replyBurstCfg = opts.replyBurst ?? cfg.replyBurst;
     this.maxConcurrent = cfg.work.maxConcurrent;
     this.maxConcurrentExplicit = cfg.work.maxConcurrentExplicit;
+    this.apiIdleGraceMs = cfg.work.apiIdleGraceMs ?? 180_000;
     this.conflictMaxConcurrent = cfg.work.conflictMaxConcurrent ?? 1;
     this.ciMaxConcurrent = cfg.work.ciMaxConcurrent ?? 1;
     this.infraNightBoost = cfg.work.infraNightBoost !== false;
@@ -1407,7 +1432,7 @@ export class Engine {
     }
     let dispatched = 0;
     for (const msg of pendings) {
-      if (this.running.size >= this.effectiveGlobalCap(msg.sourceCommentId)) break;
+      if (!this.slotAvailable(msg.sourceCommentId)) break;
       const session = await this.store.getSession(msg.sessionId);
       if (!session || session.state === "running") continue;
       const k = this.sessionKey(session, issue);
@@ -1915,8 +1940,8 @@ export class Engine {
       return;
     }
 
-    if (this.running.size >= this.effectiveGlobalCap(msg.sourceCommentId)) {
-      log.info(`engine: concurrency limit reached (${this.running.size}/${this.effectiveGlobalCap(msg.sourceCommentId)}), message ${msg.id.slice(0, 8)} queued for ${k}`);
+    if (!this.slotAvailable(msg.sourceCommentId)) {
+      log.info(`engine: concurrency limit reached (api ${this.activeRunningCount()}/${this.effectiveGlobalCap(msg.sourceCommentId)}, procs ${this.running.size}), message ${msg.id.slice(0, 8)} queued for ${k}`);
       void tracker.updateStatus(ref, "queued");
       return;
     }
@@ -2435,7 +2460,7 @@ export class Engine {
       if (!session) return;
       const pending = await this.store.getNextPendingMessage(session.id);
       if (!pending) return;
-      if (!this.running.has(k) && this.running.size < this.maxConcurrent) {
+      if (!this.running.has(k) && this.slotAvailable()) {
         await this.dequeueOrIdle(k, session, issue, pending);
       } else {
         // Busy elsewhere: stay pending; the observer cycle / next drain picks it up.
@@ -2690,8 +2715,8 @@ export class Engine {
     if (nextMsg) {
       const current = await this.store.getSession(session.id);
       if (current && current.state !== "idle") {
-        if (this.running.size >= this.maxConcurrent) {
-          log.info(`engine: concurrency limit (${this.running.size}/${this.maxConcurrent}), keeping msg ${nextMsg.id.slice(0, 8)} pending for ${k}`);
+        if (!this.slotAvailable()) {
+          log.info(`engine: concurrency limit (api ${this.activeRunningCount()}/${this.maxConcurrent}, procs ${this.running.size}), keeping msg ${nextMsg.id.slice(0, 8)} pending for ${k}`);
         } else {
           await this.dequeueOrIdle(k, current, issue, nextMsg);
           return;
@@ -2730,9 +2755,9 @@ export class Engine {
     await this.refreshPendingInfraCount();
     // Owner-boosted issues jump the queue: dispatch their pending messages
     // before the global priority query sees anything else.
-    if (this.boostedIssueIds.size > 0 && this.maxConcurrent - this.running.size > 0) {
+    if (this.boostedIssueIds.size > 0 && this.slotAvailable()) {
       for (const issueId of [...this.boostedIssueIds]) {
-        if (this.running.size >= this.maxConcurrent) break;
+        if (!this.slotAvailable()) break;
         let pendings: Awaited<ReturnType<Store["getPendingForIssue"]>>;
         try {
           pendings = await this.store.getPendingForIssue(issueId);
@@ -2749,7 +2774,7 @@ export class Engine {
           continue;
         }
         for (const msg of pendings) {
-          if (this.running.size >= this.maxConcurrent) break;
+          if (!this.slotAvailable()) break;
           const session = await this.store.getSession(msg.sessionId);
           if (!session || session.state === "running") continue;
           const k = this.sessionKey(session, issue);
@@ -2762,9 +2787,12 @@ export class Engine {
         const remaining = await this.store.getPendingForIssue(issueId);
         if (remaining.length === 0) this.boostedIssueIds.delete(issueId);
       }
-      if (this.running.size >= this.maxConcurrent) return;
+      if (!this.slotAvailable()) return;
     }
-    const slotsAvailable = this.maxConcurrent - this.running.size;
+    const slotsAvailable = Math.min(
+      this.maxConcurrent - this.activeRunningCount(),
+      this.maxConcurrent * 2 - this.running.size,
+    );
     if (slotsAvailable <= 0) {
       // Nothing can run — surface waiting work as ⏳ queued so the web does
       // not render these issues as idle while their messages sit behind the cap.
@@ -2797,7 +2825,7 @@ export class Engine {
     const pending = await this.store.getGlobalPendingMessages(Math.max(slotsAvailable, 64));
     for (const msg of pending) {
       if (this.destroyed) return;
-      if (this.running.size >= this.maxConcurrent) break;
+      if (!this.slotAvailable()) break;
       const session = await this.store.getSession(msg.sessionId);
       if (!session || session.state === "running") continue;
       const issue = await this.store.getIssue(session.issueId);
@@ -3266,7 +3294,7 @@ export class Engine {
     if (webReachable) {
       try {
         const pending = await this.store.getGlobalPendingMessages(1);
-        if (pending.length > 0 && this.running.size < this.maxConcurrent) {
+        if (pending.length > 0 && this.slotAvailable()) {
           log.info("engine: observer — found stranded pending messages, draining");
           void this.drainGlobalPending();
         }
@@ -3857,8 +3885,8 @@ export class Engine {
     await this.store.updateMessageStatus(messageId, "pending");
     const k = this.sessionKey(session, issue);
     if (!this.running.has(k)) {
-      if (this.running.size >= this.maxConcurrent) {
-        log.info(`engine: retry queued for ${k} (concurrency ${this.running.size}/${this.maxConcurrent})`);
+      if (!this.slotAvailable()) {
+        log.info(`engine: retry queued for ${k} (concurrency api ${this.activeRunningCount()}/${this.maxConcurrent}, procs ${this.running.size})`);
       } else {
         await this.dequeueOrIdle(k, session, issue, msg, { force: true });
       }

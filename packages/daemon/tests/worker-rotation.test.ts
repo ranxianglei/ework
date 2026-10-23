@@ -7,6 +7,9 @@ const makeSelf = () => {
   self.conflictMaxConcurrent = 1;
   self.ciMaxConcurrent = 1;
   self.running = new Map();
+  self.lastOutputAt = new Map();
+  self.apiIdleGraceMs = 180_000;
+  self.startedAt = new Map();
   return self;
 };
 

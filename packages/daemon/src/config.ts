@@ -58,6 +58,10 @@ export const configSchema = z.object({
     capacity: z.coerce.number().int().positive().default(4),
     maxConcurrent: z.coerce.number().int().positive().default(4),
     maxConcurrentExplicit: z.boolean().default(false),
+    // API-slot accounting (owner policy 2026-10-23): a session silent for longer
+    // than this grace no longer occupies an API slot (long tool run); slots track
+    // real model concurrency, not process count.
+    apiIdleGraceMs: z.coerce.number().int().positive().default(180_000),
     heartbeatMs: z.coerce.number().int().positive().default(10_000),
     leaseTtlMs: z.coerce.number().int().positive().default(60_000),
     // Infra-failure auto-retry budget (web unreachable / ENOSPC / signal-kill).
@@ -123,10 +127,14 @@ const TEST_DEFAULTS = {
 function readWorkSection() {
   const capacity = process.env.WORK_DAEMON_CAPACITY ? Number(process.env.WORK_DAEMON_CAPACITY) : 4;
   const maxConcurrentExplicit = process.env.WORK_MAX_CONCURRENT != null;
+  const apiIdleGraceMs = process.env.WORK_API_IDLE_GRACE_MS
+    ? Number(process.env.WORK_API_IDLE_GRACE_MS)
+    : 180_000;
   return {
     capacity,
     maxConcurrent: maxConcurrentExplicit ? Number(process.env.WORK_MAX_CONCURRENT) : capacity,
     maxConcurrentExplicit,
+    apiIdleGraceMs,
     heartbeatMs: process.env.WORK_DAEMON_HEARTBEAT_MS ? Number(process.env.WORK_DAEMON_HEARTBEAT_MS) : 10_000,
     leaseTtlMs: process.env.WORK_DAEMON_LEASE_TTL_MS ? Number(process.env.WORK_DAEMON_LEASE_TTL_MS) : 60_000,
     infraRetryMax: process.env.WORK_INFRA_RETRY_MAX != null && process.env.WORK_INFRA_RETRY_MAX !== ""

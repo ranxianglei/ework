@@ -61,6 +61,9 @@ describe("execProcess merge-conflict concurrency cap", () => {
     // resolves to the configured cap instead of expanding it.
     self.maxConcurrent = opts.cap;
     self.running = new Map([["gitea:acme/widgets#1@ework-daemon", {}]]);
+    self.lastOutputAt = new Map();
+    self.apiIdleGraceMs = 180_000;
+    self.startedAt = new Map();
     self.currentMessage = new Map();
     self.currentModel = new Map();
     self.generation = new Map();
