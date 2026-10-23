@@ -67,7 +67,7 @@ Configuration lives in three layers:
 
 | Layer | Where | Takes effect |
 |---|---|---|
-| Per-project dynamic (dispatch toggle, wake whitelist, community mode, models) | web UI → project → Settings → 🤖 AI | ≤ 60s, no restart |
+| Per-project dynamic (dispatch toggle, wake whitelist, decision-makers, community mode, models) | web UI → project → Settings → 🤖 AI | ≤ 60s, no restart |
 | Per-service environment (ports, tokens, model pool, quotas, GC TTL) | each service's `.env` (see `systemctl cat <unit>`) | on restart |
 | Agent runtime (models, plugins, global rules) | `opencode.json` + `AGENTS.md` in the daemon's opencode config dir | next session spawn |
 
@@ -102,6 +102,31 @@ Conventions:
 - Conventional Commits; every commit must leave `bun run check` clean.
 - Publishing is per-package (`npm version patch|minor` → `NPM_ALLOW_DANGEROUS=1 npm publish`), then aio's lockfile gets re-pinned so installs pick it up.
 - Per-package specs: see each `packages/*/AGENTS.md`.
+
+## Security
+
+### Trust model: who counts as the owner
+
+Agent prompts used to carry no notion of authority — any human comment could read as an owner directive (an external reviewer's one-letter reply was once executed as "owner decided"). Every initial/forward prompt now carries an **authority block**:
+
+- Per-project **decision-makers** (project → Settings → 🤖 AI → 👑 决策者 / Deciders): their explicit statements are the only ones that count as final decisions; everyone else's confirmations are reference opinion. First entry = primary owner.
+- Projects without a decider list fall back to the repo owner as the decision-maker.
+- Once a project configures a wake whitelist or decider list, trust goes **strict**: authors outside those lists are labelled `unverified outside user` in every prompt and their text is framed as untrusted data (prompt-injection resistant). Unconfigured projects keep the legacy behavior (all authors treated as trusted) so private deploys don't break; the daemon logs a one-time warn per project.
+
+This changes how agents *interpret* comments, not who can wake them — dispatch policy (wake whitelist, community mode) is unchanged.
+
+### Least-privilege GitHub tokens
+
+An agent's blast radius is set by its token scopes, not by how careful it feels. Scope each credential to its job:
+
+| Credential | Job | Suggested scopes |
+|---|---|---|
+| mirror sync token | pull issues + comments from GitHub | fine-grained PAT: `issues: read` per repo |
+| mirror write token | push local state upstream | fine-grained PAT: `issues: write` per repo (no `contents`) |
+| agent token (push / PR / reply) | commit, open PRs, comment | fine-grained PAT per repo: `contents: rw`, `pull_requests: write`, `issues: rw` |
+| fork-flow token | fork third-party repos via API | one classic PAT with `public_repo` only — fine-grained tokens cannot fork via API |
+
+Audit existing tokens against this table; any credential holding classic `write:repository` or org/admin scope for these jobs should be rotated down.
 
 ## License
 
