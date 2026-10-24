@@ -86,31 +86,31 @@ describe("production config env mapping (wake policy)", () => {
 });
 
 describe("workdir GC + disk watermark env mapping (issue #4)", () => {
-  test("defaults: workdirTtlDays=7, minFreeMb=1024 (production mode)", () => {
+  test("defaults: workdir GC off, minFreeMb=1024 (production mode; owner policy 2026-10-24: cleanup default-disabled)", () => {
     setProductionBasics();
-
-    const cfg = loadConfig();
-
-    expect(cfg.opencode.workdirTtlDays).toBe(7);
-    expect(cfg.opencode.minFreeMb).toBe(1024);
-  });
-
-  test("defaults hold in test mode too", () => {
-    const cfg = loadConfig();
-
-    expect(cfg.env).toBe("test");
-    expect(cfg.opencode.workdirTtlDays).toBe(7);
-    expect(cfg.opencode.minFreeMb).toBe(1024);
-  });
-
-  test("env overrides: WORK_WORKDIR_TTL_DAYS=0 disables GC, WORK_MIN_FREE_MB is honored", () => {
-    setProductionBasics();
-    process.env.WORK_WORKDIR_TTL_DAYS = "0";
-    process.env.WORK_MIN_FREE_MB = "512";
 
     const cfg = loadConfig();
 
     expect(cfg.opencode.workdirTtlDays).toBe(0);
+    expect(cfg.opencode.minFreeMb).toBe(1024);
+  });
+
+  test("defaults hold in test mode too (GC off)", () => {
+    const cfg = loadConfig();
+
+    expect(cfg.env).toBe("test");
+    expect(cfg.opencode.workdirTtlDays).toBe(0);
+    expect(cfg.opencode.minFreeMb).toBe(1024);
+  });
+
+  test("env overrides: WORK_WORKDIR_TTL_DAYS=7 re-enables GC, WORK_MIN_FREE_MB is honored", () => {
+    setProductionBasics();
+    process.env.WORK_WORKDIR_TTL_DAYS = "7";
+    process.env.WORK_MIN_FREE_MB = "512";
+
+    const cfg = loadConfig();
+
+    expect(cfg.opencode.workdirTtlDays).toBe(7);
     expect(cfg.opencode.minFreeMb).toBe(512);
   });
 });
