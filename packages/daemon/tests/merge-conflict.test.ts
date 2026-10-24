@@ -44,11 +44,12 @@ describe("handleMergeConflict gating", () => {
     const worker = opts.existingWorker ?? { id: "w1", name: "conflict-worker" };
     const createSession = vi.fn(async () => worker);
     const self = Object.create(Engine.prototype) as Record<string, unknown>;
-    self.cfg = { bot: { username: "ework-daemon" }, daemon: { wakeLogins: ["ranxianglei"], noWakeLogins: [], nonWakingAuthors: [] } };
+    self.cfg = { bot: { username: "ework-daemon" }, daemon: { wakeLogins: ["ranxianglei"], noWakeLogins: [], nonWakingAuthors: [] }, work: { ciFixMaxAttempts: 2, conflictFixMaxAttempts: 2, autoLaneWindowMs: 86_400_000 } };
     self.store = {
       findIssue: vi.fn(async () => ({ id: 7, state: opts.issueState ?? "active" })),
       createSession,
       getSessionsForIssue: vi.fn(async () => [{ id: "w1", name: "conflict-worker-N" }]),
+      countAutoLaneMessages: vi.fn(async () => 0),
       countMessagesByStatus: vi.fn(async () => 5),
     };
     self.conflictCategory = () => "N";

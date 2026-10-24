@@ -500,6 +500,18 @@ export class Store {
     return res?.n ?? 0;
   }
 
+  /** Auto-lane (ci-fail/merge-conflict) attempt budget: prior dispatches for
+   * an issue within the window, any status — done/failed/interrupted alike,
+   * an attempt is an attempt. Backs the retry cap + degradation policy
+   * (owner directive 2026-10-24: 失败路径必须有自己的超时/重试/降级策略). */
+  async countAutoLaneMessages(issueId: string, sourcePrefix: string, sinceIso: string): Promise<number> {
+    const res = await getDB().get<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM {{messages}} m JOIN {{op_sessions}} s ON s.uid = m.session_id WHERE s.issue_id = ? AND m.source_comment_id LIKE ? AND m.created_at >= ?",
+      [issueId, `${sourcePrefix}%`, sinceIso]
+    );
+    return res?.n ?? 0;
+  }
+
   async getMessagesForSession(sessionId: string): Promise<Message[]> {
     const rows = await getDB().all<MessageRow>(
       "SELECT * FROM {{messages}} WHERE session_id = ? ORDER BY created_at DESC",

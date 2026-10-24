@@ -73,6 +73,13 @@ export const configSchema = z.object({
     conflictMaxConcurrent: z.coerce.number().int().min(1).max(8).default(1),
     ciMaxConcurrent: z.coerce.number().int().min(1).max(8).default(1),
     infraNightBoost: z.boolean().default(true),
+    // Auto-lane retry budget (owner directive 2026-10-24): the ci-fail and
+    // merge-conflict auto-repair loops get their own timeout/retry/degrade
+    // policy — at most N dispatches per PR within the window; beyond that the
+    // lane degrades (one issue comment, no dispatch) until the window expires.
+    ciFixMaxAttempts: z.coerce.number().int().positive().default(2),
+    conflictFixMaxAttempts: z.coerce.number().int().positive().default(2),
+    autoLaneWindowMs: z.coerce.number().int().positive().default(86_400_000),
   }),
   db: z.object({
     driver: z.enum(["sqlite", "mysql"]).default("sqlite"),
@@ -150,6 +157,15 @@ function readWorkSection() {
     ciMaxConcurrent: process.env.WORK_CI_MAX_CONCURRENT != null && process.env.WORK_CI_MAX_CONCURRENT !== ""
       ? Math.min(8, Math.max(1, Math.trunc(Number(process.env.WORK_CI_MAX_CONCURRENT))))
       : 1,
+    ciFixMaxAttempts: process.env.WORK_CI_FIX_MAX_ATTEMPTS != null && process.env.WORK_CI_FIX_MAX_ATTEMPTS !== ""
+      ? Math.max(1, Math.trunc(Number(process.env.WORK_CI_FIX_MAX_ATTEMPTS)))
+      : 2,
+    conflictFixMaxAttempts: process.env.WORK_CONFLICT_FIX_MAX_ATTEMPTS != null && process.env.WORK_CONFLICT_FIX_MAX_ATTEMPTS !== ""
+      ? Math.max(1, Math.trunc(Number(process.env.WORK_CONFLICT_FIX_MAX_ATTEMPTS)))
+      : 2,
+    autoLaneWindowMs: process.env.WORK_AUTO_LANE_WINDOW_MS != null && process.env.WORK_AUTO_LANE_WINDOW_MS !== ""
+      ? Math.max(1, Math.trunc(Number(process.env.WORK_AUTO_LANE_WINDOW_MS)))
+      : 86_400_000,
   };
 }
 

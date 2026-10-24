@@ -787,6 +787,10 @@ export class Engine {
   // on a corrupted image part the model 500s on; every replay re-sent it).
   // Healthy completion resets it; ≥3 arms the fresh-session reset at spawn.
   private stuckKillCount = new Map<string, number>();
+  /** Degrade-notice throttling for capped auto lanes (owner directive
+   * 2026-10-24): `${issue.id}:${lane}` → last notify timestamp. In-memory
+   * only — a restart may re-notify once, which is acceptable. */
+  private autoLaneDegradeNotified = new Map<string, number>();
   private currentPrompt = new Map<string, string>();
   private paused = false;
 
@@ -1498,6 +1502,31 @@ export class Engine {
     if (issue.state === "closed") return;
     if (!(await this.ensureOwned(issue))) return;
 
+    // Same retry cap + degradation discipline as the ci-fail lane
+    // (owner directive 2026-10-24) — a PR that keeps re-conflicting after N
+    // auto-rebases inside the window needs a human, not another attempt.
+    const cfWindowMs = this.cfg.work.autoLaneWindowMs;
+    const cfAttempts = await this.store.countAutoLaneMessages(
+      issue.id,
+      `merge-conflict-${ref.issueId}-`,
+      new Date(Date.now() - cfWindowMs).toISOString(),
+    );
+    if (cfAttempts >= this.cfg.work.conflictFixMaxAttempts) {
+      const dkey = `${issue.id}:conflict`;
+      const lastNotice = this.autoLaneDegradeNotified.get(dkey) ?? 0;
+      if (Date.now() - lastNotice >= cfWindowMs) {
+        await tracker.createComment(
+          ref,
+          `[system] ⛔ 冲突自动处理车道已达上限(${cfAttempts} 次/${Math.round(cfWindowMs / 3_600_000)}h 窗口) — 停止自动接单, 需要 owner 决策; 窗口过期后自动恢复。`,
+        ).catch(() => {});
+        this.autoLaneDegradeNotified.set(dkey, Date.now());
+      }
+      log.info(
+        `engine: merge-conflict lane cap reached (${cfAttempts}/${this.cfg.work.conflictFixMaxAttempts}) on ${scopeKey}#${ref.issueId} — degraded, no dispatch`,
+      );
+      return;
+    }
+
     // Sticky conflict worker keyed by PR CATEGORY (owner policy 2026-10-20):
     // conflicts in the same category share one specialist session so the
     // agent resolves them class-by-class instead of rebuilding context per
@@ -1513,7 +1542,9 @@ export class Engine {
       `[SYSTEM] Upstream PR conflict detected (merge state: ${mergeState}). ` +
       `The PR mirror 「${issueData.title}」 now conflicts with its base branch. ` +
       `Rebase (or merge) the target branch into your branch, resolve the conflicts, ` +
-      `force-push (rebase) or push (merge), then reply with a 七问 summary.`;
+      `force-push (rebase) or push (merge), then reply with a 七问 summary. ` +
+      `This is an auto-fix lane: attempt ${cfAttempts + 1}/${this.cfg.work.conflictFixMaxAttempts} — ` +
+      `if the conflicts need design decisions, post a verdict comment instead and stop.`;
     const prompt = this.buildForwardPrompt(
       session.name,
       this.handleLargeContent(workdir, body, `merge-conflict-${ref.issueId}.txt`),
@@ -1550,6 +1581,32 @@ export class Engine {
     if (issue.state === "closed") return;
     if (!(await this.ensureOwned(issue))) return;
 
+    // Retry cap + degradation (owner directive 2026-10-24): the lane gets its
+    // own budget — beyond N dispatches per PR within the window, stop auto-
+    // dispatching and notify the issue once; the window doubles as the loop
+    // timeout, expiring it re-arms the lane.
+    const ciWindowMs = this.cfg.work.autoLaneWindowMs;
+    const ciAttempts = await this.store.countAutoLaneMessages(
+      issue.id,
+      `ci-fail-${ref.issueId}-`,
+      new Date(Date.now() - ciWindowMs).toISOString(),
+    );
+    if (ciAttempts >= this.cfg.work.ciFixMaxAttempts) {
+      const dkey = `${issue.id}:ci`;
+      const lastNotice = this.autoLaneDegradeNotified.get(dkey) ?? 0;
+      if (Date.now() - lastNotice >= ciWindowMs) {
+        await tracker.createComment(
+          ref,
+          `[system] ⛔ CI 自动修复车道已达上限(${ciAttempts} 次/${Math.round(ciWindowMs / 3_600_000)}h 窗口) — 停止自动接单, 需要 owner 决策; 窗口过期后自动恢复。`,
+        ).catch(() => {});
+        this.autoLaneDegradeNotified.set(dkey, Date.now());
+      }
+      log.info(
+        `engine: ci-fail lane cap reached (${ciAttempts}/${this.cfg.work.ciFixMaxAttempts}) on ${scopeKey}#${ref.issueId} — degraded, no dispatch`,
+      );
+      return;
+    }
+
     const session = await this.workerSession(issue.id, "ci-worker");
 
     const workdir = await this.resolveWorkdir(session, issue);
@@ -1559,7 +1616,7 @@ export class Engine {
       `[SYSTEM] Upstream PR CI failure detected (head ${ci.sha.slice(0, 10)}).\n` +
       `The PR mirror 「${issueData.title}」 has failing checks:\n${checkList}\n` +
       `Fix the CI directly on the PR branch (fetch the check logs via the GitHub API as needed), ` +
-      `push, and reply with a 七问 summary. This is an auto-fix lane: at most 2 attempts per PR — ` +
+      `push, and reply with a 七问 summary. This is an auto-fix lane: attempt ${ciAttempts + 1}/${this.cfg.work.ciFixMaxAttempts} — ` +
       `if the failure needs design decisions or is not a small fix, post a verdict comment instead and stop.`;
     const prompt = this.buildForwardPrompt(
       session.name,

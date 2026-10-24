@@ -11,11 +11,12 @@ describe("handleCiFailed routing", () => {
   function makeSelf(opts: { issueState?: string }) {
     const enqueueOrRun = vi.fn();
     const self = Object.create(Engine.prototype) as Record<string, unknown>;
-    self.cfg = { bot: { username: "ework-daemon" }, daemon: { wakeLogins: ["ranxianglei"], noWakeLogins: [], nonWakingAuthors: [] } };
+    self.cfg = { bot: { username: "ework-daemon" }, daemon: { wakeLogins: ["ranxianglei"], noWakeLogins: [], nonWakingAuthors: [] }, work: { ciFixMaxAttempts: 2, conflictFixMaxAttempts: 2, autoLaneWindowMs: 86_400_000 } };
     self.store = {
       findIssue: vi.fn(async () => ({ id: 7, state: opts.issueState ?? "active" })),
       createSession: vi.fn(async () => ({ id: "w1", name: "ci-worker" })),
       getSessionsForIssue: vi.fn(async () => []),
+      countAutoLaneMessages: vi.fn(async () => 0),
       countMessagesByStatus: vi.fn(async () => 0),
     };
     self.ensureOwned = vi.fn(async () => true);
@@ -37,7 +38,7 @@ describe("handleCiFailed routing", () => {
     expect(s).toEqual({ id: "w1", name: "ci-worker" });
     expect(i.id).toBe(7);
     expect(String(prompt)).toContain("build");
-    expect(String(prompt)).toContain("2 attempts");
+    expect(String(prompt)).toContain("attempt 1/2");
     expect(String(sourceCommentId)).toBe("ci-fail-42-deadbeef");
   });
 
