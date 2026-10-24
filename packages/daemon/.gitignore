@@ -25,3 +25,4 @@ test/*.db-wal
 # Local data
 data/
 node_modules
+.dbguard-prod-sentinel/
