@@ -660,7 +660,7 @@ export class Engine {
     // refreshed by the drain loop; stale values only over-squeeze briefly).
     let infraDemand = this.pendingInfraCount;
     for (const k of this.running.keys()) {
-      if (k.includes("@conflict-worker") || k.includes("@ci-worker")) infraDemand++;
+      if (k.includes("@conflict-worker") || k.includes("@ci-worker") || k.includes("@ci-master")) infraDemand++;
     }
     return infraDemand > 0 ? Math.floor(this.maxConcurrent / 2) : this.maxConcurrent;
   }
@@ -676,7 +676,7 @@ export class Engine {
     const now = Date.now();
     let ordinaryActive = 0;
     for (const k of this.running.keys()) {
-      if (k.includes("@conflict-worker") || k.includes("@ci-worker")) continue;
+      if (k.includes("@conflict-worker") || k.includes("@ci-worker") || k.includes("@ci-master")) continue;
       const last = this.lastOutputAt.get(k) ?? this.startedAt.get(k) ?? now;
       if (now - last <= this.apiIdleGraceMs) ordinaryActive++;
     }
@@ -743,6 +743,7 @@ export class Engine {
       this.pendingInfraCount = await this.store.countPendingWorkerMessages([
         "conflict-worker",
         "ci-worker",
+        "ci-master",
       ]);
     } catch {
       this.pendingInfraCount = 0;
@@ -1427,6 +1428,8 @@ export class Engine {
         return this.handleMergeConflict(ref, scopeKey, issueData, tracker, event.merge?.state ?? "dirty", event.model);
       case "ci_failed":
         return this.handleCiFailed(ref, scopeKey, issueData, tracker, event.ci ?? { sha: "", checks: [] }, event.model);
+      case "master_ci_failed":
+        return this.handleMasterCiFailed(ref, scopeKey, issueData, tracker, event.ci ?? { sha: "", checks: [] }, event.model);
       case "issue_boosted":
         return this.handleBoost(ref, scopeKey, issueData, tracker);
     }
@@ -1630,6 +1633,76 @@ export class Engine {
 
     await tracker.createComment(ref, `[system] 🏷 ${this.sessionRef(session)} ❌ CI 失败(${ci.checks.map((c) => c.name).join(", ")})— 已转发 **${session.name}** 修复。`).catch(() => {});
     await this.enqueueOrRun(session, issue, prompt, tracker, ref, `ci-fail-${ref.issueId}-${ci.sha || Date.now()}`, model);
+  }
+
+  // Master-branch CI sentinel (owner directive 2026-10-24): master redness is
+  // inherited by every PR stacked on it — one master fix greens the whole
+  // fleet after a rebase. The event is bound to the project's CI coordination
+  // issue (e.g. billion-context #4599), which doubles as the status board the
+  // sentinel reports to; other agents read it before debugging their own
+  // inherited failures instead of opening duplicate CI issues.
+  private async handleMasterCiFailed(
+    ref: TrackerRef,
+    scopeKey: string,
+    issueData: TrackerEvent["issue"],
+    tracker: IssueTracker,
+    ci: NonNullable<TrackerEvent["ci"]>,
+    model?: string,
+  ) {
+    if (issueData.state !== "open") return;
+    const issue = await this.store.findIssue(ref.trackerType, scopeKey, ref.issueId);
+    if (!issue) {
+      log.info(`engine: master_ci_failed on untracked ${scopeKey}#${ref.issueId} — skipping`);
+      return;
+    }
+    if (issue.state === "closed") return;
+    if (!(await this.ensureOwned(issue))) return;
+
+    const windowMs = this.cfg.work.autoLaneWindowMs;
+    const attempts = await this.store.countAutoLaneMessages(
+      issue.id,
+      `ci-master-${ref.issueId}-`,
+      new Date(Date.now() - windowMs).toISOString(),
+    );
+    if (attempts >= this.cfg.work.ciMasterFixMaxAttempts) {
+      const dkey = `${issue.id}:ci-master`;
+      const lastNotice = this.autoLaneDegradeNotified.get(dkey) ?? 0;
+      if (Date.now() - lastNotice >= windowMs) {
+        await tracker.createComment(
+          ref,
+          `[system] ⛔ master CI 哨兵已达上限(${attempts} 次/${Math.round(windowMs / 3_600_000)}h 窗口) — 停止自动接单, 需要 owner 决策; 窗口过期后自动恢复。`,
+        ).catch(() => {});
+        this.autoLaneDegradeNotified.set(dkey, Date.now());
+      }
+      log.info(
+        `engine: master-ci sentinel cap reached (${attempts}/${this.cfg.work.ciMasterFixMaxAttempts}) on ${scopeKey}#${ref.issueId} — degraded, no dispatch`,
+      );
+      return;
+    }
+
+    const session = await this.workerSession(issue.id, "ci-master-sentinel");
+    const workdir = await this.resolveWorkdir(session, issue);
+    const instructions = tracker.getTrackerInstructions(ref);
+    const checkList = ci.checks.map((c) => `- ${c.name}${c.html_url ? ` (${c.html_url})` : ""}`).join("\n");
+    const body =
+      `[SYSTEM] master branch CI failure detected (head ${ci.sha.slice(0, 10)}).\n` +
+      `Failing checks on master:\n${checkList}\n` +
+      `You are the master CI sentinel: fix the failure on master via ONE PR (branch, fix, CI-green, ready-to-merge), ` +
+      `then report to this coordination issue: cause, fix summary, PR link. Other agents will rebase once it merges — do NOT touch their PR branches. ` +
+      `First reply: current master-red status so waiting agents know. This is the sentinel lane: attempt ${attempts + 1}/${this.cfg.work.ciMasterFixMaxAttempts} — ` +
+      `if the fix needs design decisions, post a verdict comment instead and stop.`;
+    const prompt = this.buildForwardPrompt(
+      session.name,
+      this.handleLargeContent(workdir, body, `ci-master-${ref.issueId}.txt`),
+      "ework-web",
+      "bot",
+      issueData.title,
+      workdir,
+      instructions,
+    );
+
+    await tracker.createComment(ref, `[system] 🏷 ${this.sessionRef(session)} ❌ master CI 失败(${ci.checks.map((c) => c.name).join(", ")}) — 哨兵已接管, 修复走单个 PR, 合并后大家 rebase 即绿。`).catch(() => {});
+    await this.enqueueOrRun(session, issue, prompt, tracker, ref, `ci-master-${ref.issueId}-${ci.sha || Date.now()}-${Date.now()}`, model);
   }
 
   // Reply-burst circuit breaker: a looping session can re-perceive a standing

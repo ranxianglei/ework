@@ -78,6 +78,7 @@ export const configSchema = z.object({
     // policy — at most N dispatches per PR within the window; beyond that the
     // lane degrades (one issue comment, no dispatch) until the window expires.
     ciFixMaxAttempts: z.coerce.number().int().positive().default(2),
+    ciMasterFixMaxAttempts: z.coerce.number().int().positive().default(3),
     conflictFixMaxAttempts: z.coerce.number().int().positive().default(2),
     autoLaneWindowMs: z.coerce.number().int().positive().default(86_400_000),
   }),
@@ -160,6 +161,9 @@ function readWorkSection() {
     ciFixMaxAttempts: process.env.WORK_CI_FIX_MAX_ATTEMPTS != null && process.env.WORK_CI_FIX_MAX_ATTEMPTS !== ""
       ? Math.max(1, Math.trunc(Number(process.env.WORK_CI_FIX_MAX_ATTEMPTS)))
       : 2,
+    ciMasterFixMaxAttempts: process.env.WORK_CI_MASTER_MAX_ATTEMPTS != null && process.env.WORK_CI_MASTER_MAX_ATTEMPTS !== ""
+      ? Math.max(1, Math.trunc(Number(process.env.WORK_CI_MASTER_MAX_ATTEMPTS)))
+      : 3,
     conflictFixMaxAttempts: process.env.WORK_CONFLICT_FIX_MAX_ATTEMPTS != null && process.env.WORK_CONFLICT_FIX_MAX_ATTEMPTS !== ""
       ? Math.max(1, Math.trunc(Number(process.env.WORK_CONFLICT_FIX_MAX_ATTEMPTS)))
       : 2,

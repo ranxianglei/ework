@@ -327,7 +327,7 @@ interface PayloadComment {
 
 interface IssueEventPayload {
   event_id?: string;
-  action: IssueAction | "merge_conflict" | "ci_failed";
+  action: IssueAction | "merge_conflict" | "ci_failed" | "master_ci_failed";
   issue: PayloadIssue;
   repository: PayloadRepository;
   sender: PayloadUser;
@@ -597,6 +597,43 @@ export async function emitCiFailedEvent(
     await fanOut(projectId, "issues", rawBody);
   } catch (e) {
     log.error("webhook: emitCiFailedEvent failed", { err: e as Error, projectId, issueId });
+  }
+}
+
+// Master-branch CI sentinel wake (owner directive 2026-10-24): master redness
+// is inherited by every PR stacked on it. Bound to the project's CI
+// coordination issue (ciSentinelIssue:<owner>/<repo> config key) so the fix
+// and its status report land in one place; the daemon routes a dedicated
+// ci-master-sentinel lane at it.
+export async function emitMasterCiFailedEvent(
+  projectId: number,
+  issueId: number,
+  origin: string,
+  sha: string,
+  checks: { name: string; html_url: string; conclusion: string }[],
+): Promise<void> {
+  try {
+    const project = await getProjectById(projectId);
+    if (!project) return;
+    const issue = await getIssueById(issueId);
+    if (!issue) return;
+    const cfg = await getConfigAll();
+    const scopeKey = `${project.owner}/${project.name}`;
+    const globalOff = cfg["dispatchEnabled"] === "false";
+    const projectOff = cfg[`dispatchOff:${scopeKey}`] === "1";
+    const issueOff = issue.ai_status === "dispatch_off" || issue.ai_status === "halted";
+    if (globalOff || projectOff || issueOff) return;
+    const commentCount = await countCommentsSafe(issueId);
+    const globalDefault = (await loadConfig()).defaultModel;
+    const model = resolveModel(project.model, globalDefault, issue.model);
+    const payload = buildIssuePayload(issue, project, commentCount, "opened", origin, model);
+    (payload as IssueEventPayload).action = "master_ci_failed";
+    (payload as IssueEventPayload).ci = { sha, checks };
+    (payload as IssueEventPayload).event_id = randomUUID();
+    const rawBody = JSON.stringify(payload);
+    await fanOut(projectId, "issues", rawBody);
+  } catch (e) {
+    log.error("webhook: emitMasterCiFailedEvent failed", { err: e as Error, projectId, issueId });
   }
 }
 

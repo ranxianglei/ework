@@ -226,6 +226,26 @@ export class GiteaTracker implements IssueTracker {
       };
     }
 
+    if (action === "master_ci_failed") {
+      const ci = (payload as Record<string, unknown>).ci as
+        | { sha?: string; checks?: { name: string; html_url?: string; conclusion: string }[] }
+        | undefined;
+      return {
+        type: "master_ci_failed",
+        ref,
+        dispatch_off: dispatchOff,
+        issue: {
+          title: issue.title as string,
+          body: (issue.body as string) ?? "",
+          state: (issue.state as string) ?? "open",
+          author: issueUser?.login ?? "",
+          ai_status: aiStatus,
+        },
+        ci: { sha: ci?.sha ?? "", checks: ci?.checks ?? [] },
+        model,
+      };
+    }
+
     if (action === "ci_failed") {
       const ci = (payload as Record<string, unknown>).ci as
         | { sha?: string; checks?: { name: string; html_url?: string; conclusion: string }[] }

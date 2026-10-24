@@ -13,7 +13,7 @@ export interface TrackerRef {
 }
 
 /** Parsed, tracker-agnostic webhook event */
-export type TrackerEventType = "issue_opened" | "comment_created" | "issue_closed" | "status_changed" | "merge_conflict" | "ci_failed" | "issue_boosted";
+export type TrackerEventType = "issue_opened" | "comment_created" | "issue_closed" | "status_changed" | "merge_conflict" | "ci_failed" | "master_ci_failed" | "issue_boosted";
 
 export interface TrackerEvent {
   type: TrackerEventType;

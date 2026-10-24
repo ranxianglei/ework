@@ -20,8 +20,8 @@ import {
   listEnabledUpstreamSyncs,
   updateIssueConflictState,
 } from "./store";
-import { emitIssueEvent, emitCommentEvent, emitMergeConflictEvent, emitCiFailedEvent } from "./webhooks";
-import { getConfigAll } from "./db";
+import { emitIssueEvent, emitCommentEvent, emitMergeConflictEvent, emitCiFailedEvent, emitMasterCiFailedEvent } from "./webhooks";
+import { getDB, getConfigAll } from "./db";
 import { log } from "./logger";
 import type { Config } from "./config";
 
@@ -418,6 +418,60 @@ export class UpstreamSync {
   // head sha; on a NEW failing sha (max 2 auto-fix attempts per PR) emit a
   // ci_failed event so the daemon routes a sticky ci-worker at it. Conflicts
   // got their auto lane first; CI failures now have one too.
+  // Master CI sentinel throttle state (owner directive 2026-10-24): emit once
+  // per failing master sha, re-arm after 6h so a still-red master gets
+  // re-attempted. In-memory only — a web restart re-emits once, bounded by
+  // the daemon-side sentinel attempt cap.
+  private masterCiLastEmit: { sha: string; at: number } | null = null;
+
+  // Master-branch CI sentinel (owner directive 2026-10-24): master redness is
+  // inherited by every PR stacked on it — one fix greens the fleet after a
+  // rebase. Enabled per project via the ciSentinelIssue:<owner>/<repo> config
+  // key pointing at the CI coordination issue; the event binds to that issue
+  // so the sentinel's fix report lands where every agent reads status.
+  private async probeMasterCi(result: UpstreamSyncPollResult): Promise<void> {
+    if (!this.isGithub) return;
+    try {
+      const scopeKey = `${this.project.owner}/${this.project.name}`;
+      const cfg = await getConfigAll();
+      const coordNumber = Number(cfg[`ciSentinelIssue:${scopeKey}`] ?? "");
+      if (!Number.isInteger(coordNumber) || coordNumber <= 0) return;
+      const coordRow = await getDB().get<{ id: number; state: string }>(
+        "SELECT id, state FROM issues WHERE project_id = ? AND upstream_issue_number = ? AND kind = 'issue' LIMIT 1",
+        [this.project.id, coordNumber],
+      );
+      if (!coordRow || coordRow.state !== "open") return;
+      const commit = await this.fetchJson<{ sha?: string } | null>("/commits/master?per_page=1");
+      const sha = Array.isArray(commit) ? (commit[0] as { sha?: string })?.sha : commit?.sha;
+      if (!sha) return;
+      const checksResp = await this.fetchJson<CheckRunPayload[] | { check_runs?: CheckRunPayload[] }>(`/commits/${sha}/check-runs?filter=latest`);
+      if (!checksResp) return;
+      const checks: CheckRunPayload[] = Array.isArray(checksResp) ? checksResp : (checksResp.check_runs ?? []);
+      const allCompleted = checks.length > 0 && checks.every((c: CheckRunPayload) => c.status === "completed");
+      if (!allCompleted) return;
+      const failed = checks.filter((c: CheckRunPayload) => c.conclusion === "failure");
+      if (failed.length === 0) {
+        this.masterCiLastEmit = null;
+        return;
+      }
+      const REARM_MS = 6 * 60 * 60 * 1000;
+      const last = this.masterCiLastEmit;
+      if (last && last.sha === sha && Date.now() - last.at <= REARM_MS) return;
+      log.info(`upstream-sync: master CI failure detected on ${scopeKey}@${sha.slice(0, 10)} — dispatching sentinel`);
+      await emitMasterCiFailedEvent(
+        this.project.id,
+        coordRow.id,
+        this.origin,
+        sha,
+        failed.map((c) => ({ name: c.name ?? "check", html_url: c.html_url ?? "", conclusion: "failure" })),
+      );
+      this.masterCiLastEmit = { sha, at: Date.now() };
+      result.issuesUpdated++;
+    } catch (err) {
+      log.warn(`upstream-sync: master CI probe skipped for ${this.project.owner}/${this.project.name}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   private async probeCiState(gi: GiteaIssue, existing: IssueRow, result: UpstreamSyncPollResult): Promise<void> {
     if (!this.isGithub || existing.kind !== "issue" || !gi.title.startsWith("[PR]")) return;
     // CI probing is auxiliary telemetry: any failure here (network, API shape
@@ -632,6 +686,7 @@ export class UpstreamSync {
       await this.probeMergeState(c.gi, c.existing, result);
       await this.probeCiState(c.gi, c.existing, result);
     }
+    await this.probeMasterCi(result);
 
     let commentCursor = this.sync.comment_cursor;
     const comments = await this.fetchJson<GiteaComment[]>(
