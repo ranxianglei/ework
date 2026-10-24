@@ -238,6 +238,7 @@ describe("restart recovery (ework#9)", () => {
       const r = await messageRows();
       return r.length === 1 && r[0]?.status === "running" ? true : undefined;
     })).toBe(true);
+    expect(await waitFor(() => (backend.spawns >= 1 ? true : undefined))).toBe(true);
     expect(backend.spawns).toBe(1);
 
     // Hard crash mid-run; restart with a working backend.

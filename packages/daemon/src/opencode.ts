@@ -782,6 +782,11 @@ export class Engine {
   private emptyResponseRounds = new Map<string, number>();
   private processExitNudgeRounds = new Map<string, number>();
   private stuckNudgeRounds = new Map<string, number>();
+  // Consecutive stuck-kills per session key (poisoned-session fuse, Oct 2026:
+  // billion-context#3693 looped 10+ kill→respawn-same-session cycles for a day
+  // on a corrupted image part the model 500s on; every replay re-sent it).
+  // Healthy completion resets it; ≥3 arms the fresh-session reset at spawn.
+  private stuckKillCount = new Map<string, number>();
   private currentPrompt = new Map<string, string>();
   private paused = false;
 
@@ -813,6 +818,7 @@ export class Engine {
   private static MAX_INLINE_SIZE = 4000;
   private static MAX_NUDGE_ROUNDS = 1;
   private static MAX_EMPTY_RESPONSE_ROUNDS = 1;
+  private static MAX_STUCK_KILLS_BEFORE_RESET = 3;
   // A queued (pending) message older than this is dead context — e.g. forwards
   // left over from a webhook echo storm, or comments queued behind a session
   // that ran for hours. Replaying them re-runs stale prompts and ping-pongs
@@ -2209,6 +2215,8 @@ export class Engine {
       }
     }
 
+    await this.maybeTripPoisonFuse(k, session, issue, tracker);
+
     let resumeSessionId = session.opencodeSessionId;
     if (!resumeSessionId) {
       const fromStrategy = await this.takeover.resumeOpenCodeSession(session);
@@ -2497,6 +2505,27 @@ export class Engine {
     }
   }
 
+  // Poisoned-session fuse (owner 2026-10-23, billion-context#3693): a session
+  // stuck-killed MAX_STUCK_KILLS_BEFORE_RESET times in a row is almost
+  // certainly carrying a poison part (e.g. truncated image) that every resume
+  // replays into the model — the observed loop burned 10+ 33min kill/respawn
+  // cycles in a day. Continuing to resume it just burns cycles forever:
+  // start a FRESH opencode session instead (context loss is the honest cost).
+  // Healthy completion (finishRun done path) clears the streak.
+  private async maybeTripPoisonFuse(
+    k: string,
+    session: OpSession,
+    issue: Issue,
+    tracker: IssueTracker,
+  ) {
+    if ((this.stuckKillCount.get(k) ?? 0) < Engine.MAX_STUCK_KILLS_BEFORE_RESET) return;
+    log.warn(`engine: poisoned-session fuse tripped for ${k} (${this.stuckKillCount.get(k)} consecutive stuck-kills) — resetting opencode session`);
+    await this.store.updateSession(session.id, { opencodeSessionId: undefined }).catch(() => {});
+    session.opencodeSessionId = undefined;
+    await tracker.createComment(this.sessionToRef(session, issue), `[system] 🧹 **${session.name}** 连续 ${this.stuckKillCount.get(k)} 次无输出重启仍卡死，已重置会话上下文（怀疑历史消息包含损坏内容），本次从头开始。`).catch(() => { /* best-effort */ });
+    this.stuckKillCount.delete(k);
+  }
+
   private async finishRun(
     k: string,
     session: OpSession,
@@ -2654,6 +2683,7 @@ export class Engine {
       }
       this.nudgeRounds.delete(k);
       this.emptyResponseRounds.delete(k);
+      this.stuckKillCount.delete(k);
       await this.persistRuntimeState(session.id);
       const stillWaiting = await this.store.getNextPendingMessage(session.id).catch(() => undefined);
       void tracker.updateStatus(ref, stillWaiting ? "queued" : "");
@@ -3485,6 +3515,7 @@ export class Engine {
             if (stuckModel) this.modelCircuits.set(stuckModel, Date.now() + this.cfg.opencode.modelCooldownMs);
             this.currentModel.delete(k);
             this.stuckNudgeRounds.set(k, stuckNudgeRound + 1);
+            this.stuckKillCount.set(k, (this.stuckKillCount.get(k) ?? 0) + 1);
 
             const instructions = tracker.getTrackerInstructions(ref);
             const nudgePrompt = this.buildStuckNudgePrompt(session, issue, instructions, minutes);
@@ -3499,6 +3530,7 @@ export class Engine {
               await this.forceStop(k);
             }
             this.stuckNudgeRounds.delete(k);
+            this.stuckKillCount.set(k, (this.stuckKillCount.get(k) ?? 0) + 1);
           }
         }
       } else if (session.state === "running" && !this.running.has(k)) {
