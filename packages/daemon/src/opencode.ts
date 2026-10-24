@@ -1650,11 +1650,11 @@ export class Engine {
     model?: string,
   ) {
     if (issueData.state !== "open") return;
-    const issue = await this.store.findIssue(ref.trackerType, scopeKey, ref.issueId);
-    if (!issue) {
-      log.info(`engine: master_ci_failed on untracked ${scopeKey}#${ref.issueId} — skipping`);
-      return;
-    }
+    // Find-or-create: the coordination issue may predate any webhook the
+    // daemon has seen (mirror lag) — the event carries enough identity to
+    // create the row ourselves (incident: first live fire 2026-10-24 skipped
+    // as "untracked" while master sat red).
+    const issue = await this.store.findOrCreateIssue(ref, scopeKey, issueData.title);
     if (issue.state === "closed") return;
     if (!(await this.ensureOwned(issue))) return;
 

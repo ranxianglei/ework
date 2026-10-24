@@ -190,6 +190,13 @@ export function setTitleTranslator(fn: (raw: string) => Promise<string | null>):
   titleTranslator = fn;
 }
 
+// Master CI sentinel throttle, process-wide: UpstreamSync instances are
+// rebuilt per tick, so per-instance state could not suppress re-emits
+// (incident: two master_ci_failed fires 77s apart on first live run
+// 2026-10-24). Keyed by project id; web restart re-emits once — bounded by
+// the daemon-side sentinel attempt cap.
+const masterCiLastEmitByProject = new Map<number, { sha: string; at: number }>();
+
 export class UpstreamSync {
   private readonly sync: UpstreamSyncRow;
   private readonly project: ProjectRow;
@@ -422,7 +429,8 @@ export class UpstreamSync {
   // per failing master sha, re-arm after 6h so a still-red master gets
   // re-attempted. In-memory only — a web restart re-emits once, bounded by
   // the daemon-side sentinel attempt cap.
-  private masterCiLastEmit: { sha: string; at: number } | null = null;
+  private get masterCiLastEmit(): { sha: string; at: number } | null { return masterCiLastEmitByProject.get(this.project.id) ?? null; }
+  private set masterCiLastEmit(v: { sha: string; at: number } | null) { if (v) masterCiLastEmitByProject.set(this.project.id, v); else masterCiLastEmitByProject.delete(this.project.id); }
 
   // Master-branch CI sentinel (owner directive 2026-10-24): master redness is
   // inherited by every PR stacked on it — one fix greens the fleet after a
