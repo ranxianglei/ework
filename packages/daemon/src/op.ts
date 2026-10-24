@@ -347,14 +347,27 @@ export class Store {
   }
 
   async getRunningWithPid(): Promise<{ id: string; pid: number | null; updatedAt: Date; key: string }[]> {
-    const rows = await getDB().all<{ id: string; pid: number | null; updated_at: string; key: string }>(
+    // Compose the session key in JS, not SQL: `AS key` is a reserved word on
+    // MySQL and `||` concatenation is sqlite-only — the SQL-composed variant
+    // made the reconciler throw on every tick for MySQL-backed daemons
+    // (host fleet, 2026-10-24).
+    const rows = await getDB().all<{
+      id: string; pid: number | null; updated_at: string;
+      tracker_type: string; tracker_scope_key: string; tracker_issue_id: string; name: string;
+    }>(
       `SELECT m.uid AS id, s.opencode_pid AS pid, m.updated_at AS updated_at,
-              i.tracker_type || ':' || i.tracker_scope_key || '#' || i.tracker_issue_id || '@' || s.name AS key
+              i.tracker_type AS tracker_type, i.tracker_scope_key AS tracker_scope_key,
+              i.tracker_issue_id AS tracker_issue_id, s.name AS name
        FROM {{messages}} m JOIN {{op_sessions}} s ON s.uid = m.session_id
        JOIN {{issues}} i ON i.uid = s.issue_id
        WHERE m.status = 'running'`,
     );
-    return rows.map((r) => ({ id: r.id, pid: r.pid ?? null, updatedAt: new Date(r.updated_at), key: r.key }));
+    return rows.map((r) => ({
+      id: r.id,
+      pid: r.pid ?? null,
+      updatedAt: new Date(r.updated_at),
+      key: `${r.tracker_type}:${r.tracker_scope_key}#${r.tracker_issue_id}@${r.name}`,
+    }));
   }
 
   async getOldestPendingCreatedAt(): Promise<Date | undefined> {
