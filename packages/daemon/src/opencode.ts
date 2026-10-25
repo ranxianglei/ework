@@ -1131,6 +1131,16 @@ export class Engine {
     return this.cfg.stuck?.thresholdMs ?? Engine.STUCK_THRESHOLD_MS;
   }
 
+  // Infra-lane agents (ci-master-sentinel / conflict-worker / ci-worker) run
+  // full local test suites where 30-60+ min of legitimate silence is normal;
+  // the ordinary threshold kept killing them mid-work and burning lane
+  // attempts (incident: sentinel A-implementation burned 6/6 cap on
+  // 2026-10-25). Floor their threshold at 90min (owner policy 2026-10-25).
+  private stuckThresholdForKey(key: string): number {
+    const infra = key.includes("@ci-master-sentinel") || key.includes("@conflict-worker") || key.includes("@ci-worker");
+    return infra ? Math.max(this.stuckThresholdMs, 90 * 60 * 1000) : this.stuckThresholdMs;
+  }
+
   private get maxStuckNudges(): number {
     return this.cfg.stuck?.maxNudges ?? Engine.MAX_STUCK_NUDGE_ROUNDS;
   }
@@ -3670,7 +3680,7 @@ export class Engine {
         }
 
         // Process alive — check stuck
-        if (lastTs && Date.now() - lastTs >= this.stuckThresholdMs) {
+        if (lastTs && Date.now() - lastTs >= this.stuckThresholdForKey(k)) {
           const minutes = Math.round((Date.now() - lastTs) / 60000);
           const ref = this.sessionToRef(session, issue);
 
