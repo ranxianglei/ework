@@ -79,6 +79,7 @@ export const configSchema = z.object({
     // lane degrades (one issue comment, no dispatch) until the window expires.
     ciFixMaxAttempts: z.coerce.number().int().positive().default(2),
     ciMasterFixMaxAttempts: z.coerce.number().int().positive().default(3),
+    sentinelRotateMessages: z.coerce.number().int().positive().default(100),
     conflictFixMaxAttempts: z.coerce.number().int().positive().default(2),
     autoLaneWindowMs: z.coerce.number().int().positive().default(86_400_000),
   }),
@@ -170,6 +171,9 @@ function readWorkSection() {
     autoLaneWindowMs: process.env.WORK_AUTO_LANE_WINDOW_MS != null && process.env.WORK_AUTO_LANE_WINDOW_MS !== ""
       ? Math.max(1, Math.trunc(Number(process.env.WORK_AUTO_LANE_WINDOW_MS)))
       : 86_400_000,
+    sentinelRotateMessages: process.env.WORK_SENTINEL_ROTATE_MESSAGES != null && process.env.WORK_SENTINEL_ROTATE_MESSAGES !== ""
+      ? Math.max(1, Math.trunc(Number(process.env.WORK_SENTINEL_ROTATE_MESSAGES)))
+      : 100,
   };
 }
 

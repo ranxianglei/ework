@@ -1149,6 +1149,35 @@ export class Engine {
     return infra ? 30 * 60 * 1000 : this.stuckThresholdMs;
   }
 
+  // Message-turn count of an opencode session, read-only against the CLI's own
+  // sqlite store. Returns null when the store is absent/unreadable (skip the
+  // rotation check rather than fail the dispatch).
+  private opencodeSessionMessageCount(sessionId: string): number | null {
+    try {
+      const dbPath = join(homedir(), ".local/share/opencode/opencode.db");
+      if (!existsSync(dbPath)) return null;
+      const db = new Database(dbPath, { readonly: true });
+      try {
+        const row = db.query("SELECT COUNT(*) AS n FROM message WHERE session_id = ?").get(sessionId) as { n: number } | null;
+        return row ? row.n : 0;
+      } finally {
+        db.close();
+      }
+    } catch (err) {
+      log.warn(`sentinel rotation: message count unavailable for ${sessionId}: ${err instanceof Error ? err.message : err}`);
+      return null;
+    }
+  }
+
+  private async maybeRotateSentinelSession(session: OpSession, resumeSessionId: string): Promise<string | undefined> {
+    const count = this.opencodeSessionMessageCount(resumeSessionId);
+    if (count == null || count < this.cfg.work.sentinelRotateMessages) return resumeSessionId;
+    log.warn(`sentinel rotation: session ${resumeSessionId} at ${count} messages (>= ${this.cfg.work.sentinelRotateMessages}) — starting fresh`);
+    await this.store.updateSession(session.id, { opencodeSessionId: undefined });
+    session.opencodeSessionId = undefined;
+    return undefined;
+  }
+
   private get maxStuckNudges(): number {
     return this.cfg.stuck?.maxNudges ?? Engine.MAX_STUCK_NUDGE_ROUNDS;
   }
@@ -2433,6 +2462,15 @@ export class Engine {
       log.warn(`stale session ${resumeSessionId} not found in db, starting fresh`);
       resumeSessionId = undefined;
       await this.store.updateSession(session.id, { opencodeSessionId: undefined });
+    }
+
+    // Sentinel rotation (owner policy 2026-10-25): the sticky sentinel session
+    // accumulates turns fast (a day of CI rounds poisoned one at 819 messages /
+    // ~267K chars -> every model call 400s). Rotate to a fresh opencode session
+    // when the sticky one exceeds sentinelRotateMessages messages. Rotation
+    // happens between dispatches, never mid-run.
+    if (resumeSessionId && session.name.includes("ci-master-sentinel")) {
+      resumeSessionId = await this.maybeRotateSentinelSession(session, resumeSessionId);
     }
 
     const backend = this.backendFor(k, resumeSessionId);

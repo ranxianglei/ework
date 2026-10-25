@@ -125,3 +125,45 @@ describe("ci_coord_comment help-merge sweep", () => {
     expect(self.enqueueOrRun).not.toHaveBeenCalled();
   });
 });
+
+describe("sentinel session rotation", () => {
+  const sess = (name: string) => ({ id: "s1", name, opencodeSessionId: "ses_rot1" });
+
+  test("rotates to fresh session when sticky turns exceed the cap", async () => {
+    const self = makeSelf();
+    self.cfg.work.sentinelRotateMessages = 100;
+    (Engine.prototype as any).opencodeSessionMessageCount = () => 120;
+    const updates: unknown[] = [];
+    self.store.updateSession = vi.fn(async (_id: string, patch: unknown) => { updates.push(patch); });
+    const out = await (Engine.prototype as any).maybeRotateSentinelSession.call(
+      self, sess("ci-master-sentinel-r1"), "ses_rot1",
+    );
+    expect(out).toBeUndefined();
+    expect(self.store.updateSession).toHaveBeenCalledWith("s1", { opencodeSessionId: undefined });
+    expect(updates).toHaveLength(1);
+  });
+
+  test("keeps the sticky session below the cap", async () => {
+    const self = makeSelf();
+    self.cfg.work.sentinelRotateMessages = 100;
+    (Engine.prototype as any).opencodeSessionMessageCount = () => 40;
+    self.store.updateSession = vi.fn(async () => {});
+    const out = await (Engine.prototype as any).maybeRotateSentinelSession.call(
+      self, sess("ci-master-sentinel-r1"), "ses_rot1",
+    );
+    expect(out).toBe("ses_rot1");
+    expect(self.store.updateSession).not.toHaveBeenCalled();
+  });
+
+  test("unreadable store skips the check (no rotation)", async () => {
+    const self = makeSelf();
+    self.cfg.work.sentinelRotateMessages = 100;
+    (Engine.prototype as any).opencodeSessionMessageCount = () => null;
+    self.store.updateSession = vi.fn(async () => {});
+    const out = await (Engine.prototype as any).maybeRotateSentinelSession.call(
+      self, sess("ci-master-sentinel-r1"), "ses_rot1",
+    );
+    expect(out).toBe("ses_rot1");
+    expect(self.store.updateSession).not.toHaveBeenCalled();
+  });
+});
