@@ -1135,6 +1135,10 @@ export class Engine {
   // verify via REMOTE CI (push + watch Actions), never local integration
   // suites: 15min of no output = kill (owner policy 2026-10-25, supersedes
   // the 90min floor experiment same day — local suite runs burned hours).
+  private isSentinelSource(sourceCommentId?: string): boolean {
+    return !!sourceCommentId && (sourceCommentId.startsWith("ci-master-") || sourceCommentId.startsWith("ci-coord-"));
+  }
+
   private stuckThresholdForKey(key: string): number {
     // Infra lanes (ci-master-sentinel / conflict-worker / ci-worker): flat 30-min
     // no-output kill floor. Owner policy 2026-10-25: 15-min trial caused false
@@ -2171,8 +2175,10 @@ export class Engine {
     // The ci-master sentinel is a single dedicated lane watching one branch;
     // it must never wait behind ordinary capacity (owner directive
     // 2026-10-25: "他永远不排队"). Its dispatch gate is the 2× hard process
-    // ceiling only — same rule as explicit boosts.
-    const sentinelLane = msg.sourceCommentId?.startsWith("ci-master-") ?? false;
+    // ceiling only — same rule as explicit boosts. Both source prefixes feed
+    // this lane: ci-master- (master red events) and ci-coord- (coordination
+    // issue reports/rulings routed to the same sentinel).
+    const sentinelLane = this.isSentinelSource(msg.sourceCommentId);
     if (!(sentinelLane ? this.boostSlotAvailable(msg.sourceCommentId) : this.slotAvailable(msg.sourceCommentId))) {
       log.info(`engine: concurrency limit reached (api ${this.activeRunningCount()}/${this.effectiveGlobalCap(msg.sourceCommentId)}, procs ${this.running.size}), message ${msg.id.slice(0, 8)} queued for ${k}`);
       void tracker.updateStatus(ref, "queued");
@@ -3082,7 +3088,7 @@ export class Engine {
     const pending = await this.store.getGlobalPendingMessages(Math.max(slotsAvailable, 64));
     for (const msg of pending) {
       if (this.destroyed) return;
-      if (!this.slotAvailable()) break;
+      if (!this.isSentinelSource(msg.sourceCommentId) && !this.slotAvailable()) break;
       const session = await this.store.getSession(msg.sessionId);
       if (!session || session.state === "running") continue;
       const issue = await this.store.getIssue(session.issueId);
