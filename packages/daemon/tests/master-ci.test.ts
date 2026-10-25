@@ -10,6 +10,7 @@ function makeSelf(opts: { attempts?: number } = {}) {
   };
   self.store = {
     findIssue: vi.fn(async () => ({ id: "i1", state: "active" })),
+    findOrCreateIssue: vi.fn(async () => ({ id: "i1", state: "active" })),
     countAutoLaneMessages: vi.fn(async () => opts.attempts ?? 0),
     getSessionsForIssue: vi.fn(async () => [{ id: "w1", name: "ci-master-sentinel-r1" } as OpSession]),
     countMessagesByStatus: vi.fn(async () => 5),
@@ -74,8 +75,7 @@ describe("master_ci_failed sentinel", () => {
 
   test("closed coordination issue is ignored", async () => {
     const self = makeSelf();
-    self.store.findIssue = vi.fn(async () => ({ id: "i1", state: "closed" } as Issue));
-    await self.handleMasterCiFailed(ref, "ranxianglei/billion-context", issueData, tracker(), ci, undefined);
+    await self.handleMasterCiFailed(ref, "ranxianglei/billion-context", { ...issueData, state: "closed" }, tracker(), ci, undefined);
     expect(self.enqueueOrRun).not.toHaveBeenCalled();
   });
 });

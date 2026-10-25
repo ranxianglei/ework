@@ -1549,7 +1549,7 @@ export class Engine {
       `Rebase (or merge) the target branch into your branch, resolve the conflicts, ` +
       `force-push (rebase) or push (merge), then reply with a 七问 summary. ` +
       `This is an auto-fix lane: attempt ${cfAttempts + 1}/${this.cfg.work.conflictFixMaxAttempts} — ` +
-      `if the conflicts need design decisions, post a verdict comment instead and stop.`;
+      `if the conflicts need design decisions, open a NEW issue titled "decision request: <topic>" with the p1 label listing options + recommendation, link it in a comment here, and stop (owner policy 2026-10-25: no silent waiting).`;
     const prompt = this.buildForwardPrompt(
       session.name,
       this.handleLargeContent(workdir, body, `merge-conflict-${ref.issueId}.txt`),
@@ -1622,7 +1622,7 @@ export class Engine {
       `The PR mirror 「${issueData.title}」 has failing checks:\n${checkList}\n` +
       `Fix the CI directly on the PR branch (fetch the check logs via the GitHub API as needed), ` +
       `push, and reply with a 七问 summary. This is an auto-fix lane: attempt ${ciAttempts + 1}/${this.cfg.work.ciFixMaxAttempts} — ` +
-      `if the failure needs design decisions or is not a small fix, post a verdict comment instead and stop.`;
+      `if the failure needs design decisions or is not a small fix, open a NEW issue titled "decision request: <topic>" with the p1 label listing options + recommendation, link it in a comment here, and stop (owner policy 2026-10-25: no silent waiting).`;
     const prompt = this.buildForwardPrompt(
       session.name,
       this.handleLargeContent(workdir, body, `ci-fail-${ref.issueId}.txt`),
@@ -1698,7 +1698,7 @@ export class Engine {
       `⑥ keep watching this coordination issue while you run: for every PR reported red with inherited failure whose branch lacks ci-fixes, proactively merge origin/ci-fixes into their branch and push it (never force-push, never rebase; conflicts → ask the author). ` +
       `Other agents may self-merge ci-fixes too — help-merge is your job, not theirs to wait for. ` +
       `First reply: current master-red status so waiting agents know. This is the sentinel lane: attempt ${attempts + 1}/${this.cfg.work.ciMasterFixMaxAttempts} — ` +
-      `if a fix needs design decisions, post a verdict comment instead and stop.`;
+      `if a fix needs design decisions (test-contract changes, semantic choices, revert-vs-adapt), NEVER wait silently: open a NEW issue in the repo titled "decision request: <topic>" with the p1 label, list the options (A/B/C) with costs and your recommendation, then comment the link on this coordination issue and continue with everything that does NOT need the decision (owner policy 2026-10-25: silent waiting is invisible to the owner; p1 issues are how decisions get made).`;
     const prompt = this.buildForwardPrompt(
       session.name,
       this.handleLargeContent(workdir, body, `ci-master-${ref.issueId}.txt`),
