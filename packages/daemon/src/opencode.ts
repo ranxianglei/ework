@@ -1706,7 +1706,7 @@ export class Engine {
       `⑤ poll until ci-fixes CI is green, then report here: cause, fix summary, PR link, branch state. ` +
       `⑥ keep watching this coordination issue while you run: for every PR reported red with inherited failure whose branch lacks ci-fixes, proactively merge origin/ci-fixes into their branch and push it (never force-push, never rebase; conflicts → ask the author). ` +
       `Other agents may self-merge ci-fixes too — help-merge is your job, not theirs to wait for. ` +
-      `First reply: current master-red status so waiting agents know. This is the sentinel lane: attempt ${attempts + 1}/${this.cfg.work.ciMasterFixMaxAttempts} — ` +
+      `First reply within 2 minutes: post your plan (cause hypothesis + which lanes) so waiting agents know — then push fixes INCREMENTALLY (one lane per commit, push after each) and verify remotely by watching GitHub Actions. The 15-min no-output kill applies to you: replying early and pushing often is how you stay alive (owner policy 2026-10-25). This is the sentinel lane: attempt ${attempts + 1}/${this.cfg.work.ciMasterFixMaxAttempts} — ` +
       `if a fix needs design decisions (test-contract changes, semantic choices, revert-vs-adapt), NEVER wait silently: open a NEW issue in the repo titled "decision request: <topic>" with the p1 label, list the options (A/B/C) with costs and your recommendation, then comment the link on this coordination issue and continue with everything that does NOT need the decision (owner policy 2026-10-25: silent waiting is invisible to the owner; p1 issues are how decisions get made).`;
     const prompt = this.buildForwardPrompt(
       session.name,
@@ -2163,7 +2163,12 @@ export class Engine {
       return;
     }
 
-    if (!this.slotAvailable(msg.sourceCommentId)) {
+    // The ci-master sentinel is a single dedicated lane watching one branch;
+    // it must never wait behind ordinary capacity (owner directive
+    // 2026-10-25: "他永远不排队"). Its dispatch gate is the 2× hard process
+    // ceiling only — same rule as explicit boosts.
+    const sentinelLane = msg.sourceCommentId?.startsWith("ci-master-") ?? false;
+    if (!(sentinelLane ? this.boostSlotAvailable(msg.sourceCommentId) : this.slotAvailable(msg.sourceCommentId))) {
       log.info(`engine: concurrency limit reached (api ${this.activeRunningCount()}/${this.effectiveGlobalCap(msg.sourceCommentId)}, procs ${this.running.size}), message ${msg.id.slice(0, 8)} queued for ${k}`);
       void tracker.updateStatus(ref, "queued");
       return;

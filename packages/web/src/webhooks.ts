@@ -867,6 +867,11 @@ export async function emitCommentEvent(
     const coordNumber = Number(coordCfg[`ciSentinelIssue:${scopeKey}`] ?? "");
     const upstreamNumber = (issue as unknown as Record<string, unknown>).upstream_issue_number;
     if (Number.isInteger(coordNumber) && coordNumber > 0 && Number(upstreamNumber) === coordNumber) {
+      // Bot-authored comments (sentinel's own replies, [system] markers) are
+      // pure echo — re-dispatching the sentinel on them is a self-churn loop
+      // (incident: 2026-10-25 sentinel burned cycles on its own echoes).
+      // Human/agent reports and master_ci_failed events still wake the lane.
+      if ((payload as CommentEventPayload).comment.author_kind === "bot") return;
       (payload as CommentEventPayload).action = "ci_coord_comment";
       await fanOut(projectId, "issue_comment", JSON.stringify(payload));
       return;
