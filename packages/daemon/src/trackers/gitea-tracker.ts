@@ -182,10 +182,10 @@ export class GiteaTracker implements IssueTracker {
       };
     }
 
-    if (action === "created" && comment) {
+    if ((action === "created" || action === "ci_coord_comment") && comment) {
       const commentUser = comment.user as Record<string, string>;
       return {
-        type: "comment_created",
+        type: action === "ci_coord_comment" ? "ci_coord_comment" : "comment_created",
         ref,
         issue: {
           title: issue.title as string,

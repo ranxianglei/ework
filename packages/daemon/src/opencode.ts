@@ -1417,6 +1417,8 @@ export class Engine {
         return this.handleOpened(ref, scopeKey, issueData, tracker, event.model);
       case "comment_created":
         return this.handleCommented(ref, scopeKey, issueData, event.comment!, tracker, event.model);
+      case "ci_coord_comment":
+        return this.handleCiCoordComment(ref, scopeKey, issueData, event.comment!, tracker, event.model);
       case "issue_closed":
         return this.handleClosed(ref, scopeKey, tracker);
       case "status_changed": {
@@ -1693,7 +1695,8 @@ export class Engine {
       `③ fix all red lanes on ci-fixes and push; ` +
       `④ keep the ci-fixes→master PR open (create it once; it persists across incidents); ` +
       `⑤ poll until ci-fixes CI is green, then report here: cause, fix summary, PR link, branch state. ` +
-      `Other agents merge ci-fixes into their own red PR branches — do NOT touch their branches yourself. ` +
+      `⑥ keep watching this coordination issue while you run: for every PR reported red with inherited failure whose branch lacks ci-fixes, proactively merge origin/ci-fixes into their branch and push it (never force-push, never rebase; conflicts → ask the author). ` +
+      `Other agents may self-merge ci-fixes too — help-merge is your job, not theirs to wait for. ` +
       `First reply: current master-red status so waiting agents know. This is the sentinel lane: attempt ${attempts + 1}/${this.cfg.work.ciMasterFixMaxAttempts} — ` +
       `if a fix needs design decisions, post a verdict comment instead and stop.`;
     const prompt = this.buildForwardPrompt(
@@ -1708,6 +1711,50 @@ export class Engine {
 
     await tracker.createComment(ref, `[system] 🏷 ${this.sessionRef(session)} ❌ master CI 失败(${ci.checks.map((c) => c.name).join(", ")}) — 哨兵已接管, 修复收敛到常驻分支 ci-fixes(其他 agent 遇继承红请 ` + "`git merge origin/ci-fixes`" + `), ci-fixes→master PR 持续待合并。`).catch(() => {});
     await this.enqueueOrRun(session, issue, prompt, tracker, ref, `ci-master-${ref.issueId}-${ci.sha || Date.now()}-${Date.now()}`, model);
+  }
+
+  // CI coordination-issue comment (owner strategy 2026-10-25): a report of an
+  // inherited-red PR wakes the ci-fixes sentinel for a help-merge sweep —
+  // ci-fixes gets merged into the reporter's branch proactively and pushed,
+  // so most reporters go green without waiting or reworking. Deliberately
+  // outside the ci-master attempt cap (sweeps are cheap); [system] markers
+  // are our own voice and never self-wake; dedupe rides on source_comment_id
+  // so webhook re-delivery is harmless.
+  private async handleCiCoordComment(
+    ref: TrackerRef,
+    scopeKey: string,
+    issueData: TrackerEvent["issue"],
+    comment: NonNullable<TrackerEvent["comment"]>,
+    tracker: IssueTracker,
+    model?: string,
+  ) {
+    if (issueData.state !== "open") return;
+    const body = comment.body ?? "";
+    if (body.startsWith("[system]")) return;
+    const issue = await this.store.findOrCreateIssue(ref, scopeKey, issueData.title);
+    if (issue.state === "closed") return;
+    if (!(await this.ensureOwned(issue))) return;
+
+    const session = await this.workerSession(issue.id, "ci-master-sentinel");
+    const workdir = await this.resolveWorkdir(session, issue);
+    const instructions = tracker.getTrackerInstructions(ref);
+    const sweep =
+      `[SYSTEM] A new report/comment arrived on the CI coordination issue:\n---\n${body.slice(0, 4000)}\n---\n` +
+      `Help-merge sweep (owner strategy 2026-10-25): identify every PR reported red with INHERITED failure (master-red family). ` +
+      `For each whose head branch does not yet contain ci-fixes: git fetch origin && git checkout <their head branch> && git merge origin/ci-fixes && git push origin <their head branch>. ` +
+      `NEVER force-push, NEVER rebase their branch; on merge conflict skip that PR and reply on this issue asking its author to merge manually. ` +
+      `After any successful merge, reply ONE line listing which PR branches received ci-fixes (with new head sha). ` +
+      `If ci-fixes does not exist yet, or master is green, or every reported branch already contains ci-fixes — stay silent (no comment, no work).`;
+    const prompt = this.buildForwardPrompt(
+      session.name,
+      this.handleLargeContent(workdir, sweep, `ci-coord-${ref.issueId}.txt`),
+      "ework-web",
+      "bot",
+      issueData.title,
+      workdir,
+      instructions,
+    );
+    await this.enqueueOrRun(session, issue, prompt, tracker, ref, `ci-coord-${ref.issueId}-${comment.id}`, model);
   }
 
   // Reply-burst circuit breaker: a looping session can re-perceive a standing

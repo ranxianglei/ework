@@ -316,5 +316,37 @@ describe("comment payload provenance (echo prevention)", () => {
 
     expect(received).not.toBeNull();
     expect(received.comment.upstream_comment_id).toBeNull();
+    expect(received.action).toBe("created");
+  });
+
+  test("comment on CI coordination issue carries action ci_coord_comment", async () => {
+    const { setConfig } = await import("../src/db");
+    await ensureUser("alice");
+    const project = await createProject("dog", "echo3", "");
+    const issue = await createIssue(project.id, "CI 总控", "b", "alice");
+    await getDB().run("UPDATE issues SET upstream_issue_number = 4599, kind = 'issue' WHERE id = ?", [issue.id]);
+    await setConfig("ciSentinelIssue:dog/echo3", "4599");
+    const row = await postComment(issue.id, "PR #4633 红,疑似继承,sha=…", "alice");
+    await createWebhook({
+      project_id: project.id,
+      url: "http://echo3.local/hook",
+      secret: "",
+      events: ["issue_comment"],
+    });
+
+    let received: any = null;
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (_input: any, init?: any) => {
+      received = JSON.parse(String(init?.body));
+      return new Response("ok", { status: 200 });
+    }) as typeof fetch;
+    try {
+      await emitCommentEvent(project.id, issue.id, row.id, ORIGIN);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+
+    expect(received).not.toBeNull();
+    expect(received.action).toBe("ci_coord_comment");
   });
 });

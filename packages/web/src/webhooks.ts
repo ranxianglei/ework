@@ -341,7 +341,7 @@ interface IssueEventPayload {
 
 interface CommentEventPayload {
   event_id?: string;
-  action: "created" | "edited";
+  action: "created" | "edited" | "ci_coord_comment";
   issue: PayloadIssue;
   comment: PayloadComment;
   repository: PayloadRepository;
@@ -858,6 +858,19 @@ export async function emitCommentEvent(
       (payload as CommentEventPayload).comment.author_kind = "human";
     }
     const rawBody = JSON.stringify(payload);
+    // CI coordination issue (owner strategy 2026-10-25): comments on a
+    // project's CI coordination issue carry action "ci_coord_comment" so the
+    // daemon routes them to the ci-fixes sentinel (help-merge sweeps) instead
+    // of ordinary dispatch.
+    const scopeKey = `${project.owner}/${project.name}`;
+    const coordCfg = await getConfigAll();
+    const coordNumber = Number(coordCfg[`ciSentinelIssue:${scopeKey}`] ?? "");
+    const upstreamNumber = (issue as unknown as Record<string, unknown>).upstream_issue_number;
+    if (Number.isInteger(coordNumber) && coordNumber > 0 && Number(upstreamNumber) === coordNumber) {
+      (payload as CommentEventPayload).action = "ci_coord_comment";
+      await fanOut(projectId, "issue_comment", JSON.stringify(payload));
+      return;
+    }
     await fanOut(projectId, "issue_comment", rawBody);
   } catch (e) {
     log.error("webhook: emitCommentEvent failed", {

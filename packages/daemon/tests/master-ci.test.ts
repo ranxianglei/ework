@@ -79,3 +79,49 @@ describe("master_ci_failed sentinel", () => {
     expect(self.enqueueOrRun).not.toHaveBeenCalled();
   });
 });
+
+describe("ci_coord_comment help-merge sweep", () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  function coordSelf() {
+    const self = makeSelf();
+    self.store.findOrCreateIssue = vi.fn(async () => ({ id: "i1", state: "active" }));
+    return self;
+  }
+
+  test("routes report to sticky sentinel with help-merge protocol and ci-coord source id", async () => {
+    const self = coordSelf();
+    await (Engine.prototype as any).handleCiCoordComment.call(
+      self, ref, "k", issueData,
+      { id: "c77", body: "PR #4633 红,疑似继承,sha=…", author: "some-agent" },
+      tracker(), undefined,
+    );
+    expect(self.workerSession).toHaveBeenCalledWith("i1", "ci-master-sentinel");
+    expect(self.enqueueOrRun).toHaveBeenCalledTimes(1);
+    const prompt = String(self.enqueueOrRun.mock.calls[0]?.[2] ?? "");
+    expect(prompt).toContain("Help-merge sweep");
+    expect(self.enqueueOrRun.mock.calls[0]?.[5]).toBe("ci-coord-4599-c77");
+  });
+
+  test("[system] marker never wakes the sweep (self-echo guard)", async () => {
+    const self = coordSelf();
+    await (Engine.prototype as any).handleCiCoordComment.call(
+      self, ref, "k", issueData,
+      { id: "c78", body: "[system] 🏷 marker", author: "ework-daemon" },
+      tracker(), undefined,
+    );
+    expect(self.enqueueOrRun).not.toHaveBeenCalled();
+  });
+
+  test("closed coordination issue is ignored", async () => {
+    const self = coordSelf();
+    self.store.findOrCreateIssue = vi.fn(async () => ({ id: "i1", state: "closed" }));
+    await (Engine.prototype as any).handleCiCoordComment.call(
+      self, ref, "k", { ...issueData, state: "closed" },
+      { id: "c79", body: "PR #1 红", author: "a" },
+      tracker(), undefined,
+    );
+    expect(self.enqueueOrRun).not.toHaveBeenCalled();
+  });
+});
