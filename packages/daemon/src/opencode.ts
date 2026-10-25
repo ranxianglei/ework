@@ -1131,14 +1131,13 @@ export class Engine {
     return this.cfg.stuck?.thresholdMs ?? Engine.STUCK_THRESHOLD_MS;
   }
 
-  // Infra-lane agents (ci-master-sentinel / conflict-worker / ci-worker) run
-  // full local test suites where 30-60+ min of legitimate silence is normal;
-  // the ordinary threshold kept killing them mid-work and burning lane
-  // attempts (incident: sentinel A-implementation burned 6/6 cap on
-  // 2026-10-25). Floor their threshold at 90min (owner policy 2026-10-25).
+  // Infra-lane agents (ci-master-sentinel / conflict-worker / ci-worker) must
+  // verify via REMOTE CI (push + watch Actions), never local integration
+  // suites: 15min of no output = kill (owner policy 2026-10-25, supersedes
+  // the 90min floor experiment same day — local suite runs burned hours).
   private stuckThresholdForKey(key: string): number {
     const infra = key.includes("@ci-master-sentinel") || key.includes("@conflict-worker") || key.includes("@ci-worker");
-    return infra ? Math.max(this.stuckThresholdMs, 90 * 60 * 1000) : this.stuckThresholdMs;
+    return infra ? 15 * 60 * 1000 : this.stuckThresholdMs;
   }
 
   private get maxStuckNudges(): number {
@@ -1701,7 +1700,7 @@ export class Engine {
       `Failing checks on master:\n${checkList}\n` +
       `You are the master CI sentinel. Permanent protocol (owner strategy 2026-10-25): you maintain the persistent branch "ci-fixes" — the fleet's single convergence point for master-CI fixes. ` +
       `① sync: merge origin/master into ci-fixes (if the merge is hopeless, recreate ci-fixes from master and re-apply fixes); ` +
-      `② diagnose EVERY red lane (CI logs, local runs); when an identical fix already exists on another branch, cherry-pick it instead of rewriting; ` +
+      `② diagnose EVERY red lane via CI LOGS and REMOTE runs — verification ALWAYS by pushing and watching GitHub Actions; NEVER run large local test/integration suites (owner policy 2026-10-25: 15min without output gets you killed — remote CI is the only verifier); when an identical fix already exists on another branch, cherry-pick it instead of rewriting; ` +
       `③ fix all red lanes on ci-fixes and push; ` +
       `④ keep the ci-fixes→master PR open (create it once; it persists across incidents); ` +
       `⑤ poll until ci-fixes CI is green, then report here: cause, fix summary, PR link, branch state. ` +
