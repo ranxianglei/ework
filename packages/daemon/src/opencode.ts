@@ -1136,8 +1136,13 @@ export class Engine {
   // suites: 15min of no output = kill (owner policy 2026-10-25, supersedes
   // the 90min floor experiment same day — local suite runs burned hours).
   private stuckThresholdForKey(key: string): number {
+    // Infra lanes (ci-master-sentinel / conflict-worker / ci-worker): flat 30-min
+    // no-output kill floor. Owner policy 2026-10-25: 15-min trial caused false
+    // kills while agents waited in queues (API/model congestion); 30 min keeps
+    // the anti-local-integration-test guard without the misfires. Ordinary
+    // agents keep the global stuckThresholdMs default.
     const infra = key.includes("@ci-master-sentinel") || key.includes("@conflict-worker") || key.includes("@ci-worker");
-    return infra ? 15 * 60 * 1000 : this.stuckThresholdMs;
+    return infra ? 30 * 60 * 1000 : this.stuckThresholdMs;
   }
 
   private get maxStuckNudges(): number {
