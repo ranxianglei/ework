@@ -1687,10 +1687,15 @@ export class Engine {
     const body =
       `[SYSTEM] master branch CI failure detected (head ${ci.sha.slice(0, 10)}).\n` +
       `Failing checks on master:\n${checkList}\n` +
-      `You are the master CI sentinel: fix the failure on master via ONE PR (branch, fix, CI-green, ready-to-merge), ` +
-      `then report to this coordination issue: cause, fix summary, PR link. Other agents will rebase once it merges — do NOT touch their PR branches. ` +
+      `You are the master CI sentinel. Permanent protocol (owner strategy 2026-10-25): you maintain the persistent branch "ci-fixes" — the fleet's single convergence point for master-CI fixes. ` +
+      `① sync: merge origin/master into ci-fixes (if the merge is hopeless, recreate ci-fixes from master and re-apply fixes); ` +
+      `② diagnose EVERY red lane (CI logs, local runs); when an identical fix already exists on another branch, cherry-pick it instead of rewriting; ` +
+      `③ fix all red lanes on ci-fixes and push; ` +
+      `④ keep the ci-fixes→master PR open (create it once; it persists across incidents); ` +
+      `⑤ poll until ci-fixes CI is green, then report here: cause, fix summary, PR link, branch state. ` +
+      `Other agents merge ci-fixes into their own red PR branches — do NOT touch their branches yourself. ` +
       `First reply: current master-red status so waiting agents know. This is the sentinel lane: attempt ${attempts + 1}/${this.cfg.work.ciMasterFixMaxAttempts} — ` +
-      `if the fix needs design decisions, post a verdict comment instead and stop.`;
+      `if a fix needs design decisions, post a verdict comment instead and stop.`;
     const prompt = this.buildForwardPrompt(
       session.name,
       this.handleLargeContent(workdir, body, `ci-master-${ref.issueId}.txt`),
@@ -1701,7 +1706,7 @@ export class Engine {
       instructions,
     );
 
-    await tracker.createComment(ref, `[system] 🏷 ${this.sessionRef(session)} ❌ master CI 失败(${ci.checks.map((c) => c.name).join(", ")}) — 哨兵已接管, 修复走单个 PR, 合并后大家 rebase 即绿。`).catch(() => {});
+    await tracker.createComment(ref, `[system] 🏷 ${this.sessionRef(session)} ❌ master CI 失败(${ci.checks.map((c) => c.name).join(", ")}) — 哨兵已接管, 修复收敛到常驻分支 ci-fixes(其他 agent 遇继承红请 ` + "`git merge origin/ci-fixes`" + `), ci-fixes→master PR 持续待合并。`).catch(() => {});
     await this.enqueueOrRun(session, issue, prompt, tracker, ref, `ci-master-${ref.issueId}-${ci.sha || Date.now()}-${Date.now()}`, model);
   }
 
