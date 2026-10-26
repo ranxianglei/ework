@@ -514,3 +514,67 @@ test("in-flight CI suites park quiet PRs on a re-probe queue until completion (o
   expect(row.s).toContain("attempts");
   expect(us.ciReprobeQueue.length).toBe(0);
 });
+
+test("merge-guard truth poll emits pr_unmergeable on dirty/behind transitions only (owner directive 2026-10-26)", async () => {
+  const { getDB } = await import("../src/db");
+  const db = getDB();
+  const { createIssue, createProject } = await import("../src/store");
+  const proj = await createProject("mguard-owner", "billion-context", "");
+  await createIssue(proj.id, "[PR] dirty one", "", "dog", { upstreamIssueNumber: 501, state: "open" });
+  await createIssue(proj.id, "[PR] behind one", "", "dog", { upstreamIssueNumber: 502, state: "open" });
+  await createIssue(proj.id, "[PR] clean one", "", "dog", { upstreamIssueNumber: 503, state: "open" });
+
+  const mod: any = await import("../src/upstream-sync");
+  const us = Object.create(mod.UpstreamSync.prototype);
+  Object.defineProperty(us, "isGithub", { value: true });
+  us.project = { id: proj.id, owner: "ranxianglei", name: "billion-context" };
+  us.mergeGuardTick = 0;
+  us.mergeGuardLastEmit = new Map();
+  us.origin = "http://origin";
+  let stale = false;
+  us.fetchJson = async (url: string) => {
+    if (url.includes("/pulls?state=open")) {
+      const updated = new Date(Date.now() - (stale ? 100 * 3600_000 : 3600_000)).toISOString();
+      return [
+        { number: 501, updated_at: updated, mergeable_state: "dirty" },
+        { number: 502, updated_at: updated, mergeable_state: "behind" },
+        { number: 503, updated_at: updated, mergeable_state: "clean" },
+      ];
+    }
+    return {} as any;
+  };
+
+  const { createWebhook } = await import("../src/webhooks");
+  await createWebhook({ project_id: proj.id, url: "http://hook.local/g", secret: "s3cret" });
+  const posted: string[] = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (_url: any, init: any) => {
+    if (init?.body) posted.push(String(init.body));
+    return { ok: true, status: 200, text: async () => "" } as any;
+  }) as any;
+  try {
+    await mod.UpstreamSync.prototype.pollMergeGuard.call(us);
+    const { waitForWebhookQueueIdle } = await import("../src/webhooks");
+    await waitForWebhookQueueIdle(4_000).catch(() => {});
+    expect(posted.some((b) => b.includes("pr_unmergeable") && b.includes("501") && b.includes("conflict"))).toBe(true);
+    expect(posted.some((b) => b.includes("pr_unmergeable") && b.includes("502") && b.includes("behind"))).toBe(true);
+    expect(posted.some((b) => b.includes("503"))).toBe(false);
+
+    // same bad states within the 6h re-arm window → no re-emit
+    posted.length = 0;
+    await mod.UpstreamSync.prototype.pollMergeGuard.call(us);
+    expect(posted.length).toBe(0);
+
+    // a PR older than 72h is outside the scan horizon
+    posted.length = 0;
+    stale = true;
+    us.mergeGuardLastEmit.clear();
+    await mod.UpstreamSync.prototype.pollMergeGuard.call(us);
+    expect(posted.length).toBe(0);
+    await waitForWebhookQueueIdle(4_000).catch(() => {});
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  const row: any = await db.get("SELECT upstream_merge_guard_at g FROM issues i JOIN (SELECT id FROM issues WHERE project_id = ? AND upstream_issue_number = 501) t ON i.id = t.id", [proj.id]);
+  expect(row.g).toBeTruthy();
+});

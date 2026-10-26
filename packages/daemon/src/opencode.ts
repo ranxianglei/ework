@@ -660,7 +660,7 @@ export class Engine {
     // refreshed by the drain loop; stale values only over-squeeze briefly).
     let infraDemand = this.pendingInfraCount;
     for (const k of this.running.keys()) {
-      if (k.includes("@conflict-worker") || k.includes("@ci-worker") || k.includes("@ci-master")) infraDemand++;
+      if (k.includes("@conflict-worker") || k.includes("@ci-worker") || k.includes("@ci-master") || k.includes("@merge-guard")) infraDemand++;
     }
     return infraDemand > 0 ? Math.floor(this.maxConcurrent / 2) : this.maxConcurrent;
   }
@@ -676,7 +676,7 @@ export class Engine {
     const now = Date.now();
     let ordinaryActive = 0;
     for (const k of this.running.keys()) {
-      if (k.includes("@conflict-worker") || k.includes("@ci-worker") || k.includes("@ci-master")) continue;
+      if (k.includes("@conflict-worker") || k.includes("@ci-worker") || k.includes("@ci-master") || k.includes("@merge-guard")) continue;
       const last = this.lastOutputAt.get(k) ?? this.startedAt.get(k) ?? now;
       if (now - last <= this.apiIdleGraceMs) ordinaryActive++;
     }
@@ -744,6 +744,7 @@ export class Engine {
         "conflict-worker",
         "ci-worker",
         "ci-master",
+        "merge-guard",
       ]);
     } catch {
       this.pendingInfraCount = 0;
@@ -1139,13 +1140,25 @@ export class Engine {
     return !!sourceCommentId && (sourceCommentId.startsWith("ci-master-") || sourceCommentId.startsWith("ci-coord-"));
   }
 
+  // Truth-driven merge guard lane (owner directive 2026-10-26): every
+  // non-mergeable PR wakes a dedicated worker from a fixed pool.
+  private isMergeGuardSource(sourceCommentId?: string): boolean {
+    return !!sourceCommentId && sourceCommentId.startsWith("merge-guard-");
+  }
+
+  private mergeGuardRunningCount(): number {
+    let n = 0;
+    for (const k of this.running.keys()) if (k.includes("@merge-guard")) n++;
+    return n;
+  }
+
   private stuckThresholdForKey(key: string): number {
     // Infra lanes (ci-master-sentinel / conflict-worker / ci-worker): flat 30-min
     // no-output kill floor. Owner policy 2026-10-25: 15-min trial caused false
     // kills while agents waited in queues (API/model congestion); 30 min keeps
     // the anti-local-integration-test guard without the misfires. Ordinary
     // agents keep the global stuckThresholdMs default.
-    const infra = key.includes("@ci-master-sentinel") || key.includes("@conflict-worker") || key.includes("@ci-worker");
+    const infra = key.includes("@ci-master-sentinel") || key.includes("@conflict-worker") || key.includes("@ci-worker") || key.includes("@merge-guard");
     return infra ? 30 * 60 * 1000 : this.stuckThresholdMs;
   }
 
@@ -1481,7 +1494,46 @@ export class Engine {
         return this.handleMasterCiFailed(ref, scopeKey, issueData, tracker, event.ci ?? { sha: "", checks: [] }, event.model);
       case "issue_boosted":
         return this.handleBoost(ref, scopeKey, issueData, tracker);
+      case "pr_unmergeable":
+        return this.handlePrUnmergeable(ref, scopeKey, issueData, tracker, event.merge?.state ?? "dirty", event.mergeReason ?? "conflict", event.model);
     }
+  }
+
+  // Truth-driven merge guard (owner directive 2026-10-26): wake criterion is
+  // GitHub ground truth (conflict / behind / red), emitted by the web
+  // merge-guard poller on state transitions. Unified lane replacing the
+  // separate conflict/ci wake paths for mergeability: the guard resolves
+  // conflicts, syncs master into behind branches, and reports. Dedicated
+  // slot pool (never the ordinary queue), capped by
+  // WORK_MERGE_GUARD_CONCURRENCY (default 4).
+  private async handlePrUnmergeable(
+    ref: TrackerRef,
+    scopeKey: string,
+    issueData: TrackerEvent["issue"],
+    tracker: IssueTracker,
+    mergeState: string,
+    reason: string,
+    model?: string,
+  ) {
+    if (issueData.state !== "open") return;
+    let issue = await this.store.findIssue(ref.trackerType, scopeKey, ref.issueId);
+    if (!issue) {
+      issue = await this.store.findOrCreateIssue(ref, scopeKey, issueData.title);
+      log.info(`engine: merge guard created missing issue row for ${scopeKey}#${ref.issueId}`);
+    }
+    if (issue.state === "closed") return;
+    if (!(await this.ensureOwned(issue))) return;
+
+    const session = await this.workerSession(issue.id, "merge-guard");
+    const workdir = await this.resolveWorkdir(session, issue);
+    const instructions = tracker.getTrackerInstructions(ref);
+    const action =
+      reason === "behind"
+        ? "Sync origin/master into this PR branch (update-branch) and push"
+        : "Rebase or merge origin/master into this PR branch, resolve every conflict, and push";
+    const prompt = `[SYSTEM] Merge guard: PR is ${mergeState} (reason: ${reason})\n\n${instructions.issueRef} — ${issueData.title}\n\nAction: ${action}. After pushing, verify via the PR's checks/merge state (GitHub API from the workdir is fine), then post a one-line outcome comment on the PR (state after your push). If the conflicts need design decisions, do NOT guess: open a decision-request issue (p1) and stop touching this PR.`;
+    await tracker.createComment(ref, `[system] 🛡 merge-guard: PR ${mergeState} (${reason}) — 已派专职守卫处理。`).catch(() => {});
+    await this.enqueueOrRun(session, issue, prompt, tracker, ref, `merge-guard-${ref.issueId}-${Date.now()}`, model);
   }
 
   // Upstream PR conflict wake: the session that owns this PR rebase-pushes on
@@ -2220,7 +2272,16 @@ export class Engine {
     // this lane: ci-master- (master red events) and ci-coord- (coordination
     // issue reports/rulings routed to the same sentinel).
     const sentinelLane = this.isSentinelSource(msg.sourceCommentId);
-    if (!(sentinelLane ? this.boostSlotAvailable(msg.sourceCommentId) : this.slotAvailable(msg.sourceCommentId))) {
+    // Merge-guard pool (owner directive 2026-10-26): dedicated truth-driven
+    // workers never queue behind ordinary slots; their only gate is the
+    // guard pool size (WORK_MERGE_GUARD_CONCURRENCY).
+    const guardLane = this.isMergeGuardSource(msg.sourceCommentId);
+    const slotOk = sentinelLane
+      ? this.boostSlotAvailable(msg.sourceCommentId)
+      : guardLane
+        ? this.mergeGuardRunningCount() < this.cfg.work.mergeGuardConcurrency
+        : this.slotAvailable(msg.sourceCommentId);
+    if (!slotOk) {
       log.info(`engine: concurrency limit reached (api ${this.activeRunningCount()}/${this.effectiveGlobalCap(msg.sourceCommentId)}, procs ${this.running.size}), message ${msg.id.slice(0, 8)} queued for ${k}`);
       void tracker.updateStatus(ref, "queued");
       return;
@@ -2481,7 +2542,7 @@ export class Engine {
     // ~267K chars -> every model call 400s). Rotate to a fresh opencode session
     // when the sticky one exceeds sentinelRotateMessages messages. Rotation
     // happens between dispatches, never mid-run.
-    if (resumeSessionId && session.name.includes("ci-master-sentinel")) {
+    if (resumeSessionId && (session.name.includes("ci-master-sentinel") || session.name.includes("merge-guard"))) {
       resumeSessionId = await this.maybeRotateSentinelSession(session, resumeSessionId);
     }
 
@@ -3138,7 +3199,9 @@ export class Engine {
     const pending = await this.store.getGlobalPendingMessages(Math.max(slotsAvailable, 64));
     for (const msg of pending) {
       if (this.destroyed) return;
-      if (!this.isSentinelSource(msg.sourceCommentId) && !this.slotAvailable()) break;
+      const guardLaneMsg = this.isMergeGuardSource(msg.sourceCommentId);
+      if (!this.isSentinelSource(msg.sourceCommentId) && !guardLaneMsg && !this.slotAvailable()) break;
+      if (guardLaneMsg && this.mergeGuardRunningCount() >= this.cfg.work.mergeGuardConcurrency) continue;
       const session = await this.store.getSession(msg.sessionId);
       if (!session || session.state === "running") continue;
       const issue = await this.store.getIssue(session.issueId);

@@ -327,7 +327,7 @@ interface PayloadComment {
 
 interface IssueEventPayload {
   event_id?: string;
-  action: IssueAction | "merge_conflict" | "ci_failed" | "master_ci_failed";
+  action: IssueAction | "merge_conflict" | "ci_failed" | "master_ci_failed" | "pr_unmergeable";
   issue: PayloadIssue;
   repository: PayloadRepository;
   sender: PayloadUser;
@@ -336,6 +336,7 @@ interface IssueEventPayload {
   url?: string;
   dispatch_off?: boolean;
   merge_state?: string;
+  merge_reason?: string;
   ci?: { sha: string; checks: { name: string; html_url?: string; conclusion: string }[]; branch?: string };
 }
 
@@ -597,6 +598,44 @@ export async function emitCiFailedEvent(
     await fanOut(projectId, "issues", rawBody);
   } catch (e) {
     log.error("webhook: emitCiFailedEvent failed", { err: e as Error, projectId, issueId });
+  }
+}
+
+// Truth-driven mergeability wake (owner directive 2026-10-26): the wake
+// criterion is GitHub's ground truth — conflict, red required checks, or a
+// non-mergeable state — not head-sha movement or reply events. Emitted by the
+// merge-guard poller on state transitions (re-armed every 6h while a bad
+// state persists).
+export async function emitPrUnmergeableEvent(
+  projectId: number,
+  issueId: number,
+  origin: string,
+  mergeState: string,
+  reason: string,
+): Promise<void> {
+  try {
+    const project = await getProjectById(projectId);
+    if (!project) return;
+    const issue = await getIssueById(issueId);
+    if (!issue) return;
+    const cfg = await getConfigAll();
+    const scopeKey = `${project.owner}/${project.name}`;
+    const globalOff = cfg["dispatchEnabled"] === "false";
+    const projectOff = cfg[`dispatchOff:${scopeKey}`] === "1";
+    const issueOff = issue.ai_status === "dispatch_off" || issue.ai_status === "halted";
+    if (globalOff || projectOff || issueOff) return;
+    const commentCount = await countCommentsSafe(issueId);
+    const globalDefault = (await loadConfig()).defaultModel;
+    const model = resolveModel(project.model, globalDefault, issue.model);
+    const payload = buildIssuePayload(issue, project, commentCount, "opened", origin, model);
+    (payload as IssueEventPayload).action = "pr_unmergeable";
+    (payload as IssueEventPayload).merge_state = mergeState;
+    (payload as IssueEventPayload).merge_reason = reason;
+    (payload as IssueEventPayload).event_id = randomUUID();
+    const rawBody = JSON.stringify(payload);
+    await fanOut(projectId, "issues", rawBody);
+  } catch (e) {
+    log.error("webhook: emitPrUnmergeableEvent failed", { err: e as Error, projectId, issueId });
   }
 }
 

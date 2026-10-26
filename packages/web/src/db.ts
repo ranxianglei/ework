@@ -149,6 +149,9 @@ function migrateIssuesTable(db: Database): void {
   if (!have.has("upstream_conflict_state")) {
     db.exec(applyPrefix("ALTER TABLE {{issues}} ADD COLUMN upstream_conflict_state TEXT"));
   }
+  if (!have.has("upstream_merge_guard_at")) {
+    db.exec(applyPrefix("ALTER TABLE {{issues}} ADD COLUMN upstream_merge_guard_at TEXT"));
+  }
   if (!have.has("upstream_ci_state")) {
     db.exec(applyPrefix("ALTER TABLE {{issues}} ADD COLUMN upstream_ci_state TEXT"));
   }

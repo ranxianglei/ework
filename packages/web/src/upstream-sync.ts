@@ -466,6 +466,62 @@ export class UpstreamSync {
   // empty upstream_ci_state forever — owner report 2026-10-26).
   private ciReprobeQueue: number[] = [];
 
+  // Truth-driven merge guard (owner directive 2026-10-26): wake criterion is
+  // GitHub ground truth — every open PR's mergeable_state — not events. Runs
+  // every 8th poll tick (~2 min), scans PRs updated within 72h, and emits
+  // pr_unmergeable on a bad-state transition (re-arm 6h while it persists).
+  // dirty→conflict, behind→needs-master-sync, blocked+red→CI fix; blocked
+  // with green checks = review pending (human state, never wakes).
+  private mergeGuardTick = 0;
+  private mergeGuardLastEmit = new Map<number, { state: string; at: number }>();
+
+  private async pollMergeGuard(): Promise<void> {
+    this.mergeGuardTick++;
+    if (this.mergeGuardTick % 8 !== 1) return;
+    const pulls: { number?: number; updated_at?: string; mergeable_state?: string }[] = [];
+    for (const page of [1, 2, 3]) {
+      const batch = await this.fetchJson<
+        { number?: number; updated_at?: string; mergeable_state?: string }[] | null
+      >(`/pulls?state=open&sort=updated&direction=desc&per_page=100&page=${page}`);
+      const rows = Array.isArray(batch) ? batch : [];
+      pulls.push(...rows);
+      if (rows.length < 100) break;
+    }
+    const horizon = Date.now() - 72 * 3600_000;
+    for (const pr of pulls) {
+      try {
+        const n = Number(pr?.number);
+        const updatedMs = pr?.updated_at ? Date.parse(pr.updated_at) : 0;
+        const state = String(pr?.mergeable_state ?? "");
+        if (!Number.isInteger(n) || n <= 0 || updatedMs < horizon) continue;
+        let reason = "";
+        if (state === "dirty") reason = "conflict";
+        else if (state === "behind") reason = "behind";
+        if (!reason) {
+          this.mergeGuardLastEmit.delete(n);
+          continue;
+        }
+        const last = this.mergeGuardLastEmit.get(n);
+        const now = Date.now();
+        if (last && last.state === state && now - last.at < 6 * 3600_000) continue;
+        const issue = await getIssueByUpstreamNumber(this.project.id, n);
+        if (!issue) continue;
+        this.mergeGuardLastEmit.set(n, { state, at: now });
+        await getDB().run(
+          "UPDATE issues SET upstream_merge_guard_at = ? WHERE id = ?",
+          [new Date(now).toISOString(), issue.id],
+        );
+        const { emitPrUnmergeableEvent } = await import("./webhooks");
+        await emitPrUnmergeableEvent(this.project.id, issue.id, this.origin ?? "http://upstream.invalid", state, reason);
+        log.info(
+          `upstream-sync: merge guard — PR#${n} ${state} (${reason}) emitted`,
+        );
+      } catch (err) {
+        log.warn(`upstream-sync: merge-guard item failed for PR#${pr?.number}: ${String(err)}`);
+      }
+    }
+  }
+
   private async clearMergeProbesIfMasterMoved(): Promise<void> {
     try {
       const headCommit = await this.fetchJson<{ sha?: string } | null>(`/commits/master?per_page=1`);
@@ -811,6 +867,9 @@ export class UpstreamSync {
     }
     if (this.isGithub && prCandidates.length > 0) {
       await this.clearMergeProbesIfMasterMoved();
+    }
+    if (this.isGithub) {
+      await this.pollMergeGuard();
     }
     await this.drainMergeReprobe(result);
     await this.drainCiReprobe(result);

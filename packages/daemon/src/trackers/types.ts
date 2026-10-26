@@ -13,7 +13,7 @@ export interface TrackerRef {
 }
 
 /** Parsed, tracker-agnostic webhook event */
-export type TrackerEventType = "issue_opened" | "comment_created" | "issue_closed" | "status_changed" | "merge_conflict" | "ci_failed" | "master_ci_failed" | "issue_boosted" | "ci_coord_comment";
+export type TrackerEventType = "issue_opened" | "comment_created" | "issue_closed" | "status_changed" | "merge_conflict" | "ci_failed" | "master_ci_failed" | "issue_boosted" | "ci_coord_comment" | "pr_unmergeable";
 
 export interface TrackerEvent {
   type: TrackerEventType;
@@ -36,6 +36,9 @@ export interface TrackerEvent {
   };
   // Present on merge_conflict events: upstream PR merge state ("dirty" etc).
   merge?: { state: string };
+  // Present on pr_unmergeable events (truth-driven merge guard, owner
+  // directive 2026-10-26): reason is "conflict" | "behind".
+  mergeReason?: string;
   // Present on ci_failed/master_ci_failed events: failing head sha + failed
   // checks. branch (master_ci_failed): which sentinel-watched branch is red
   // ("master" or the persistent "ci-fixes" convergence branch).

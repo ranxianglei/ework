@@ -81,6 +81,7 @@ CREATE TABLE IF NOT EXISTS {{issues}} (
   -- last conflict-wake emission time (ms epoch) while the row sits dirty;
   -- NULL when clean. See probeMergeState re-arm in upstream-sync.ts.
   upstream_conflict_state TEXT,
+  upstream_merge_guard_at TEXT,
   upstream_ci_state TEXT,
   -- 'issue' (default) or 'discussion' — GitHub Discussions mirrored by the
   -- discussions poll stream share this table; kind scopes upstream-number
