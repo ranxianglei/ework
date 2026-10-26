@@ -478,8 +478,16 @@ export class UpstreamSync {
   private async pollMergeGuard(): Promise<void> {
     this.mergeGuardTick++;
     if (this.mergeGuardTick % 8 !== 1) return;
+    try {
+      await this.pollMergeGuardInner();
+    } catch (err) {
+      log.warn(`upstream-sync: merge-guard scan failed: ${String(err)}`);
+    }
+  }
+
+  private async pollMergeGuardInner(): Promise<void> {
     const pulls: { number?: number; updated_at?: string; mergeable_state?: string }[] = [];
-    for (const page of [1, 2, 3]) {
+    for (const page of [1, 2]) {
       const batch = await this.fetchJson<
         { number?: number; updated_at?: string; mergeable_state?: string }[] | null
       >(`/pulls?state=open&sort=updated&direction=desc&per_page=100&page=${page}`);
