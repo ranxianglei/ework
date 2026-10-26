@@ -196,6 +196,7 @@ export function setTitleTranslator(fn: (raw: string) => Promise<string | null>):
 // 2026-10-24). Keyed by project id; web restart re-emits once — bounded by
 // the daemon-side sentinel attempt cap.
 const masterCiLastEmitByProject = new Map<string, { sha: string; at: number }>();
+const mergeGuardCooldownUntil = new Map<number, number>();
 
 export class UpstreamSync {
   private readonly sync: UpstreamSyncRow;
@@ -477,17 +478,32 @@ export class UpstreamSync {
 
   private async pollMergeGuard(): Promise<void> {
     this.mergeGuardTick++;
-    if (this.mergeGuardTick % 8 !== 1) return;
+    if (this.mergeGuardTick % 16 !== 1) return;
+    // Rate-limit cooldown: a 403 during a scan means the PAT budget is gone —
+    // hammering every 4 min keeps every project's sync dark (2026-10-26
+    // incident: guard scans alone pushed the shared budget over).
+    const cd = mergeGuardCooldownUntil.get(this.project.id);
+    if (cd && Date.now() < cd) return;
     try {
       await this.pollMergeGuardInner();
-    } catch (err) {
+    } catch (err: any) {
+      if (String(err?.message ?? err).includes("403")) {
+        mergeGuardCooldownUntil.set(this.project.id, Date.now() + 30 * 60_000);
+        log.warn(`upstream-sync: merge-guard hit 403 — cooling down 30min for ${this.project.owner}/${this.project.name}`);
+      }
       log.warn(`upstream-sync: merge-guard scan failed: ${String(err)}`);
     }
   }
 
   private async pollMergeGuardInner(): Promise<void> {
+    // Cheap local gate: no open mirrored PRs = no scan (one SQL, zero API).
+    const prCount = await getDB().get(
+      "SELECT COUNT(*) n FROM issues WHERE project_id = ? AND state = 'open' AND kind = 'issue' AND title LIKE '[PR]%'",
+      [this.project.id],
+    );
+    if (!prCount || Number((prCount as any).n) === 0) return;
     const pulls: { number?: number; updated_at?: string; mergeable_state?: string }[] = [];
-    for (const page of [1, 2]) {
+    for (const page of [1]) {
       const batch = await this.fetchJson<
         { number?: number; updated_at?: string; mergeable_state?: string }[] | null
       >(`/pulls?state=open&sort=updated&direction=desc&per_page=100&page=${page}`);
