@@ -1524,6 +1524,14 @@ export class Engine {
     if (issue.state === "closed") return;
     if (!(await this.ensureOwned(issue))) return;
 
+    // Same-PR idempotency (2026-10-26): a pending/running guard worker will
+    // observe the fresh state when it acts — a second wake would only preempt
+    // it mid-flight (observed 8x interrupt churn on #4799).
+    if ((await this.store.countActiveMergeGuardMessages(issue.id)) > 0) {
+      log.info(`merge guard: issue already has an active guard worker — skipping duplicate wake (${ref.issueId})`);
+      return;
+    }
+
     const session = await this.workerSession(issue.id, "merge-guard");
     const workdir = await this.resolveWorkdir(session, issue);
     const instructions = tracker.getTrackerInstructions(ref);

@@ -517,6 +517,24 @@ export class Store {
    * an issue within the window, any status — done/failed/interrupted alike,
    * an attempt is an attempt. Backs the retry cap + degradation policy
    * (owner directive 2026-10-24: 失败路径必须有自己的超时/重试/降级策略). */
+  /**
+   * Active (pending/running) merge-guard messages for one issue.
+   * Same-PR wake idempotency (2026-10-26): merge guard re-emits on state
+   * transitions while a worker is already in flight; without this check each
+   * new wake preempts the running worker — observed 8x interrupts on #4799,
+   * zero completed work.
+   */
+  async countActiveMergeGuardMessages(issueId: string): Promise<number> {
+    const row = await getDB().get<{ n: number }>(
+      `SELECT COUNT(*) n FROM messages m
+       JOIN op_sessions s ON s.uid = m.session_id
+       WHERE s.issue_id = ? AND s.name LIKE 'merge-guard%'
+         AND m.status IN ('pending','running')`,
+      [issueId],
+    );
+    return row?.n ?? 0;
+  }
+
   async countAutoLaneMessages(issueId: string, sourcePrefix: string, sinceIso: string): Promise<number> {
     const res = await getDB().get<{ n: number }>(
       "SELECT COUNT(*) AS n FROM {{messages}} m JOIN {{op_sessions}} s ON s.uid = m.session_id WHERE s.issue_id = ? AND m.source_comment_id LIKE ? AND m.created_at >= ?",
