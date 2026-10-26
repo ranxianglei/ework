@@ -457,6 +457,14 @@ export class UpstreamSync {
   // cannot reach them: master movement also enqueues every open PR for a
   // direct merge-state re-probe, drained a few per poll.
   private mergeReprobeQueue: number[] = [];
+  // CI completion has the same quiet-PR blind spot as merge state: GitHub's
+  // PR updated_at does not change when check-runs complete, so a PR leaves
+  // the changed-item stream while its suite is still running (suites take
+  // 6-30+ min under queue congestion). PRs whose suite is not yet complete
+  // are parked here and re-probed directly until completion, or the red
+  // would never emit (PR#4794 class: kernel-guard red, zero dispatch rows,
+  // empty upstream_ci_state forever — owner report 2026-10-26).
+  private ciReprobeQueue: number[] = [];
 
   private async clearMergeProbesIfMasterMoved(): Promise<void> {
     try {
@@ -567,17 +575,22 @@ export class UpstreamSync {
   }
 
   private async probeCiState(gi: GiteaIssue, existing: IssueRow, result: UpstreamSyncPollResult): Promise<void> {
-    if (!this.isGithub || existing.kind !== "issue" || !gi.title.startsWith("[PR]")) return;
+    if (!this.isGithub || existing.kind !== "issue" || !(existing.title ?? "").startsWith("[PR]")) return;
+    const stillRunning = await this.applyCiState(gi.number, existing, result);
+    if (stillRunning && !this.ciReprobeQueue.includes(gi.number)) this.ciReprobeQueue.push(gi.number);
+  }
+
+  private async applyCiState(number: number, existing: IssueRow, result: UpstreamSyncPollResult): Promise<boolean> {
     // CI probing is auxiliary telemetry: any failure here (network, API shape
     // surprises, timeouts) must never abort the whole poll — the sync lanes
     // are the primary payload (incident 2026-10-20: checks.filter TypeError
     // killed every b-c poll for an hour).
     try {
-    const pull = await this.fetchJson<PullRequestPayload>(`/pulls/${gi.number}`);
+    const pull = await this.fetchJson<PullRequestPayload>(`/pulls/${number}`);
     const sha = pull?.head?.sha ?? null;
-    if (!sha) return;
+    if (!sha) return false;
     const checksResp = await this.fetchJson<CheckRunPayload[] | { check_runs?: CheckRunPayload[] }>(`/commits/${sha}/check-runs?filter=latest`);
-    if (!checksResp) return;
+    if (!checksResp) return false;
     // The check-runs endpoint wraps the list in {total_count, check_runs};
     // tolerate both shapes.
     const checks: CheckRunPayload[] = Array.isArray(checksResp) ? checksResp : (checksResp.check_runs ?? []);
@@ -587,11 +600,11 @@ export class UpstreamSync {
     // (PR#3886 duplicate dispatch 2026-10-20). Wait for completion instead.
     const allCompleted =
       checks.length > 0 && checks.every((c: CheckRunPayload) => c.status === "completed");
-    if (!allCompleted) return;
+    if (!allCompleted) return true;
     const failed = checks.filter((c: CheckRunPayload) => c.conclusion === "failure");
     if (failed.length === 0) {
       if (existing.upstream_ci_state) await updateIssueCiState(existing.id, null);
-      return;
+      return false;
     }
     let stored: CiProbeState | null = null;
     try {
@@ -602,9 +615,9 @@ export class UpstreamSync {
     const decision = ciProbeDecision(stored, sha, failed.length);
     if (!decision.emit) {
       if (decision.next !== stored) await updateIssueCiState(existing.id, decision.next ? JSON.stringify(decision.next) : null);
-      return;
+      return false;
     }
-    log.info(`upstream-sync: CI failure detected on upstream PR #${gi.number} (${this.project.owner}/${this.project.name})`);
+    log.info(`upstream-sync: CI failure detected on upstream PR #${number} (${this.project.owner}/${this.project.name})`);
     await emitCiFailedEvent(
       this.project.id,
       existing.id,
@@ -614,8 +627,34 @@ export class UpstreamSync {
     );
     await updateIssueCiState(existing.id, decision.next ? JSON.stringify(decision.next satisfies CiProbeState) : null);
     result.issuesUpdated++;
+    return false;
     } catch (err) {
-      log.warn(`upstream-sync: CI probe skipped for PR #${gi.number} (${this.project.owner}/${this.project.name}): ${err instanceof Error ? err.message : String(err)}`);
+      log.warn(`upstream-sync: CI probe skipped for PR #${number} (${this.project.owner}/${this.project.name}): ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    }
+  }
+
+  private async drainCiReprobe(result: UpstreamSyncPollResult): Promise<void> {
+    let budget = MERGE_PROBE_PER_POLL;
+    while (budget > 0 && this.ciReprobeQueue.length > 0) {
+      const number = this.ciReprobeQueue.shift() as number;
+      try {
+        const existing = await getDB().get<IssueRow>(
+          "SELECT * FROM issues WHERE project_id = ? AND upstream_issue_number = ? AND state = 'open' LIMIT 1",
+          [this.project.id, number],
+        );
+        if (!existing || existing.kind !== "issue" || !existing.title.startsWith("[PR]")) continue;
+        const stillRunning = await this.applyCiState(number, existing, result);
+        if (stillRunning) {
+          if (!this.ciReprobeQueue.includes(number)) this.ciReprobeQueue.push(number);
+          budget--;
+          continue;
+        }
+        budget--;
+      } catch (err) {
+        budget--;
+        log.warn(`upstream-sync: CI re-probe failed for PR #${number}: ${String(err)}`);
+      }
     }
   }
 
@@ -774,6 +813,7 @@ export class UpstreamSync {
       await this.clearMergeProbesIfMasterMoved();
     }
     await this.drainMergeReprobe(result);
+    await this.drainCiReprobe(result);
     const probeNumbers = mergeProbeCandidates(
       prCandidates.map((c) => c.gi),
       new Map(prCandidates.map((c) => [c.gi.number, c.existing.upstream_merge_checked_at ?? ""])),

@@ -397,16 +397,13 @@ describe("upstream sync defaults project upstream_urls", () => {
 test("master head movement clears merge-probe bookkeeping (owner incident 2026-10-26 #4801)", async () => {
   // Quiet PRs that turn conflicting via a master merge were never re-probed:
   // probe eligibility keyed on PR-side activity. The invalidation on master
-  // head movement is the fix — verified here against a real tmp DB.
-  const { initDB, getDB } = await import("../src/db");
-  const { mkdtempSync } = await import("fs");
-  const { tmpdir } = await import("os");
-  const { join } = await import("path");
-  process.env.WORK_DB_PATH = join(mkdtempSync(join(tmpdir(), "mvhead-")), "t.db");
-  await initDB();
+  // head movement is the fix — verified here against the preloaded test DB
+  // (setup.ts owns WORK_DB_PATH; tests must never re-point it mid-run or the
+  // process-global db singleton poisons every later file).
+  const { getDB } = await import("../src/db");
   const db = getDB();
   const { createIssue, createProject } = await import("../src/store");
-  const proj = await createProject("ranxianglei", "billion-context", "");
+  const proj = await createProject("mvhead-owner", "billion-context", "");
   const pid = proj.id;
   const quiet = await createIssue(pid, "quiet pr", "", "dog", { upstreamIssueNumber: 4801, state: "open" });
   const plain = await createIssue(pid, "plain issue", "", "dog", { kind: "issue", upstreamIssueNumber: 2, state: "open" });
@@ -448,4 +445,72 @@ test("master head movement clears merge-probe bookkeeping (owner incident 2026-1
   expect(after.ms).toBe("dirty");
   expect(after.cs).toContain("lastEmit");
   expect(us.mergeReprobeQueue.length).toBe(0);
+});
+
+test("in-flight CI suites park quiet PRs on a re-probe queue until completion (owner incident 2026-10-26 #4794)", async () => {
+  // GitHub's PR updated_at does not change when check-runs complete, so a PR
+  // whose suite is still running drops out of the changed-item stream and its
+  // red would never emit. The suite must be followed to completion directly.
+  const { getDB } = await import("../src/db");
+  const db = getDB();
+  const { createIssue, createProject } = await import("../src/store");
+  const proj = await createProject("cireprobe-owner", "billion-context", "");
+  const pr = await createIssue(proj.id, "[PR] kernel lockfile churn", "", "dog", { upstreamIssueNumber: 4794, state: "open" });
+
+  const mod: any = await import("../src/upstream-sync");
+  const us = Object.create(mod.UpstreamSync.prototype);
+  Object.defineProperty(us, "isGithub", { value: true });
+  us.project = { id: proj.id, owner: "ranxianglei", name: "billion-context" };
+  us.ciReprobeQueue = [];
+  us.origin = "http://origin";
+  let completed = false;
+  us.fetchJson = async (url: string) => {
+    if (url.startsWith("/pulls/4794")) return { head: { sha: "sha4794" } };
+    if (url.startsWith("/commits/sha4794/check-runs")) {
+      return completed
+        ? { check_runs: [
+            { name: "test", status: "completed", conclusion: "success" },
+            { name: "kernel-guard", status: "completed", conclusion: "failure" },
+          ] }
+        : { check_runs: [
+            { name: "test", status: "in_progress", conclusion: null },
+            { name: "kernel-guard", status: "completed", conclusion: "failure" },
+          ] };
+    }
+    return {} as any;
+  };
+
+  // 1) stream-path probe sees an in-progress suite → parks the PR, decides nothing
+  await mod.UpstreamSync.prototype.probeCiState.call(us, { number: 4794 }, pr, { issuesUpdated: 0 } as any);
+  expect(us.ciReprobeQueue).toContain(4794);
+  let row: any = await db.get("SELECT upstream_ci_state s FROM issues WHERE id = ?", [pr.id]);
+  expect(row.s).toBe(null);
+
+  // 2) drain while still in-progress → stays parked, still no premature green/red decision
+  await mod.UpstreamSync.prototype.drainCiReprobe.call(us, { issuesUpdated: 0 } as any);
+  expect(us.ciReprobeQueue).toContain(4794);
+
+  // 3) suite completes with a failure → drain emits and records attempt bookkeeping
+  const { createWebhook } = await import("../src/webhooks");
+  await createWebhook({ project_id: proj.id, url: "http://hook.local/x", secret: "s3cret" });
+  const posted: string[] = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (_url: any, init: any) => {
+    if (init?.body) posted.push(String(init.body));
+    return { ok: true, status: 200, text: async () => "" } as any;
+  }) as any;
+  try {
+    completed = true;
+    await mod.UpstreamSync.prototype.drainCiReprobe.call(us, { issuesUpdated: 0 } as any);
+    expect(posted.some((b) => b.includes("ci_failed") && b.includes("4794"))).toBe(true);
+    // let the webhook queue drain while the stub still answers, so afterEach
+    // does not wait on undeliverable posts against the restored real fetch
+    const { waitForWebhookQueueIdle } = await import("../src/webhooks");
+    await waitForWebhookQueueIdle(4_000).catch(() => {});
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  row = await db.get("SELECT upstream_ci_state s FROM issues WHERE id = ?", [pr.id]);
+  expect(row.s).toContain("attempts");
+  expect(us.ciReprobeQueue.length).toBe(0);
 });
