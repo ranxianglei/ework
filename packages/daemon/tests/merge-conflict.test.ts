@@ -39,14 +39,15 @@ describe("handleMergeConflict gating", () => {
     author: "ranxianglei",
   };
 
-  function makeSelf(opts: { issueState?: string; existingWorker?: unknown }) {
+  function makeSelf(opts: { issueState?: string; existingWorker?: unknown; untracked?: boolean }) {
     const enqueueOrRun = vi.fn();
     const worker = opts.existingWorker ?? { id: "w1", name: "conflict-worker" };
     const createSession = vi.fn(async () => worker);
     const self = Object.create(Engine.prototype) as Record<string, unknown>;
     self.cfg = { bot: { username: "ework-daemon" }, daemon: { wakeLogins: ["ranxianglei"], noWakeLogins: [], nonWakingAuthors: [] }, work: { ciFixMaxAttempts: 2, conflictFixMaxAttempts: 2, autoLaneWindowMs: 86_400_000 } };
     self.store = {
-      findIssue: vi.fn(async () => ({ id: 7, state: opts.issueState ?? "active" })),
+      findIssue: vi.fn(async () => (opts.untracked ? null : { id: 7, state: opts.issueState ?? "active" })),
+      findOrCreateIssue: vi.fn(async () => ({ id: 8, state: "active" })),
       createSession,
       getSessionsForIssue: vi.fn(async () => [{ id: "w1", name: "conflict-worker-N" }]),
       countAutoLaneMessages: vi.fn(async () => 0),
@@ -100,5 +101,14 @@ describe("handleMergeConflict gating", () => {
     await call(self, tracker);
     expect(enqueueOrRun).not.toHaveBeenCalled();
     expect(createSession).not.toHaveBeenCalled();
+  });
+
+  test("untracked PR gets a row created and dispatched, not silently dropped (#4814 audit)", async () => {
+    const { self, enqueueOrRun, createSession } = makeSelf({ untracked: true });
+    const tracker = { createComment: vi.fn(async () => ({ id: "c1" })), getTrackerInstructions: () => ({ issueRef: "x" }) };
+    await call(self, tracker);
+    expect((self.store as { findOrCreateIssue: ReturnType<typeof vi.fn> }).findOrCreateIssue).toHaveBeenCalledTimes(1);
+    expect(createSession).toHaveBeenCalledWith(8, "conflict-worker-N");
+    expect(enqueueOrRun).toHaveBeenCalledTimes(1);
   });
 });

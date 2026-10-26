@@ -1546,10 +1546,17 @@ export class Engine {
     model?: string,
   ) {
     if (issueData.state !== "open") return;
-    const issue = await this.store.findIssue(ref.trackerType, scopeKey, ref.issueId);
+    // Audit 2026-10-26 (.tmp/subagent-audit-report.md): fires for PRs the engine
+    // has no row for died here as "untracked — skipping" while the router had
+    // already reported routed:true — the coordination issue's own PR (#4814,
+    // head = ci-fixes tip) could never be woken. Find-or-create instead, same
+    // as the master-ci sentinel lane.
+    let issue = await this.store.findIssue(ref.trackerType, scopeKey, ref.issueId);
     if (!issue) {
-      log.info(`engine: merge_conflict on untracked ${scopeKey}#${ref.issueId} — skipping`);
-      return;
+      issue = await this.store.findOrCreateIssue(ref, scopeKey, issueData.title);
+      log.info(
+        `engine: merge_conflict created missing issue row for ${scopeKey}#${ref.issueId}`,
+      );
     }
     if (issue.state === "closed") return;
     if (!(await this.ensureOwned(issue))) return;
