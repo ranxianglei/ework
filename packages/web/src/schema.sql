@@ -78,6 +78,9 @@ CREATE TABLE IF NOT EXISTS {{issues}} (
   -- updated_at of the upstream PR at probe time; a probe is repeated only
   -- when the PR moved since (conflicts cannot change without a push).
   upstream_merge_checked_at TEXT,
+  -- last conflict-wake emission time (ms epoch) while the row sits dirty;
+  -- NULL when clean. See probeMergeState re-arm in upstream-sync.ts.
+  upstream_conflict_state TEXT,
   upstream_ci_state TEXT,
   -- 'issue' (default) or 'discussion' — GitHub Discussions mirrored by the
   -- discussions poll stream share this table; kind scopes upstream-number

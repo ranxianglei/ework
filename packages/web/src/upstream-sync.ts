@@ -394,8 +394,17 @@ export class UpstreamSync {
     // pending: GitHub hasn't computed mergeable yet — leave checked_at behind
     // so the next poll retries the probe.
     if (state === "pending") return;
+    await this.applyMergeState(existing, state, result, gi.updated_at ?? new Date().toISOString());
+  }
+
+  private async applyMergeState(
+    existing: IssueRow,
+    state: string,
+    result: UpstreamSyncPollResult,
+    updatedAtIso?: string,
+  ): Promise<void> {
     const was = existing.upstream_mergeable_state;
-    await updateIssueMergeState(existing.id, state, gi.updated_at ?? new Date().toISOString());
+    await updateIssueMergeState(existing.id, state, updatedAtIso ?? new Date().toISOString());
     if (state === "dirty") {
       // One-shot transition emission loses conflicts whose single event died in
       // an outage window — the row then sticks at dirty forever (PR#3873 sat
@@ -411,7 +420,7 @@ export class UpstreamSync {
       }
       const REARM_MS = 6 * 60 * 60 * 1000;
       if (was !== "dirty" || lastEmit === null || Date.now() - lastEmit > REARM_MS) {
-        log.info(`upstream-sync: merge conflict detected on upstream PR #${gi.number} (${this.project.owner}/${this.project.name})`);
+        log.info(`upstream-sync: merge conflict detected on upstream PR #${existing.upstream_issue_number} (${this.project.owner}/${this.project.name})`);
         await emitMergeConflictEvent(this.project.id, existing.id, this.origin, state);
         await updateIssueConflictState(existing.id, JSON.stringify({ lastEmit: Date.now() }));
         result.issuesUpdated++;
@@ -444,6 +453,10 @@ export class UpstreamSync {
   // held forever). Track the master head; on movement, clear merge-probe
   // bookkeeping so every open PR re-probes over the next polls.
   private lastMasterHead: string | null = null;
+  // Quiet PRs never re-enter the changed-item stream, so bookkeeping alone
+  // cannot reach them: master movement also enqueues every open PR for a
+  // direct merge-state re-probe, drained a few per poll.
+  private mergeReprobeQueue: number[] = [];
 
   private async clearMergeProbesIfMasterMoved(): Promise<void> {
     try {
@@ -457,13 +470,44 @@ export class UpstreamSync {
           "UPDATE issues SET upstream_merge_checked_at = NULL WHERE project_id = ? AND state = 'open'",
           [this.project.id],
         );
+        const pulls = await this.fetchJson<{ number?: number }[] | null>(`/pulls?state=open&per_page=100`);
+        const queued = (Array.isArray(pulls) ? pulls : [])
+          .map((p) => Number(p?.number))
+          .filter((n) => Number.isInteger(n) && n > 0 && !this.mergeReprobeQueue.includes(n));
+        this.mergeReprobeQueue.push(...queued);
         log.info(
-          `upstream-sync: master head moved ${this.lastMasterHead.slice(0, 8)}→${headSha.slice(0, 8)} — merge-probe bookkeeping cleared for open PRs`,
+          `upstream-sync: master head moved ${this.lastMasterHead.slice(0, 8)}→${headSha.slice(0, 8)} — merge-probe bookkeeping cleared, ${queued.length} open PR(s) queued for re-probe`,
         );
       }
       this.lastMasterHead = headSha;
     } catch {
       // head probe is an optimization; a failure must never wedge the poll
+    }
+  }
+
+  private async drainMergeReprobe(result: UpstreamSyncPollResult): Promise<void> {
+    let budget = MERGE_PROBE_PER_POLL;
+    while (budget > 0 && this.mergeReprobeQueue.length > 0) {
+      const number = this.mergeReprobeQueue.shift() as number;
+      try {
+        const existing = await getDB().get<IssueRow>(
+          "SELECT * FROM issues WHERE project_id = ? AND upstream_issue_number = ? AND state = 'open' LIMIT 1",
+          [this.project.id, number],
+        );
+        if (!existing) continue;
+        const pull = await this.fetchJson<PullRequestPayload>(`/pulls/${number}`);
+        if (!pull) continue;
+        const state = prMergeState(pull);
+        // pending = GitHub still computing; re-queue once for a later poll
+        if (state === "pending") {
+          if (!this.mergeReprobeQueue.includes(number)) this.mergeReprobeQueue.push(number);
+          continue;
+        }
+        await this.applyMergeState(existing, state, result);
+      } catch (err) {
+        log.warn(`upstream-sync: merge re-probe failed for PR #${number}: ${String(err)}`);
+      }
+      budget--;
     }
   }
 
@@ -729,6 +773,7 @@ export class UpstreamSync {
     if (this.isGithub && prCandidates.length > 0) {
       await this.clearMergeProbesIfMasterMoved();
     }
+    await this.drainMergeReprobe(result);
     const probeNumbers = mergeProbeCandidates(
       prCandidates.map((c) => c.gi),
       new Map(prCandidates.map((c) => [c.gi.number, c.existing.upstream_merge_checked_at ?? ""])),

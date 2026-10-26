@@ -418,16 +418,19 @@ test("master head movement clears merge-probe bookkeeping (owner incident 2026-1
   Object.defineProperty(us, "isGithub", { value: true }); // private getter — shadow it per-instance
   us.project = { id: pid };
   us.lastMasterHead = "aaa111222333";
-  let fetched = "";
+  us.mergeReprobeQueue = [];
+  const fetchedUrls: string[] = [];
   us.fetchJson = async (url: string) => {
-    fetched = url;
+    fetchedUrls.push(url);
+    if (url.startsWith("/pulls?")) return [{ number: 4801 }];
     return { sha: "bbb999888777" };
   };
   await mod.UpstreamSync.prototype.clearMergeProbesIfMasterMoved.call(us);
   const row: any = await db.get("SELECT upstream_merge_checked_at c FROM issues WHERE id = ?", [quiet.id]);
   const closed: any = await db.get("SELECT upstream_merge_checked_at c FROM issues WHERE id = ?", [shut.id]);
   const issue: any = await db.get("SELECT upstream_merge_checked_at c FROM issues WHERE id = ?", [plain.id]);
-  expect(fetched).toContain("/commits/master");
+  expect(fetchedUrls.some((u) => u.startsWith("/commits/master"))).toBe(true);
+  expect(us.mergeReprobeQueue).toContain(4801);
   expect(row.c).toBe(null);
   expect(closed.c ?? "untouched").toBe("2026-10-26T08:00:00Z");
   expect(issue.c ?? "untouched").toBe("untouched");
@@ -435,4 +438,14 @@ test("master head movement clears merge-probe bookkeeping (owner incident 2026-1
   // second run with the same head must NOT re-clear (no churn)
   await mod.UpstreamSync.prototype.clearMergeProbesIfMasterMoved.call(us);
   expect(us.lastMasterHead).toBe("bbb999888777");
+
+  // drain: the queued quiet PR reads dirty → row flips + conflict bookkeeping set
+  us.fetchJson = async (url: string) =>
+    url.startsWith("/pulls/4801") ? { mergeable: false, mergeable_state: "dirty" } : ({} as any);
+  us.origin = "http://origin";
+  await mod.UpstreamSync.prototype.drainMergeReprobe.call(us, { issuesUpdated: 0 } as any);
+  const after: any = await db.get("SELECT upstream_mergeable_state ms, upstream_conflict_state cs FROM issues WHERE id = ?", [quiet.id]);
+  expect(after.ms).toBe("dirty");
+  expect(after.cs).toContain("lastEmit");
+  expect(us.mergeReprobeQueue.length).toBe(0);
 });
