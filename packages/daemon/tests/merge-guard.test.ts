@@ -4,7 +4,7 @@ import { Engine } from "../src/opencode";
 const ref = { trackerType: "gitea", issueId: "42" } as any;
 const issueData = { title: "[PR] fix widgets", body: "", state: "open", author: "ranxianglei" };
 
-function makeSelf(opts: { untracked?: boolean; closed?: boolean } = {}) {
+function makeSelf(opts: { untracked?: boolean; closed?: boolean; activeGuards?: number } = {}) {
   const enqueueOrRun = vi.fn();
   const worker = { id: "w1", name: "merge-guard" };
   const createSession = vi.fn(async () => worker);
@@ -14,6 +14,7 @@ function makeSelf(opts: { untracked?: boolean; closed?: boolean } = {}) {
     findIssue: vi.fn(async () => (opts.untracked ? null : { id: 7, state: opts.closed ? "closed" : "active" })),
     findOrCreateIssue: vi.fn(async () => ({ id: 8, state: "active" })),
     getSessionsForIssue: vi.fn(async () => []),
+    countActiveMergeGuardMessages: vi.fn(async () => opts.activeGuards ?? 0),
     createSession,
   };
   self.ensureOwned = vi.fn(async () => true);
@@ -62,5 +63,21 @@ describe("merge guard: truth-driven wake (owner directive 2026-10-26)", () => {
     const t2 = { createComment: vi.fn(), getTrackerInstructions: () => ({ issueRef: "x" }) };
     await call(closed.self, t2, "dirty", "conflict");
     expect(closed.enqueueOrRun).not.toHaveBeenCalled();
+  });
+
+  test("duplicate wake while a guard worker is active is skipped (idempotency, 2026-10-26)", async () => {
+    const { self, enqueueOrRun } = makeSelf({ activeGuards: 1 });
+    const t = { createComment: vi.fn(async () => ({ id: "c1" })), getTrackerInstructions: () => ({ issueRef: "x" }) };
+    await (Engine.prototype as any as { handlePrUnmergeable: (this: unknown, ...a: unknown[]) => Promise<void> }).handlePrUnmergeable.call(
+      self,
+      { issueId: 4799, scope: "ranxianglei/billion-context" },
+      "ranxianglei/billion-context",
+      { title: "[PR] #4799", state: "open" },
+      t,
+      "dirty",
+      "conflict",
+      undefined,
+    );
+    expect(enqueueOrRun).not.toHaveBeenCalled();
   });
 });
