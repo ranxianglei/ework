@@ -487,6 +487,7 @@ export class UpstreamSync {
   // dirty→conflict, behind→needs-master-sync, blocked+red→CI fix; blocked
   // with green checks = review pending (human state, never wakes).
   private mergeGuardTick = 0;
+  private mergeGuardCursor = 0;
   private mergeGuardLastEmit = new Map<number, { state: string; at: number }>();
 
   private async pollMergeGuard(): Promise<void> {
@@ -510,20 +511,29 @@ export class UpstreamSync {
 
   private async pollMergeGuardInner(): Promise<void> {
     // Cheap local gate: no open mirrored PRs = no scan (one SQL, zero API).
-    const prCount = await getDB().get(
-      "SELECT COUNT(*) n FROM issues WHERE project_id = ? AND state = 'open' AND kind = 'issue' AND title LIKE '[PR]%'",
+    // The /pulls list endpoint returns mergeable_state=null for every row
+    // (lazy compute never runs on lists — verified 2026-10-26: 30/30 null,
+    // while each /pulls/{n} GET returned real states). Guard therefore
+    // deep-GETs a rotating slice of local candidates: 10 per pass ≈ 150 req/h,
+    // full 60-PR coverage every ~24 min.
+    const rows = await getDB().all(
+      "SELECT upstream_issue_number n FROM issues WHERE project_id = ? AND state = 'open' AND kind = 'issue' AND title LIKE '[PR]%' AND upstream_issue_number IS NOT NULL ORDER BY updated_at DESC LIMIT 60",
       [this.project.id],
     );
-    if (!prCount || Number((prCount as any).n) === 0) return;
+    const candidates = (rows as { n?: number | string }[]).map((r) => Number(r?.n)).filter((n) => Number.isInteger(n) && n > 0);
+    if (candidates.length === 0) return;
+    const slice = candidates.slice(this.mergeGuardCursor, this.mergeGuardCursor + 10);
+    this.mergeGuardCursor = (this.mergeGuardCursor + 10) % candidates.length;
     const pulls: { number?: number; updated_at?: string; mergeable_state?: string }[] = [];
-    {
-      // 30/page keeps the response ~200KB — 100/page (~600KB with PR bodies)
-      // timed out on slow egress (2026-10-26); sort=updated puts every
-      // 72h-active PR inside the first page anyway.
-      const batch = await this.fetchJson<
-        { number?: number; updated_at?: string; mergeable_state?: string }[] | null
-      >(`/pulls?state=open&sort=updated&direction=desc&per_page=30&page=1`);
-      pulls.push(...(Array.isArray(batch) ? batch : []));
+    for (const n of slice) {
+      try {
+        const pr = await this.fetchJson<{ number?: number; updated_at?: string; mergeable_state?: string } | null>(
+          `/pulls/${n}`,
+        );
+        if (pr?.number) pulls.push(pr);
+      } catch {
+        // per-PR failure must never abort the pass
+      }
     }
     const horizon = Date.now() - 72 * 3600_000;
     for (const pr of pulls) {
