@@ -438,6 +438,35 @@ export class UpstreamSync {
   // rebase. Enabled per project via the ciSentinelIssue:<owner>/<repo> config
   // key pointing at the CI coordination issue; the event binds to that issue
   // so the sentinel's fix report lands where every agent reads status.
+  // (owner incident 2026-10-26 #4801): conflicts arrive via BASE movement, but
+  // probe eligibility keyed on PR-side activity meant a quiet PR that went
+  // dirty after a master merge was never re-probed (checked>=updated skip
+  // held forever). Track the master head; on movement, clear merge-probe
+  // bookkeeping so every open PR re-probes over the next polls.
+  private lastMasterHead: string | null = null;
+
+  private async clearMergeProbesIfMasterMoved(): Promise<void> {
+    try {
+      const headCommit = await this.fetchJson<{ sha?: string } | null>(`/commits/master?per_page=1`);
+      const headSha = Array.isArray(headCommit)
+        ? (headCommit[0] as { sha?: string })?.sha
+        : headCommit?.sha;
+      if (!headSha) return;
+      if (this.lastMasterHead !== null && headSha !== this.lastMasterHead) {
+        await getDB().run(
+          "UPDATE issues SET upstream_merge_checked_at = NULL WHERE project_id = ? AND state = 'open'",
+          [this.project.id],
+        );
+        log.info(
+          `upstream-sync: master head moved ${this.lastMasterHead.slice(0, 8)}→${headSha.slice(0, 8)} — merge-probe bookkeeping cleared for open PRs`,
+        );
+      }
+      this.lastMasterHead = headSha;
+    } catch {
+      // head probe is an optimization; a failure must never wedge the poll
+    }
+  }
+
   private async probeMasterCi(result: UpstreamSyncPollResult): Promise<void> {
     if (!this.isGithub) return;
     try {
@@ -696,6 +725,9 @@ export class UpstreamSync {
         log.warn(`upstream-sync: item failed for #${gi.number}: ${String(err)} — skipping this cycle`);
        }
       }
+    }
+    if (this.isGithub && prCandidates.length > 0) {
+      await this.clearMergeProbesIfMasterMoved();
     }
     const probeNumbers = mergeProbeCandidates(
       prCandidates.map((c) => c.gi),

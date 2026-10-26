@@ -393,3 +393,46 @@ describe("upstream sync defaults project upstream_urls", () => {
     expect(getProjectUpstreamUrls(after!)).toEqual(["https://example.com/custom"]);
   });
 });
+
+test("master head movement clears merge-probe bookkeeping (owner incident 2026-10-26 #4801)", async () => {
+  // Quiet PRs that turn conflicting via a master merge were never re-probed:
+  // probe eligibility keyed on PR-side activity. The invalidation on master
+  // head movement is the fix — verified here against a real tmp DB.
+  const { initDB, getDB } = await import("../src/db");
+  const { mkdtempSync } = await import("fs");
+  const { tmpdir } = await import("os");
+  const { join } = await import("path");
+  process.env.WORK_DB_PATH = join(mkdtempSync(join(tmpdir(), "mvhead-")), "t.db");
+  await initDB();
+  const db = getDB();
+  const { createIssue, createProject } = await import("../src/store");
+  const proj = await createProject("ranxianglei", "billion-context", "");
+  const pid = proj.id;
+  const quiet = await createIssue(pid, "quiet pr", "", "dog", { upstreamIssueNumber: 4801, state: "open" });
+  const plain = await createIssue(pid, "plain issue", "", "dog", { kind: "issue", upstreamIssueNumber: 2, state: "open" });
+  const shut = await createIssue(pid, "closed pr", "", "dog", { upstreamIssueNumber: 3, state: "closed" });
+  await db.run("UPDATE issues SET upstream_merge_checked_at = '2026-10-26T08:00:00Z' WHERE id IN (?, ?)", [quiet.id, shut.id]);
+
+  const mod: any = await import("../src/upstream-sync");
+  const us = Object.create(mod.UpstreamSync.prototype);
+  Object.defineProperty(us, "isGithub", { value: true }); // private getter — shadow it per-instance
+  us.project = { id: pid };
+  us.lastMasterHead = "aaa111222333";
+  let fetched = "";
+  us.fetchJson = async (url: string) => {
+    fetched = url;
+    return { sha: "bbb999888777" };
+  };
+  await mod.UpstreamSync.prototype.clearMergeProbesIfMasterMoved.call(us);
+  const row: any = await db.get("SELECT upstream_merge_checked_at c FROM issues WHERE id = ?", [quiet.id]);
+  const closed: any = await db.get("SELECT upstream_merge_checked_at c FROM issues WHERE id = ?", [shut.id]);
+  const issue: any = await db.get("SELECT upstream_merge_checked_at c FROM issues WHERE id = ?", [plain.id]);
+  expect(fetched).toContain("/commits/master");
+  expect(row.c).toBe(null);
+  expect(closed.c ?? "untouched").toBe("2026-10-26T08:00:00Z");
+  expect(issue.c ?? "untouched").toBe("untouched");
+  expect(us.lastMasterHead).toBe("bbb999888777");
+  // second run with the same head must NOT re-clear (no churn)
+  await mod.UpstreamSync.prototype.clearMergeProbesIfMasterMoved.call(us);
+  expect(us.lastMasterHead).toBe("bbb999888777");
+});
