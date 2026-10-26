@@ -197,6 +197,12 @@ export function setTitleTranslator(fn: (raw: string) => Promise<string | null>):
 // the daemon-side sentinel attempt cap.
 const masterCiLastEmitByProject = new Map<string, { sha: string; at: number }>();
 const mergeGuardCooldownUntil = new Map<number, number>();
+// Reprobe drains once per 60s per process — at the 15s poll tick they were
+// burning ~2400 req/h against a 5000/h PAT budget (rate exhausted hourly,
+// 2026-10-26). Same budget: any 403 from GitHub opens a 5-minute global
+// circuit so every project's optional probes stop colliding in the dark.
+const reprobeDrainThrottle = { lastAt: 0 };
+const githubCircuit = { until: 0 };
 
 export class UpstreamSync {
   private readonly sync: UpstreamSyncRow;
@@ -263,8 +269,15 @@ export class UpstreamSync {
   }
 
   private async fetchJson<T>(path: string): Promise<T | null> {
+    if (Date.now() < githubCircuit.until) return null;
     const resp = await fetch(this.api(path), { headers: this.headers(), signal: AbortSignal.timeout(15_000) });
     if (resp.status === 404) return null;
+    if (resp.status === 403) {
+      // Trip the global circuit: every project's probing pauses 5 minutes so
+      // optional fetches stop colliding inside the dark window (2026-10-26).
+      githubCircuit.until = Math.max(githubCircuit.until, Date.now() + 5 * 60_000);
+      throw new Error(`upstream ${path} -> 403 rate-limited (circuit open 5m)`);
+    }
     if (!resp.ok) throw new Error(`upstream ${path} -> ${resp.status}`);
     return (await resp.json()) as T;
   }
@@ -898,8 +911,11 @@ export class UpstreamSync {
     if (this.isGithub) {
       await this.pollMergeGuard();
     }
-    await this.drainMergeReprobe(result);
-    await this.drainCiReprobe(result);
+    if (Date.now() - reprobeDrainThrottle.lastAt >= 60_000) {
+      reprobeDrainThrottle.lastAt = Date.now();
+      await this.drainMergeReprobe(result);
+      await this.drainCiReprobe(result);
+    }
     const probeNumbers = mergeProbeCandidates(
       prCandidates.map((c) => c.gi),
       new Map(prCandidates.map((c) => [c.gi.number, c.existing.upstream_merge_checked_at ?? ""])),
