@@ -503,13 +503,14 @@ export class UpstreamSync {
     );
     if (!prCount || Number((prCount as any).n) === 0) return;
     const pulls: { number?: number; updated_at?: string; mergeable_state?: string }[] = [];
-    for (const page of [1]) {
+    {
+      // 30/page keeps the response ~200KB — 100/page (~600KB with PR bodies)
+      // timed out on slow egress (2026-10-26); sort=updated puts every
+      // 72h-active PR inside the first page anyway.
       const batch = await this.fetchJson<
         { number?: number; updated_at?: string; mergeable_state?: string }[] | null
-      >(`/pulls?state=open&sort=updated&direction=desc&per_page=100&page=${page}`);
-      const rows = Array.isArray(batch) ? batch : [];
-      pulls.push(...rows);
-      if (rows.length < 100) break;
+      >(`/pulls?state=open&sort=updated&direction=desc&per_page=30&page=1`);
+      pulls.push(...(Array.isArray(batch) ? batch : []));
     }
     const horizon = Date.now() - 72 * 3600_000;
     for (const pr of pulls) {
@@ -544,6 +545,8 @@ export class UpstreamSync {
         log.warn(`upstream-sync: merge-guard item failed for PR#${pr?.number}: ${String(err)}`);
       }
     }
+    const bad = pulls.filter((p) => p?.mergeable_state === "dirty" || p?.mergeable_state === "behind").length;
+    if (bad > 0) log.info(`upstream-sync: merge guard scan: ${pulls.length} scanned, ${bad} bad`);
   }
 
   private async clearMergeProbesIfMasterMoved(): Promise<void> {
