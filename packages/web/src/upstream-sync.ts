@@ -195,7 +195,7 @@ export function setTitleTranslator(fn: (raw: string) => Promise<string | null>):
 // (incident: two master_ci_failed fires 77s apart on first live run
 // 2026-10-24). Keyed by project id; web restart re-emits once — bounded by
 // the daemon-side sentinel attempt cap.
-const masterCiLastEmitByProject = new Map<number, { sha: string; at: number }>();
+const masterCiLastEmitByProject = new Map<string, { sha: string; at: number }>();
 
 export class UpstreamSync {
   private readonly sync: UpstreamSyncRow;
@@ -429,8 +429,9 @@ export class UpstreamSync {
   // per failing master sha, re-arm after 6h so a still-red master gets
   // re-attempted. In-memory only — a web restart re-emits once, bounded by
   // the daemon-side sentinel attempt cap.
-  private get masterCiLastEmit(): { sha: string; at: number } | null { return masterCiLastEmitByProject.get(this.project.id) ?? null; }
-  private set masterCiLastEmit(v: { sha: string; at: number } | null) { if (v) masterCiLastEmitByProject.set(this.project.id, v); else masterCiLastEmitByProject.delete(this.project.id); }
+  // Test-visible view of the MASTER branch throttle state (key `${id}:master`).
+  private get masterCiLastEmit(): { sha: string; at: number } | null { return masterCiLastEmitByProject.get(`${this.project.id}:master`) ?? null; }
+  private set masterCiLastEmit(v: { sha: string; at: number } | null) { if (v) masterCiLastEmitByProject.set(`${this.project.id}:master`, v); else masterCiLastEmitByProject.delete(`${this.project.id}:master`); }
 
   // Master-branch CI sentinel (owner directive 2026-10-24): master redness is
   // inherited by every PR stacked on it — one fix greens the fleet after a
@@ -449,32 +450,44 @@ export class UpstreamSync {
         [this.project.id, coordNumber],
       );
       if (!coordRow || coordRow.state !== "open") return;
-      const commit = await this.fetchJson<{ sha?: string } | null>("/commits/master?per_page=1");
-      const sha = Array.isArray(commit) ? (commit[0] as { sha?: string })?.sha : commit?.sha;
-      if (!sha) return;
-      const checksResp = await this.fetchJson<CheckRunPayload[] | { check_runs?: CheckRunPayload[] }>(`/commits/${sha}/check-runs?filter=latest`);
-      if (!checksResp) return;
-      const checks: CheckRunPayload[] = Array.isArray(checksResp) ? checksResp : (checksResp.check_runs ?? []);
-      const allCompleted = checks.length > 0 && checks.every((c: CheckRunPayload) => c.status === "completed");
-      if (!allCompleted) return;
-      const failed = checks.filter((c: CheckRunPayload) => c.conclusion === "failure");
-      if (failed.length === 0) {
-        this.masterCiLastEmit = null;
-        return;
+      // (owner directive 2026-10-26): the sentinel also watches the persistent
+      // ci-fixes branch itself — its reds previously fell between the master
+      // sentinel and the per-PR ci lanes (PR#4727 sat red for hours with no
+      // watcher, incident 2026-10-26 01:14). A missing ci-fixes branch (other
+      // projects) reads as fetchJson 404→null and skips silently. Throttle
+      // state is keyed per project+branch.
+      for (const branch of ["master", "ci-fixes"]) {
+        const commit = await this.fetchJson<{ sha?: string } | null>(`/commits/${branch}?per_page=1`);
+        const sha = Array.isArray(commit) ? (commit[0] as { sha?: string })?.sha : commit?.sha;
+        if (!sha) continue;
+        const checksResp = await this.fetchJson<CheckRunPayload[] | { check_runs?: CheckRunPayload[] }>(`/commits/${sha}/check-runs?filter=latest`);
+        if (!checksResp) continue;
+        const checks: CheckRunPayload[] = Array.isArray(checksResp) ? checksResp : (checksResp.check_runs ?? []);
+        const allCompleted = checks.length > 0 && checks.every((c: CheckRunPayload) => c.status === "completed");
+        if (!allCompleted) continue;
+        const failed = checks.filter((c: CheckRunPayload) => c.conclusion === "failure");
+        const throttleKey = `${this.project.id}:${branch}`;
+        if (failed.length === 0) {
+          if (branch === "master") this.masterCiLastEmit = null;
+          else masterCiLastEmitByProject.delete(throttleKey);
+          continue;
+        }
+        const REARM_MS = 6 * 60 * 60 * 1000;
+        const last = branch === "master" ? this.masterCiLastEmit : (masterCiLastEmitByProject.get(throttleKey) ?? null);
+        if (last && last.sha === sha && Date.now() - last.at <= REARM_MS) continue;
+        log.info(`upstream-sync: ${branch} branch CI failure detected on ${scopeKey}@${sha.slice(0, 10)} — dispatching sentinel`);
+        await emitMasterCiFailedEvent(
+          this.project.id,
+          coordRow.id,
+          this.origin,
+          sha,
+          failed.map((c) => ({ name: c.name ?? "check", html_url: c.html_url ?? "", conclusion: "failure" })),
+          branch,
+        );
+        if (branch === "master") this.masterCiLastEmit = { sha, at: Date.now() };
+        else masterCiLastEmitByProject.set(throttleKey, { sha, at: Date.now() });
+        result.issuesUpdated++;
       }
-      const REARM_MS = 6 * 60 * 60 * 1000;
-      const last = this.masterCiLastEmit;
-      if (last && last.sha === sha && Date.now() - last.at <= REARM_MS) return;
-      log.info(`upstream-sync: master CI failure detected on ${scopeKey}@${sha.slice(0, 10)} — dispatching sentinel`);
-      await emitMasterCiFailedEvent(
-        this.project.id,
-        coordRow.id,
-        this.origin,
-        sha,
-        failed.map((c) => ({ name: c.name ?? "check", html_url: c.html_url ?? "", conclusion: "failure" })),
-      );
-      this.masterCiLastEmit = { sha, at: Date.now() };
-      result.issuesUpdated++;
     } catch (err) {
       log.warn(`upstream-sync: master CI probe skipped for ${this.project.owner}/${this.project.name}: ${err instanceof Error ? err.message : String(err)}`);
     }

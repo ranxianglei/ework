@@ -1734,8 +1734,11 @@ export class Engine {
     const instructions = tracker.getTrackerInstructions(ref);
     const checkList = ci.checks.map((c) => `- ${c.name}${c.html_url ? ` (${c.html_url})` : ""}`).join("\n");
     const body =
-      `[SYSTEM] master branch CI failure detected (head ${ci.sha.slice(0, 10)}).\n` +
-      `Failing checks on master:\n${checkList}\n` +
+      `[SYSTEM] ${ci.branch === "ci-fixes" ? "ci-fixes branch (fleet convergence branch)" : "master branch"} CI failure detected (head ${ci.sha.slice(0, 10)}).\n` +
+      `Failing checks on ${ci.branch ?? "master"}:\n${checkList}\n` +
+      (ci.branch === "ci-fixes"
+        ? `The red is on ci-fixes itself — your own branch. Diagnose its failing checks (distinguish CI-only races from real regressions from your previous pushes), fix directly on ci-fixes, then continue the standing protocol.\n`
+        : "") +
       `You are the master CI sentinel. Permanent protocol (owner strategy 2026-10-25): you maintain the persistent branch "ci-fixes" — the fleet's single convergence point for master-CI fixes. ` +
       `① sync: merge origin/master into ci-fixes (if the merge is hopeless, recreate ci-fixes from master and re-apply fixes); ` +
       `② diagnose EVERY red lane via CI LOGS and REMOTE runs — verification ALWAYS by pushing and watching GitHub Actions; NEVER run large local test/integration suites (owner policy 2026-10-25: 15min without output gets you killed — remote CI is the only verifier); when an identical fix already exists on another branch, cherry-pick it instead of rewriting; ` +

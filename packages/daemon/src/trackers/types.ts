@@ -36,8 +36,10 @@ export interface TrackerEvent {
   };
   // Present on merge_conflict events: upstream PR merge state ("dirty" etc).
   merge?: { state: string };
-  // Present on ci_failed events: failing head sha + failed checks.
-  ci?: { sha: string; checks: { name: string; html_url?: string; conclusion: string }[] };
+  // Present on ci_failed/master_ci_failed events: failing head sha + failed
+  // checks. branch (master_ci_failed): which sentinel-watched branch is red
+  // ("master" or the persistent "ci-fixes" convergence branch).
+  ci?: { sha: string; checks: { name: string; html_url?: string; conclusion: string }[]; branch?: string };
   // Resolved "provider/model" string from ework-web (project override or
   // global default). Empty/undefined = no override; engine omits --model
   // and lets opencode pick per its own opencode.json + env.

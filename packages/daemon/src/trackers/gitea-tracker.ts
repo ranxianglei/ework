@@ -241,7 +241,7 @@ export class GiteaTracker implements IssueTracker {
           author: issueUser?.login ?? "",
           ai_status: aiStatus,
         },
-        ci: { sha: ci?.sha ?? "", checks: ci?.checks ?? [] },
+        ci: { sha: ci?.sha ?? "", checks: ci?.checks ?? [], branch: (ci as { branch?: string } | undefined)?.branch ?? "master" },
         model,
       };
     }

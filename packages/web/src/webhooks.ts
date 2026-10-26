@@ -336,7 +336,7 @@ interface IssueEventPayload {
   url?: string;
   dispatch_off?: boolean;
   merge_state?: string;
-  ci?: { sha: string; checks: { name: string; html_url?: string; conclusion: string }[] };
+  ci?: { sha: string; checks: { name: string; html_url?: string; conclusion: string }[]; branch?: string };
 }
 
 interface CommentEventPayload {
@@ -611,6 +611,7 @@ export async function emitMasterCiFailedEvent(
   origin: string,
   sha: string,
   checks: { name: string; html_url: string; conclusion: string }[],
+  branch = "master",
 ): Promise<void> {
   try {
     const project = await getProjectById(projectId);
@@ -628,7 +629,7 @@ export async function emitMasterCiFailedEvent(
     const model = resolveModel(project.model, globalDefault, issue.model);
     const payload = buildIssuePayload(issue, project, commentCount, "opened", origin, model);
     (payload as IssueEventPayload).action = "master_ci_failed";
-    (payload as IssueEventPayload).ci = { sha, checks };
+    (payload as IssueEventPayload).ci = { sha, checks, branch };
     (payload as IssueEventPayload).event_id = randomUUID();
     const rawBody = JSON.stringify(payload);
     await fanOut(projectId, "issues", rawBody);

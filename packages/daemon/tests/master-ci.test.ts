@@ -57,6 +57,16 @@ describe("master_ci_failed sentinel", () => {
     expect(comment).toContain("哨兵已接管");
   });
 
+  test("ci-fixes branch failure carries branch-specific prompt guidance", async () => {
+    const self = makeSelf({});
+    const t = tracker();
+    await self.handleMasterCiFailed(ref, "ranxianglei/billion-context", issueData, t, { sha: "cifixesha1234", checks: [{ name: "CI", conclusion: "failure" }], branch: "ci-fixes" }, undefined);
+    expect(self.workerSession).toHaveBeenCalledWith("i1", "ci-master-sentinel");
+    const prompt = self.buildForwardPrompt.mock.calls[0]?.[1] ?? "";
+    expect(prompt).toContain("ci-fixes branch (fleet convergence branch)");
+    expect(prompt).toContain("your own branch");
+  });
+
   test("below cap but non-zero attempts renders current attempt number", async () => {
     const self = makeSelf({ attempts: 1 });
     await self.handleMasterCiFailed(ref, "ranxianglei/billion-context", issueData, tracker(), ci, undefined);
@@ -166,4 +176,5 @@ describe("sentinel session rotation", () => {
     expect(out).toBe("ses_rot1");
     expect(self.store.updateSession).not.toHaveBeenCalled();
   });
+
 });
