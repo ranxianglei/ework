@@ -529,18 +529,16 @@ test("merge-guard truth poll emits pr_unmergeable on dirty/behind transitions on
   Object.defineProperty(us, "isGithub", { value: true });
   us.project = { id: proj.id, owner: "ranxianglei", name: "billion-context" };
   us.mergeGuardTick = 0;
+  us.mergeGuardCursor = 0;
   us.mergeGuardLastEmit = new Map();
   us.origin = "http://origin";
   let stale = false;
   us.fetchJson = async (url: string) => {
-    if (url.includes("/pulls?state=open")) {
-      const updated = new Date(Date.now() - (stale ? 100 * 3600_000 : 3600_000)).toISOString();
-      return [
-        { number: 501, updated_at: updated, mergeable_state: "dirty" },
-        { number: 502, updated_at: updated, mergeable_state: "behind" },
-        { number: 503, updated_at: updated, mergeable_state: "clean" },
-      ];
-    }
+    // Guard deep-probes /pulls/{n} (list endpoint never computes mergeable_state)
+    const updated = new Date(Date.now() - (stale ? 100 * 3600_000 : 3600_000)).toISOString();
+    if (url.includes("/pulls/501")) return { number: 501, updated_at: updated, mergeable_state: "dirty" };
+    if (url.includes("/pulls/502")) return { number: 502, updated_at: updated, mergeable_state: "behind" };
+    if (url.includes("/pulls/503")) return { number: 503, updated_at: updated, mergeable_state: "clean" };
     return {} as any;
   };
 
