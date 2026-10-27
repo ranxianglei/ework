@@ -589,3 +589,44 @@ test("merge-guard truth poll emits pr_unmergeable on dirty/behind transitions on
   const row: any = await db.get("SELECT upstream_merge_guard_at g FROM issues i JOIN (SELECT id FROM issues WHERE project_id = ? AND upstream_issue_number = 501) t ON i.id = t.id", [proj.id]);
   expect(row.g).toBeTruthy();
 });
+
+test("applyCiState persists the global check cache workers read instead of gh-polling (owner directive 2026-10-27)", async () => {
+  const { getDB } = await import("../src/db");
+  const db = getDB();
+  const { createIssue, createProject } = await import("../src/store");
+  const proj = await createProject("checkcache-owner", "billion-context", "");
+  const pr = await createIssue(proj.id, "[PR] cache me", "", "dog", { upstreamIssueNumber: 5101, state: "open" });
+
+  const mod: any = await import("../src/upstream-sync");
+  const us = Object.create(mod.UpstreamSync.prototype);
+  Object.defineProperty(us, "isGithub", { value: true });
+  us.project = { id: proj.id, owner: "ranxianglei", name: "billion-context" };
+  us.ciReprobeQueue = [];
+  us.origin = "http://origin";
+  let completed = false;
+  us.fetchJson = async (url: string) => {
+    if (url.startsWith("/pulls/5101")) return { head: { sha: "sha5101" }, mergeable_state: "dirty" };
+    if (url.startsWith("/commits/sha5101/check-runs")) {
+      return { check_runs: completed
+        ? [{ name: "test", status: "completed", conclusion: "success" }]
+        : [{ name: "test", status: "in_progress", conclusion: null }] };
+    }
+    return {} as any;
+  };
+
+  // 1) in-progress suite → snapshot cached with live status (workers watch this)
+  await mod.UpstreamSync.prototype.applyCiState.call(us, 5101, pr, { issuesUpdated: 0 } as any);
+  let row: any = await db.get("SELECT upstream_checks c FROM issues WHERE id = ?", [pr.id]);
+  let snap = JSON.parse(row.c);
+  expect(snap.sha).toBe("sha5101");
+  expect(snap.mergeable_state).toBe("dirty");
+  expect(snap.checks[0].status).toBe("in_progress");
+
+  // 2) suite completes → snapshot refreshed with conclusions
+  completed = true;
+  await mod.UpstreamSync.prototype.applyCiState.call(us, 5101, pr, { issuesUpdated: 0 } as any);
+  row = await db.get("SELECT upstream_checks c FROM issues WHERE id = ?", [pr.id]);
+  snap = JSON.parse(row.c);
+  expect(snap.checks[0].conclusion).toBe("success");
+  expect(snap.fetched_at).toBeTruthy();
+});

@@ -634,6 +634,35 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
       const concurrency = Number(cfgKv[`concurrency:${owner}/${repo}`]) || null;
       return json({ dispatchOff: globalOff || projectOff || issueOff, aiStatus, sessionResetMs, concurrency });
     }
+    // Global check cache read side (owner directive 2026-10-27): workers verify
+    // CI from this mirror instead of each polling GitHub (shared PAT budget).
+    if (url.pathname === "/api/v1/upstream-checks" && req.method === "GET") {
+      const owner = url.searchParams.get("owner") ?? "";
+      const repo = url.searchParams.get("repo") ?? "";
+      const number = url.searchParams.get("number") ?? "";
+      if (!owner || !repo || !number) return json({ error: "owner, repo, number required" }, 400);
+      const project = await getProject(owner, repo);
+      if (!project) return json({ error: "unknown project" }, 404);
+      const row = await getDB().get<{ upstream_checks: string | null }>(
+        "SELECT upstream_checks FROM {{issues}} WHERE project_id = ? AND upstream_issue_number = ? AND kind = 'issue' LIMIT 1",
+        [project.id, Number(number)],
+      );
+      if (!row?.upstream_checks) return json({ error: "no cached checks" }, 404);
+      try {
+        const snap = JSON.parse(row.upstream_checks);
+        const checks = Array.isArray(snap.checks) ? snap.checks : [];
+        return json({
+          ...snap,
+          summary: {
+            total: checks.length,
+            failed: checks.filter((c: { conclusion?: string | null }) => c.conclusion === "failure").length,
+            pending: checks.filter((c: { status?: string | null }) => c.status && c.status !== "completed").length,
+          },
+        });
+      } catch {
+        return json({ error: "bad cache" }, 500);
+      }
+    }
     if (url.pathname === "/api/v1/wake-logins" && req.method === "GET") {
       const owner = url.searchParams.get("owner") ?? "";
       const repo = url.searchParams.get("repo") ?? "";

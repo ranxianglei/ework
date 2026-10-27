@@ -16,6 +16,7 @@ import {
   updateIssueAiStatus,
   updateIssueMergeState,
   updateIssueCiState,
+  updateIssueChecks,
   updateUpstreamSyncState,
   listEnabledUpstreamSyncs,
   updateIssueConflictState,
@@ -755,6 +756,24 @@ export class UpstreamSync {
     // The check-runs endpoint wraps the list in {total_count, check_runs};
     // tolerate both shapes.
     const checks: CheckRunPayload[] = Array.isArray(checksResp) ? checksResp : (checksResp.check_runs ?? []);
+    // Global check cache (owner directive 2026-10-27): the mirror is the single
+    // GitHub poller — workers read the cached snapshot via /api/v1/upstream-checks
+    // instead of each running gh checks (N workers × polling exhausted the shared
+    // 5000/h PAT budget; one poller, everyone caches off it). Best-effort.
+    try {
+      const snap = {
+        fetched_at: new Date().toISOString(),
+        sha,
+        mergeable_state: (pull as { mergeable_state?: string | null }).mergeable_state ?? null,
+        checks: checks.slice(0, 40).map((c: CheckRunPayload) => ({
+          name: c.name ?? "check",
+          status: c.status ?? null,
+          conclusion: c.conclusion ?? null,
+          html_url: c.html_url ?? "",
+        })),
+      };
+      await updateIssueChecks(existing.id, JSON.stringify(snap));
+    } catch { /* cache write is best-effort telemetry */ }
     // In-progress runs have conclusion=null and must read as NEITHER green nor
     // red — deciding here green-resets the attempt state, re-arming emission
     // for the same logical failure after CI re-runs a superseded head

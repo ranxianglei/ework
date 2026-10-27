@@ -542,6 +542,10 @@ export async function updateIssueCiState(issueId: number, ciState: string | null
   await getDB().run("UPDATE {{issues}} SET upstream_ci_state = ? WHERE id = ?", [ciState, issueId]);
 }
 
+export async function updateIssueChecks(issueId: number, checks: string | null): Promise<void> {
+  await getDB().run("UPDATE {{issues}} SET upstream_checks = ? WHERE id = ?", [checks, issueId]);
+}
+
 export async function updateIssueMergeState(
   issueId: number,
   mergeableState: string | null,
