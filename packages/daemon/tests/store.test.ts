@@ -191,6 +191,23 @@ describe("Store: messages", () => {
     await store.close();
   });
 
+  it("getOldestPendingCreatedAt skips messages parked on busy sessions (fairness deadlock 2026-10-27)", async () => {
+    const { store, issue } = await seed();
+    const busy = await store.createSession(issue.id, "busy-worker");
+    const idle = await store.createSession(issue.id, "idle-worker");
+    await store.updateSession(busy.id, { state: "running" });
+    // Older message on the BUSY session, younger on the idle one.
+    await store.createMessage(busy.id, "older but undeliverable");
+    const young = await store.createMessage(idle.id, "younger deliverable");
+    const oldest = await store.getOldestPendingCreatedAt();
+    expect(oldest?.getTime()).toBe(young.createdAt.getTime());
+    // With every session idle the true oldest must win again.
+    await store.updateSession(busy.id, { state: "idle" });
+    const allIdle = await store.getOldestPendingCreatedAt();
+    expect(allIdle!.getTime()).toBeLessThan(young.createdAt.getTime());
+    await store.close();
+  });
+
   it("model override survives a DB round-trip (queued/nudged/recovered paths)", async () => {
     const { store, session } = await seed();
     const msg = await store.createMessage(session.id, "x", "c1", undefined, "zhipuai/glm-4.6");

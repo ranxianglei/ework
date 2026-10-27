@@ -371,8 +371,12 @@ export class Store {
   }
 
   async getOldestPendingCreatedAt(): Promise<Date | undefined> {
+    // Fairness must yield only to older work that can actually run: a
+    // pending message parked on a busy (state=running) session cannot
+    // dispatch until that session frees, and yielding the whole queue to
+    // it froze all dispatch (global fairness deadlock, 2026-10-27).
     const rows = await getDB().all<{ oldest?: string }>(
-      `SELECT MIN(created_at) AS oldest FROM {{messages}} WHERE status = 'pending'`,
+      `SELECT MIN(m.created_at) AS oldest FROM {{messages}} m JOIN {{op_sessions}} s ON s.uid = m.session_id WHERE m.status = 'pending' AND s.state != 'running'`,
     );
     const v = (rows[0] as { oldest?: string } | undefined)?.oldest;
     return v ? new Date(v) : undefined;
