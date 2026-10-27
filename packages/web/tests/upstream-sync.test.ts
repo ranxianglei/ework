@@ -523,6 +523,8 @@ test("merge-guard truth poll emits pr_unmergeable on dirty/behind transitions on
   await createIssue(proj.id, "[PR] dirty one", "", "dog", { upstreamIssueNumber: 501, state: "open" });
   await createIssue(proj.id, "[PR] behind one", "", "dog", { upstreamIssueNumber: 502, state: "open" });
   await createIssue(proj.id, "[PR] clean one", "", "dog", { upstreamIssueNumber: 503, state: "open" });
+  await createIssue(proj.id, "[PR] blocked red", "", "dog", { upstreamIssueNumber: 504, state: "open" });
+  await createIssue(proj.id, "[PR] blocked green", "", "dog", { upstreamIssueNumber: 505, state: "open" });
 
   const mod: any = await import("../src/upstream-sync");
   const us = Object.create(mod.UpstreamSync.prototype);
@@ -539,6 +541,15 @@ test("merge-guard truth poll emits pr_unmergeable on dirty/behind transitions on
     if (url.includes("/pulls/501")) return { number: 501, updated_at: updated, mergeable_state: "dirty" };
     if (url.includes("/pulls/502")) return { number: 502, updated_at: updated, mergeable_state: "behind" };
     if (url.includes("/pulls/503")) return { number: 503, updated_at: updated, mergeable_state: "clean" };
+    if (url.includes("/pulls/504")) return { number: 504, updated_at: updated, mergeable_state: "blocked", head: { sha: "abc123" } };
+    if (url.includes("/pulls/505")) return { number: 505, updated_at: updated, mergeable_state: "blocked", head: { sha: "def456" } };
+    if (url.includes("/commits/abc123/check-runs"))
+      return { total_count: 2, check_runs: [
+        { name: "test (u22)", status: "completed", conclusion: "success" },
+        { name: "test (u24)", status: "completed", conclusion: "failure", html_url: "http://x" },
+      ] };
+    if (url.includes("/commits/def456/check-runs"))
+      return { total_count: 1, check_runs: [{ name: "test (u22)", status: "completed", conclusion: "success" }] };
     return {} as any;
   };
 
@@ -556,6 +567,8 @@ test("merge-guard truth poll emits pr_unmergeable on dirty/behind transitions on
     await waitForWebhookQueueIdle(4_000).catch(() => {});
     expect(posted.some((b) => b.includes("pr_unmergeable") && b.includes("501") && b.includes("conflict"))).toBe(true);
     expect(posted.some((b) => b.includes("pr_unmergeable") && b.includes("502") && b.includes("behind"))).toBe(true);
+    expect(posted.some((b) => b.includes("ci_failed") && b.includes("504") && b.includes("abc123"))).toBe(true);
+    expect(posted.some((b) => b.includes("ci_failed") && b.includes("505"))).toBe(false);
     expect(posted.some((b) => b.includes("503"))).toBe(false);
 
     // same bad states within the 6h re-arm window → no re-emit

@@ -541,6 +541,7 @@ export class UpstreamSync {
       }
     }
     const horizon = Date.now() - 72 * 3600_000;
+    let bad = 0;
     for (const pr of pulls) {
       try {
         const n = Number(pr?.number);
@@ -550,6 +551,55 @@ export class UpstreamSync {
         let reason = "";
         if (state === "dirty") reason = "conflict";
         else if (state === "behind") reason = "behind";
+        else if (state === "blocked") {
+          // Truth-driven wake covers ALL unmergeable states (owner directive
+          // 2026-10-26). "blocked" mixes review-pending (green checks — never
+          // wake) with red checks. The old ci probe is stream-gated and its
+          // per-sha attempt budget expires, so an idle red PR (#4485: 3-day-old
+          // sha, attempts 2/2, nobody watching) was a coverage hole. One extra
+          // check-runs GET per blocked PR, throttled by the same 6h window.
+          const lastB = this.mergeGuardLastEmit.get(n);
+          const nowB = Date.now();
+          if (!(lastB && lastB.state === state && nowB - lastB.at < 6 * 3600_000)) {
+            const sha = (pr as { head?: { sha?: string } }).head?.sha;
+            if (sha) {
+              try {
+                const cr = await this.fetchJson<{ total_count?: number; check_runs?: { status?: string; conclusion?: string }[] } | null>(
+                  `/commits/${sha}/check-runs`,
+                );
+                const runs = cr?.check_runs ?? [];
+                const allDone = runs.length > 0 && runs.every((r) => r.status === "completed");
+                const anyFail = runs.some((r) => r.conclusion === "failure");
+                if (allDone && anyFail) {
+                  const issue2 = await getIssueByUpstreamNumber(this.project.id, n);
+                  if (issue2) {
+                    this.mergeGuardLastEmit.set(n, { state, at: nowB });
+                    await getDB().run(
+                      "UPDATE issues SET upstream_merge_guard_at = ? WHERE id = ?",
+                      [new Date(nowB).toISOString(), issue2.id],
+                    );
+                    const { emitCiFailedEvent } = await import("./webhooks");
+                    await emitCiFailedEvent(
+                      this.project.id,
+                      issue2.id,
+                      this.origin,
+                      sha,
+                      runs
+                        .filter((r) => r.conclusion === "failure")
+                        .map((r) => ({ name: String((r as { name?: string }).name ?? "check"), html_url: String((r as { html_url?: string }).html_url ?? ""), conclusion: "failure" })),
+                    );
+                    bad++;
+                    continue;
+                  }
+                }
+              } catch {
+                // check-runes failure must not abort the pass
+              }
+            }
+          }
+          this.mergeGuardLastEmit.delete(n);
+          continue;
+        }
         if (!reason) {
           this.mergeGuardLastEmit.delete(n);
           continue;
@@ -573,7 +623,7 @@ export class UpstreamSync {
         log.warn(`upstream-sync: merge-guard item failed for PR#${pr?.number}: ${String(err)}`);
       }
     }
-    const bad = pulls.filter((p) => p?.mergeable_state === "dirty" || p?.mergeable_state === "behind").length;
+    bad += pulls.filter((p) => p?.mergeable_state === "dirty" || p?.mergeable_state === "behind").length;
     if (bad > 0) log.info(`upstream-sync: merge guard scan: ${pulls.length} scanned, ${bad} bad`);
   }
 
