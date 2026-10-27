@@ -517,7 +517,12 @@ export class UpstreamSync {
     // deep-GETs a rotating slice of local candidates: 10 per pass ≈ 150 req/h,
     // full 60-PR coverage every ~24 min.
     const rows = await getDB().all(
-      "SELECT upstream_issue_number n FROM issues WHERE project_id = ? AND state = 'open' AND kind = 'issue' AND title LIKE '[PR]%' AND upstream_issue_number IS NOT NULL ORDER BY updated_at DESC LIMIT 60",
+      // All open PRs, not top-60-by-updated_at: a base-side merge dirties a
+      // PR WITHOUT touching its updated_at, so quiet PRs fall out of a
+      // recency window and their red state goes unwatched (#4790 sat dirty
+      // 20h because overnight activity pushed it past LIMIT 60 — 2026-10-27).
+      // Cursor rotation covers the full set at the same 10-probe/pass budget.
+      "SELECT upstream_issue_number n FROM issues WHERE project_id = ? AND state = 'open' AND kind = 'issue' AND title LIKE '[PR]%' AND upstream_issue_number IS NOT NULL ORDER BY updated_at DESC",
       [this.project.id],
     );
     const candidates = (rows as { n?: number | string }[]).map((r) => Number(r?.n)).filter((n) => Number.isInteger(n) && n > 0);
