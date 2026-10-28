@@ -197,7 +197,13 @@ describe("Store: messages", () => {
     const idle = await store.createSession(issue.id, "idle-worker");
     await store.updateSession(busy.id, { state: "running" });
     // Older message on the BUSY session, younger on the idle one.
-    await store.createMessage(busy.id, "older but undeliverable");
+    // Backdate by 1s: on fast runners both inserts can land in the same
+    // millisecond, which would make the strict ordering assertions flaky.
+    const old = await store.createMessage(busy.id, "older but undeliverable");
+    await getDB().run(
+      "UPDATE {{messages}} SET created_at = ? WHERE uid = ?",
+      [new Date(old.createdAt.getTime() - 1000).toISOString(), old.id],
+    );
     const young = await store.createMessage(idle.id, "younger deliverable");
     const oldest = await store.getOldestPendingCreatedAt();
     expect(oldest?.getTime()).toBe(young.createdAt.getTime());
