@@ -291,6 +291,7 @@ function migrateAddSurrogateId(db: Database): void {
     for (const t of SURROGATE_ID_TABLES) {
       const have = tableColumns(db, t.name);
       if (have.size === 0 || have.has("id")) continue;
+      db.exec(`DROP TABLE IF EXISTS ${t.name}_old`);
       db.exec(applyPrefix(`ALTER TABLE {{${t.name}}} RENAME TO ${t.name}_old`));
       db.exec(applyPrefix(t.createSql));
       db.exec(applyPrefix(`INSERT INTO {{${t.name}}} (${t.dataCols}) SELECT ${t.dataCols} FROM ${t.name}_old`));
@@ -319,6 +320,13 @@ class SqliteDriver implements AsyncDatabase {
       )
     );
     // Migration must run BEFORE schema.sql (same ordering as the original file).
+  // RENAME-based rebuilds must NOT rewrite referencing FK DDL (SQLite >=3.25
+  // follows renames and rewrites every REFERENCES clause pointing at the
+  // renamed table; dropping the _old table then leaves dangling
+  // "REFERENCES users_old" in issues/comments — every INSERT fails with
+  // "no such table: main.users_old" (2026-10-28 CI-red root cause).
+  // legacy_alter_table restores the pre-3.25 no-rewrite behavior.
+  db.exec("PRAGMA legacy_alter_table = ON");
   migrateConfigTable(db);
   migrateUsersTable(db);
   migratePatTable(db);
@@ -329,6 +337,7 @@ class SqliteDriver implements AsyncDatabase {
   migrateLabelsTable(db);
   migrateAttachmentsTable(db);
   migrateAddSurrogateId(db);
+  db.exec("PRAGMA legacy_alter_table = OFF");
     db.exec(applyPrefix(readFileSync(join(import.meta.dir, "schema.sql"), "utf8")));
     return new SqliteDriver(db);
   }
@@ -616,21 +625,33 @@ class MysqlDriver implements AsyncDatabase {
 let _driver: AsyncDatabase | null = null;
 
 /** Initialize + connect the database. MUST be awaited once at boot. */
-export async function initDB(): Promise<AsyncDatabase> {
-  if (_driver) return _driver;
-  if (DB_DRIVER === "mysql") {
-    _driver = await MysqlDriver.create({
-      host: process.env.WORK_DB_HOST ?? "127.0.0.1",
-      port: Number(process.env.WORK_DB_PORT ?? 3306),
-      user: process.env.WORK_DB_USER ?? "ework",
-      password: process.env.WORK_DB_PASSWORD ?? "",
-      database: process.env.WORK_DB_NAME ?? "ework",
-      skipCreate: DB_SKIP_CREATE,
+let _initInFlight: Promise<AsyncDatabase> | null = null;
+
+export function initDB(): Promise<AsyncDatabase> {
+  if (_driver) return Promise.resolve(_driver);
+  if (!_initInFlight) {
+    _initInFlight = (async () => {
+      let d: AsyncDatabase;
+      if (DB_DRIVER === "mysql") {
+        d = await MysqlDriver.create({
+          host: process.env.WORK_DB_HOST ?? "127.0.0.1",
+          port: Number(process.env.WORK_DB_PORT ?? 3306),
+          user: process.env.WORK_DB_USER ?? "ework",
+          password: process.env.WORK_DB_PASSWORD ?? "",
+          database: process.env.WORK_DB_NAME ?? "ework",
+          skipCreate: DB_SKIP_CREATE,
+        });
+      } else {
+        d = await SqliteDriver.create();
+      }
+      _driver = d;
+      return d;
+    })().catch((err) => {
+      _initInFlight = null;
+      throw err;
     });
-  } else {
-    _driver = await SqliteDriver.create();
   }
-  return _driver;
+  return _initInFlight;
 }
 
 /** Returns the initialized AsyncDatabase. Throws if initDB() wasn't awaited. */

@@ -283,6 +283,35 @@ export class UpstreamSync {
     return (await resp.json()) as T;
   }
 
+  // 2026-10-28: GraphQL carries its own 5000-point/h quota, fully separate
+  // from the REST core budget the owner capped at 10 req/min. Batch reads
+  // (100 PRs of mergeableState per query) ride it instead of REST fan-outs.
+  private async fetchGql<T>(query: string, variables: Record<string, unknown>): Promise<T | null> {
+    if (Date.now() < githubCircuit.until) return null;
+    const base = /github\.com$/i.test(new URL(this.sync.base_url).host)
+      ? "https://api.github.com"
+      : this.sync.base_url;
+    let resp: Response;
+    try {
+      resp = await fetch(`${base}/graphql`, {
+        method: "POST",
+        headers: { ...this.headers(), "Content-Type": "application/json" },
+        body: JSON.stringify({ query, variables }),
+        signal: AbortSignal.timeout(15_000),
+      });
+    } catch {
+      return null;
+    }
+    if (!resp.ok) return null;
+    try {
+      const body = (await resp.json()) as { data?: T; errors?: unknown[] };
+      if (body.errors?.length) return null;
+      return body.data ?? null;
+    } catch {
+      return null;
+    }
+  }
+
   // First run (null issue cursor) is a backfill: import open issues + their
   // comments silently so the AI isn't woken by a flood of historical entries.
   // Live polls (cursor set) emit webhooks so new upstream activity reaches
@@ -488,7 +517,6 @@ export class UpstreamSync {
   // dirty→conflict, behind→needs-master-sync, blocked+red→CI fix; blocked
   // with green checks = review pending (human state, never wakes).
   private mergeGuardTick = 0;
-  private mergeGuardCursor = 0;
   private mergeGuardLastEmit = new Map<number, { state: string; at: number }>();
 
   private async pollMergeGuard(): Promise<void> {
@@ -528,18 +556,37 @@ export class UpstreamSync {
     );
     const candidates = (rows as { n?: number | string }[]).map((r) => Number(r?.n)).filter((n) => Number.isInteger(n) && n > 0);
     if (candidates.length === 0) return;
-    const slice = candidates.slice(this.mergeGuardCursor, this.mergeGuardCursor + 16);
-    this.mergeGuardCursor = (this.mergeGuardCursor + 10) % candidates.length;
-    const pulls: { number?: number; updated_at?: string; mergeable_state?: string }[] = [];
-    for (const n of slice) {
-      try {
-        const pr = await this.fetchJson<{ number?: number; updated_at?: string; mergeable_state?: string } | null>(
-          `/pulls/${n}`,
-        );
-        if (pr?.number) pulls.push(pr);
-      } catch {
-        // per-PR failure must never abort the pass
+    // 2026-10-28: the REST fan-out (16 per-PR GETs × 6 projects per pass)
+    // alone burned ~24 req/min against the owner's 10 req/min ceiling.
+    // GraphQL batches 100 PRs of mergeableState per query on its separate
+    // 5000-point/h quota, so the guard now reads ALL open PRs per pass.
+    const pulls: { number?: number; updated_at?: string; mergeable_state?: string; head?: { sha?: string } }[] = [];
+    let endCursor: string | null = null;
+    for (let page = 0; page < 4; page++) {
+      type GqlPulls = {
+        repository?: {
+        pullRequests?: {
+          pageInfo?: { endCursor?: string; hasNextPage?: boolean };
+          nodes?: { number: number; updatedAt: string; mergeableState: string; headRefOid?: string }[];
+        };
+        };
+      };
+      const data: GqlPulls | null = await this.fetchGql<GqlPulls>(
+        `query($o: String!, $r: String!, $end: String) { repository(owner: $o, name: $r) { pullRequests(first: 100, states: OPEN, after: $end) { pageInfo { endCursor hasNextPage } nodes { number updatedAt mergeableState headRefOid } } } }`,
+        { o: this.sync?.upstream_owner ?? this.project.owner, r: this.sync?.upstream_repo ?? this.project.name, end: endCursor },
+      );
+      type PullConn = NonNullable<NonNullable<GqlPulls["repository"]>["pullRequests"]>;
+      const conn: PullConn | undefined = data?.repository?.pullRequests;
+      for (const node of conn?.nodes ?? []) {
+        pulls.push({
+          number: node.number,
+          updated_at: node.updatedAt,
+          mergeable_state: String(node.mergeableState ?? "").toLowerCase(),
+          head: node.headRefOid ? { sha: node.headRefOid } : undefined,
+        });
       }
+      endCursor = conn?.pageInfo?.endCursor ?? null;
+      if (!conn?.pageInfo?.hasNextPage) break;
     }
     const horizon = Date.now() - 72 * 3600_000;
     let bad = 0;
@@ -904,7 +951,7 @@ export class UpstreamSync {
           result.commentsImported += await this.importIssueComments(gi, false);
           if (gi.updated_at && (!cursor || gi.updated_at > cursor)) cursor = gi.updated_at;
         } catch (err) {
-          log.warn(`upstream-sync: backfill item failed for #${gi.number}: ${String(err)} — skipping`);
+          log.warn(`upstream-sync: backfill item failed for #${gi.number}: ${String(err)} — skipping` + (process.env.MIG_DEBUG ? " STACK:" + String((err as any)?.stack ?? "") + " DDL:" + JSON.stringify(await getDB().all("SELECT name, sql FROM sqlite_master WHERE name IN ('issues','users')")) : ""));
         }
       }
       if (issues.length < 50) break;

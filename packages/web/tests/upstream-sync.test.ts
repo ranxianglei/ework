@@ -535,14 +535,22 @@ test("merge-guard truth poll emits pr_unmergeable on dirty/behind transitions on
   us.mergeGuardLastEmit = new Map();
   us.origin = "http://origin";
   let stale = false;
-  us.fetchJson = async (url: string) => {
-    // Guard deep-probes /pulls/{n} (list endpoint never computes mergeable_state)
+  // Guard reads PR truth via GraphQL pagination (REST fan-out retired for
+  // quota — owner directive 2026-10-28); blocked check-runs probes stay REST.
+  us.fetchGql = async (_q: string, vars: Record<string, unknown>) => {
     const updated = new Date(Date.now() - (stale ? 100 * 3600_000 : 3600_000)).toISOString();
-    if (url.includes("/pulls/501")) return { number: 501, updated_at: updated, mergeable_state: "dirty" };
-    if (url.includes("/pulls/502")) return { number: 502, updated_at: updated, mergeable_state: "behind" };
-    if (url.includes("/pulls/503")) return { number: 503, updated_at: updated, mergeable_state: "clean" };
-    if (url.includes("/pulls/504")) return { number: 504, updated_at: updated, mergeable_state: "blocked", head: { sha: "abc123" } };
-    if (url.includes("/pulls/505")) return { number: 505, updated_at: updated, mergeable_state: "blocked", head: { sha: "def456" } };
+    if (vars.end) return { repository: { pullRequests: { pageInfo: { hasNextPage: false }, nodes: [] } } };
+    const node = (n: number, ms: string, sha?: string) => ({ number: n, updatedAt: updated, mergeableState: ms, headRefOid: sha });
+    return {
+      repository: {
+        pullRequests: {
+          pageInfo: { hasNextPage: false },
+          nodes: [node(501, "DIRTY"), node(502, "BEHIND"), node(503, "CLEAN"), node(504, "BLOCKED", "abc123"), node(505, "BLOCKED", "def456")],
+        },
+      },
+    };
+  };
+  us.fetchJson = async (url: string) => {
     if (url.includes("/commits/abc123/check-runs"))
       return { total_count: 2, check_runs: [
         { name: "test (u22)", status: "completed", conclusion: "success" },
