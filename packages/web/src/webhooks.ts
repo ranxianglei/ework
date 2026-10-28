@@ -327,7 +327,7 @@ interface PayloadComment {
 
 interface IssueEventPayload {
   event_id?: string;
-  action: IssueAction | "merge_conflict" | "ci_failed" | "master_ci_failed" | "pr_unmergeable";
+  action: IssueAction | "merge_conflict" | "ci_failed" | "master_ci_failed" | "pr_unmergeable" | "pr_review_pending";
   issue: PayloadIssue;
   repository: PayloadRepository;
   sender: PayloadUser;
@@ -336,6 +336,8 @@ interface IssueEventPayload {
   url?: string;
   dispatch_off?: boolean;
   merge_state?: string;
+  sha?: string;
+  review?: boolean;
   merge_reason?: string;
   ci?: { sha: string; checks: { name: string; html_url?: string; conclusion: string }[]; branch?: string };
 }
@@ -636,6 +638,38 @@ export async function emitPrUnmergeableEvent(
     await fanOut(projectId, "issues", rawBody);
   } catch (e) {
     log.error("webhook: emitPrUnmergeableEvent failed", { err: e as Error, projectId, issueId });
+  }
+}
+
+export async function emitPrReviewPendingEvent(
+  projectId: number,
+  issueId: number,
+  origin: string,
+  sha: string,
+): Promise<void> {
+  try {
+    const project = await getProjectById(projectId);
+    if (!project) return;
+    const issue = await getIssueById(issueId);
+    if (!issue) return;
+    const cfg = await getConfigAll();
+    const scopeKey = `${project.owner}/${project.name}`;
+    const globalOff = cfg["dispatchEnabled"] === "false";
+    const projectOff = cfg[`dispatchOff:${scopeKey}`] === "1";
+    const issueOff = issue.ai_status === "dispatch_off" || issue.ai_status === "halted";
+    if (globalOff || projectOff || issueOff) return;
+    const commentCount = await countCommentsSafe(issueId);
+    const globalDefault = (await loadConfig()).defaultModel;
+    const model = resolveModel(project.model, globalDefault, issue.model);
+    const payload = buildIssuePayload(issue, project, commentCount, "opened", origin, model);
+    (payload as IssueEventPayload).action = "pr_review_pending";
+    (payload as IssueEventPayload).sha = sha;
+    (payload as IssueEventPayload).review = true;
+    (payload as IssueEventPayload).event_id = randomUUID();
+    const rawBody = JSON.stringify(payload);
+    await fanOut(projectId, "issues", rawBody);
+  } catch (e) {
+    log.error("webhook: emitPrReviewPendingEvent failed", { err: e as Error, projectId, issueId });
   }
 }
 

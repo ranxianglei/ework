@@ -528,7 +528,7 @@ export class UpstreamSync {
     );
     const candidates = (rows as { n?: number | string }[]).map((r) => Number(r?.n)).filter((n) => Number.isInteger(n) && n > 0);
     if (candidates.length === 0) return;
-    const slice = candidates.slice(this.mergeGuardCursor, this.mergeGuardCursor + 10);
+    const slice = candidates.slice(this.mergeGuardCursor, this.mergeGuardCursor + 16);
     this.mergeGuardCursor = (this.mergeGuardCursor + 10) % candidates.length;
     const pulls: { number?: number; updated_at?: string; mergeable_state?: string }[] = [];
     for (const n of slice) {
@@ -591,6 +591,24 @@ export class UpstreamSync {
                     );
                     bad++;
                     continue;
+                  }
+                  // Green blocked = checks pass but the PR awaits review.
+                  // Owner directive 2026-10-28: reviews are fleet work too —
+                  // emit review_pending so the review lane picks it up
+                  // (#4982 sat "awaiting review" a full night with nobody
+                  // watching; previously this state was "never wake").
+                  if (allDone && !anyFail) {
+                    const issueR = await getIssueByUpstreamNumber(this.project.id, n);
+                    if (issueR) {
+                      this.mergeGuardLastEmit.set(n, { state: "review", at: nowB });
+                      await getDB().run(
+                        "UPDATE issues SET upstream_merge_guard_at = ? WHERE id = ?",
+                        [new Date(nowB).toISOString(), issueR.id],
+                      );
+                      const { emitPrReviewPendingEvent } = await import("./webhooks");
+                      await emitPrReviewPendingEvent(this.project.id, issueR.id, this.origin ?? "http://upstream.invalid", sha);
+                      log.info(`upstream-sync: merge guard — PR#${n} blocked+green (review pending) emitted`);
+                    }
                   }
                 }
               } catch {
@@ -1225,10 +1243,17 @@ async function tick(cfg: Config): Promise<void> {
 
 export function startUpstreamSyncPoller(cfg: Config): void {
   if (tickTimer) return;
+  // 2026-10-28: 15s -> 45s (env UPSTREAM_POLL_MS). Measured burn with the old
+  // tick: 88 req/min sustained = 5280/h against a 5000/h PAT budget — the
+  // mirror baseline alone exhausted the quota every rolling hour, blinding
+  // the whole fleet (zero webhook forwards while dark). 45s keeps the same
+  // per-tick shape at 1/3 the rate; guard slice widened 10->16 to compensate
+  // rotation latency.
+  const ms = Math.max(15_000, Number(process.env.UPSTREAM_POLL_MS ?? 45_000));
   tickTimer = setInterval(() => {
     void tick(cfg);
-  }, 15_000);
-  log.info("upstream-sync: poller started (tick=15s)");
+  }, ms);
+  log.info(`upstream-sync: poller started (tick=${ms / 1000}s)`);
 }
 
 export function stopUpstreamSyncPoller(): void {
