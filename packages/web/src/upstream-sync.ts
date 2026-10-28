@@ -493,7 +493,7 @@ export class UpstreamSync {
 
   private async pollMergeGuard(): Promise<void> {
     this.mergeGuardTick++;
-    if (this.mergeGuardTick % 16 !== 1) return;
+      if (this.mergeGuardTick % 2 !== 1) return;
     // Rate-limit cooldown: a 403 during a scan means the PAT budget is gone —
     // hammering every 4 min keeps every project's sync dark (2026-10-26
     // incident: guard scans alone pushed the shared budget over).
