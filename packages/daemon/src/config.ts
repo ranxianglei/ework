@@ -79,6 +79,7 @@ export const configSchema = z.object({
     // lane degrades (one issue comment, no dispatch) until the window expires.
     ciFixMaxAttempts: z.coerce.number().int().positive().default(2),
   mergeGuardConcurrency: z.coerce.number().int().positive().default(4),
+  reviewConcurrency: z.coerce.number().int().positive().default(4),
     ciMasterFixMaxAttempts: z.coerce.number().int().positive().default(3),
     sentinelRotateMessages: z.coerce.number().int().positive().default(100),
     conflictFixMaxAttempts: z.coerce.number().int().positive().default(2),
@@ -168,6 +169,9 @@ function readWorkSection() {
       : 3,
     mergeGuardConcurrency: process.env.WORK_MERGE_GUARD_CONCURRENCY != null && process.env.WORK_MERGE_GUARD_CONCURRENCY !== ""
       ? Math.max(1, Math.trunc(Number(process.env.WORK_MERGE_GUARD_CONCURRENCY)))
+      : 4,
+    reviewConcurrency: process.env.WORK_REVIEW_CONCURRENCY != null && process.env.WORK_REVIEW_CONCURRENCY !== ""
+      ? Math.max(1, Math.trunc(Number(process.env.WORK_REVIEW_CONCURRENCY)))
       : 4,
     conflictFixMaxAttempts: process.env.WORK_CONFLICT_FIX_MAX_ATTEMPTS != null && process.env.WORK_CONFLICT_FIX_MAX_ATTEMPTS !== ""
       ? Math.max(1, Math.trunc(Number(process.env.WORK_CONFLICT_FIX_MAX_ATTEMPTS)))

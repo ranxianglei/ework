@@ -316,6 +316,29 @@ export class GiteaTracker implements IssueTracker {
       };
     }
 
+    if (action === "pr_review_pending") {
+      const sha = typeof (payload as Record<string, unknown>).sha === "string"
+        ? (payload as Record<string, unknown>).sha as string
+        : "";
+      return {
+        type: "pr_review_pending",
+        ref,
+        dispatch_off: dispatchOff,
+        issue: {
+          title: issue.title as string,
+          body: (issue.body as string) ?? "",
+          state: (issue.state as string) ?? "open",
+          author: issueUser?.login ?? "",
+          ai_status: aiStatus,
+        },
+        sha,
+        model,
+        runtime,
+        cloneUrl,
+        sender,
+      };
+    }
+
     if (action === "boosted") {
       return {
         type: "issue_boosted" as const,

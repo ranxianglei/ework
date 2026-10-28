@@ -539,6 +539,20 @@ export class Store {
     return row?.n ?? 0;
   }
 
+  /** Active (pending/running) review messages for one issue (same idempotency
+   * rationale as countActiveMergeGuardMessages — review wakes repeat on guard
+   * re-scans while a reviewer is already in flight). */
+  async countActiveReviewMessages(issueId: string): Promise<number> {
+    const row = await getDB().get<{ n: number }>(
+      `SELECT COUNT(*) n FROM messages m
+       JOIN op_sessions s ON s.uid = m.session_id
+       WHERE s.issue_id = ? AND s.name LIKE 'review-worker%'
+         AND m.status IN ('pending','running')`,
+      [issueId],
+    );
+    return row?.n ?? 0;
+  }
+
   async countAutoLaneMessages(issueId: string, sourcePrefix: string, sinceIso: string): Promise<number> {
     const res = await getDB().get<{ n: number }>(
       "SELECT COUNT(*) AS n FROM {{messages}} m JOIN {{op_sessions}} s ON s.uid = m.session_id WHERE s.issue_id = ? AND m.source_comment_id LIKE ? AND m.created_at >= ?",

@@ -1152,13 +1152,26 @@ export class Engine {
     return n;
   }
 
+  // Review lane pool (owner directive 2026-10-28): sticky review-worker
+  // sessions, own concurrency budget, bypasses the ordinary queue like the
+  // merge-guard lane.
+  private isReviewSource(sourceCommentId?: string): boolean {
+    return !!sourceCommentId && sourceCommentId.startsWith("review-");
+  }
+
+  private reviewRunningCount(): number {
+    let n = 0;
+    for (const k of this.running.keys()) if (k.includes("@review-worker")) n++;
+    return n;
+  }
+
   private stuckThresholdForKey(key: string): number {
     // Infra lanes (ci-master-sentinel / conflict-worker / ci-worker): flat 30-min
     // no-output kill floor. Owner policy 2026-10-25: 15-min trial caused false
     // kills while agents waited in queues (API/model congestion); 30 min keeps
     // the anti-local-integration-test guard without the misfires. Ordinary
     // agents keep the global stuckThresholdMs default.
-    const infra = key.includes("@ci-master-sentinel") || key.includes("@conflict-worker") || key.includes("@ci-worker") || key.includes("@merge-guard");
+    const infra = key.includes("@ci-master-sentinel") || key.includes("@conflict-worker") || key.includes("@ci-worker") || key.includes("@merge-guard") || key.includes("@review-worker");
     return infra ? 30 * 60 * 1000 : this.stuckThresholdMs;
   }
 
@@ -1496,6 +1509,8 @@ export class Engine {
         return this.handleBoost(ref, scopeKey, issueData, tracker);
       case "pr_unmergeable":
         return this.handlePrUnmergeable(ref, scopeKey, issueData, tracker, event.merge?.state ?? "dirty", event.mergeReason ?? "conflict", event.model);
+      case "pr_review_pending":
+        return this.handlePrReviewPending(ref, scopeKey, issueData, tracker, event.sha ?? "", event.model);
     }
   }
 
@@ -1540,8 +1555,51 @@ export class Engine {
         ? "Sync origin/master into this PR branch (update-branch) and push"
         : "Rebase or merge origin/master into this PR branch, resolve every conflict, and push";
     const prompt = `[SYSTEM] Merge guard: PR is ${mergeState} (reason: ${reason})\n\n${instructions.issueRef} — ${issueData.title}\n\nAction: ${action}. After pushing, verify via the PR's checks/merge state (GitHub API from the workdir is fine), then post a one-line outcome comment on the PR (state after your push). If the conflicts need design decisions, do NOT guess: open a decision-request issue (p1) and stop touching this PR.`;
+
     await tracker.createComment(ref, `[system] 🛡 merge-guard: PR ${mergeState} (${reason}) — 已派专职守卫处理。`).catch(() => {});
     await this.enqueueOrRun(session, issue, prompt, tracker, ref, `merge-guard-${ref.issueId}-${Date.now()}`, model);
+  }
+
+  // Review lane (owner directive 2026-10-28): green-but-blocked PRs await
+  // review and nobody was watching (#4982 sat a full night). The guard now
+  // emits pr_review_pending; this handler dispatches a sticky review-worker
+  // from a dedicated pool (WORK_REVIEW_CONCURRENCY, default 4).
+  private async handlePrReviewPending(
+    ref: TrackerRef,
+    scopeKey: string,
+    issueData: TrackerEvent["issue"],
+    tracker: IssueTracker,
+    sha: string,
+    model?: string,
+  ) {
+    if (issueData.state !== "open") return;
+    let issue = await this.store.findIssue(ref.trackerType, scopeKey, ref.issueId);
+    if (!issue) {
+      issue = await this.store.findOrCreateIssue(ref, scopeKey, issueData.title);
+      log.info(`engine: review lane created missing issue row for ${scopeKey}#${ref.issueId}`);
+    }
+    if (issue.state === "closed") return;
+    if (!(await this.ensureOwned(issue))) return;
+    if ((await this.store.countActiveReviewMessages(issue.id)) > 0) {
+      log.info(`review lane: issue already has an active reviewer — skipping duplicate wake (${ref.issueId})`);
+      return;
+    }
+    const session = await this.workerSession(issue.id, "review-worker");
+    const instructions = tracker.getTrackerInstructions(ref);
+    const prompt = `[SYSTEM] Review lane: PR is green but blocked awaiting review${sha ? ` (head ${sha.slice(0, 9)})` : ""}
+
+${instructions.issueRef} — ${issueData.title}
+
+Action: review this pull request end-to-end.
+1. Read the PR body, linked issue, and the full diff.
+2. Judge correctness (does it do what it claims), tests (would they catch regressions), risks (security, data loss, behavior drift 旧值→新值 must be disclosed), and house conventions (AGENTS.md).
+3. Post a GitHub review: APPROVE with a short justification when clean, or REQUEST_CHANGES with concrete findings (file:line, what, why, suggested fix).
+4. HARD RULE — authorization boundaries: if the PR touches kernel/ or carries a kernel-change declaration, do NOT approve; post the review as findings-only and open an authorization-request issue (p1) citing the PR. Never self-declare on the author's behalf.
+5. Report one line on the coordination issue when done.
+
+Check states: read the mirror cache (see AGENTS.md), do not poll gh for check status.`;
+    await tracker.createComment(ref, `[system] 📝 review: PR 绿灯待审 — 已派专职 reviewer 处理。`).catch(() => {});
+    await this.enqueueOrRun(session, issue, prompt, tracker, ref, `review-${ref.issueId}-${Date.now()}`, model);
   }
 
   // Upstream PR conflict wake: the session that owns this PR rebase-pushes on
@@ -2284,11 +2342,14 @@ export class Engine {
     // workers never queue behind ordinary slots; their only gate is the
     // guard pool size (WORK_MERGE_GUARD_CONCURRENCY).
     const guardLane = this.isMergeGuardSource(msg.sourceCommentId);
+    const reviewLane = this.isReviewSource(msg.sourceCommentId);
     const slotOk = sentinelLane
       ? this.boostSlotAvailable(msg.sourceCommentId)
-      : guardLane
-        ? this.mergeGuardRunningCount() < this.cfg.work.mergeGuardConcurrency
-        : this.slotAvailable(msg.sourceCommentId);
+      : reviewLane
+        ? this.reviewRunningCount() < this.cfg.work.reviewConcurrency
+        : guardLane
+          ? this.mergeGuardRunningCount() < this.cfg.work.mergeGuardConcurrency
+          : this.slotAvailable(msg.sourceCommentId);
     if (!slotOk) {
       log.info(`engine: concurrency limit reached (api ${this.activeRunningCount()}/${this.effectiveGlobalCap(msg.sourceCommentId)}, procs ${this.running.size}), message ${msg.id.slice(0, 8)} queued for ${k}`);
       void tracker.updateStatus(ref, "queued");
@@ -2550,7 +2611,7 @@ export class Engine {
     // ~267K chars -> every model call 400s). Rotate to a fresh opencode session
     // when the sticky one exceeds sentinelRotateMessages messages. Rotation
     // happens between dispatches, never mid-run.
-    if (resumeSessionId && (session.name.includes("ci-master-sentinel") || session.name.includes("merge-guard"))) {
+    if (resumeSessionId && (session.name.includes("ci-master-sentinel") || session.name.includes("merge-guard") || session.name.includes("review-worker"))) {
       resumeSessionId = await this.maybeRotateSentinelSession(session, resumeSessionId);
     }
 
@@ -3210,6 +3271,8 @@ export class Engine {
       const guardLaneMsg = this.isMergeGuardSource(msg.sourceCommentId);
       if (!this.isSentinelSource(msg.sourceCommentId) && !guardLaneMsg && !this.slotAvailable()) break;
       if (guardLaneMsg && this.mergeGuardRunningCount() >= this.cfg.work.mergeGuardConcurrency) continue;
+      const reviewLaneMsg = this.isReviewSource(msg.sourceCommentId);
+      if (reviewLaneMsg && this.reviewRunningCount() >= this.cfg.work.reviewConcurrency) continue;
       const session = await this.store.getSession(msg.sessionId);
       if (!session || session.state === "running") continue;
       const issue = await this.store.getIssue(session.issueId);
