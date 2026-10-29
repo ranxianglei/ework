@@ -540,7 +540,7 @@ test("merge-guard truth poll emits pr_unmergeable on dirty/behind transitions on
   us.fetchGql = async (_q: string, vars: Record<string, unknown>) => {
     const updated = new Date(Date.now() - (stale ? 100 * 3600_000 : 3600_000)).toISOString();
     if (vars.end) return { repository: { pullRequests: { pageInfo: { hasNextPage: false }, nodes: [] } } };
-    const node = (n: number, ms: string, sha?: string) => ({ number: n, updatedAt: updated, mergeableState: ms, headRefOid: sha });
+    const node = (n: number, ms: string, sha?: string) => ({ number: n, updatedAt: updated, mergeStateStatus: ms, headRefOid: sha });
     return {
       repository: {
         pullRequests: {

@@ -302,10 +302,18 @@ export class UpstreamSync {
     } catch {
       return null;
     }
-    if (!resp.ok) return null;
+    if (!resp.ok) {
+      log.warn(`upstream-sync: graphql http ${resp.status} (guard pass skipped)`);
+      return null;
+    }
     try {
       const body = (await resp.json()) as { data?: T; errors?: unknown[] };
-      if (body.errors?.length) return null;
+      if (body.errors?.length) {
+        // A malformed query fails HERE every pass — surfacing it beats the
+        // silent 26h guard blackout of 2026-10-28/29 (mergeableState typo).
+        log.warn(`upstream-sync: graphql errors: ${JSON.stringify(body.errors).slice(0, 200)}`);
+        return null;
+      }
       return body.data ?? null;
     } catch {
       return null;
@@ -567,12 +575,15 @@ export class UpstreamSync {
         repository?: {
         pullRequests?: {
           pageInfo?: { endCursor?: string; hasNextPage?: boolean };
-          nodes?: { number: number; updatedAt: string; mergeableState: string; headRefOid?: string }[];
+          // GraphQL field is mergeStateStatus (BEHIND/BLOCKED/CLEAN/DIRTY) —
+          // REST's mergeable_state maps to it; `mergeableState` doesn't exist
+          // in the GraphQL schema (26h guard-blind window 2026-10-28/29).
+          nodes?: { number: number; updatedAt: string; mergeStateStatus?: string; headRefOid?: string }[];
         };
         };
       };
       const data: GqlPulls | null = await this.fetchGql<GqlPulls>(
-        `query($o: String!, $r: String!, $end: String) { repository(owner: $o, name: $r) { pullRequests(first: 100, states: OPEN, after: $end) { pageInfo { endCursor hasNextPage } nodes { number updatedAt mergeableState headRefOid } } } }`,
+        `query($o: String!, $r: String!, $end: String) { repository(owner: $o, name: $r) { pullRequests(first: 100, states: OPEN, after: $end) { pageInfo { endCursor hasNextPage } nodes { number updatedAt mergeStateStatus headRefOid } } } }`,
         { o: this.sync?.upstream_owner ?? this.project.owner, r: this.sync?.upstream_repo ?? this.project.name, end: endCursor },
       );
       type PullConn = NonNullable<NonNullable<GqlPulls["repository"]>["pullRequests"]>;
@@ -581,7 +592,7 @@ export class UpstreamSync {
         pulls.push({
           number: node.number,
           updated_at: node.updatedAt,
-          mergeable_state: String(node.mergeableState ?? "").toLowerCase(),
+          mergeable_state: String(node.mergeStateStatus ?? "").toLowerCase(),
           head: node.headRefOid ? { sha: node.headRefOid } : undefined,
         });
       }
