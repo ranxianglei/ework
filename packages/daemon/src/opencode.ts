@@ -1401,6 +1401,18 @@ export class Engine {
       const existing = await this.store.findIssue(ref.trackerType, scopeKey, ref.issueId);
       if (existing?.state === "closed") {
         await this.store.updateIssueState(existing.id, "active");
+        // Reopen flap (dog/ework-aio#6): messages parked as interrupted
+        // "issue closed" during the closed window must not be lost — revive
+        // them so queued owner requests run again. Lives here (not in
+        // handleOpened) because non-wake-author reopens never reach the
+        // dispatch path; ownership-scoped drains pick revived rows up.
+        const revived = await this.store.reviveClosedInterrupted(existing.id);
+        if (revived > 0) {
+          log.info(
+            `engine: reopened — revived ${revived} close-interrupted message(s) for ${ref.trackerType}:${scopeKey}#${ref.issueId}`,
+          );
+          void this.drainGlobalPending();
+        }
         log.info(
           `engine: reopened — cleared stale closed state for ${ref.trackerType}:${scopeKey}#${ref.issueId} (bookkeeping only; dispatch still gated)`,
         );

@@ -818,6 +818,23 @@ export class Store {
     return rows.map(rowToMessage);
   }
 
+  /**
+   * Reopen revival (dog/ework-aio#6): when an issue that was closed gets
+   * reopened, flip back every message handleClosed parked as
+   * "issue closed" so queued owner requests are not lost to the flap.
+   * Returns the number of revived messages.
+   */
+  async reviveClosedInterrupted(issueId: string): Promise<number> {
+    const rows = await getDB().all<{ uid: string }>(
+      `SELECT m.uid FROM {{messages}} m
+       JOIN {{op_sessions}} s ON s.uid = m.session_id
+       WHERE s.issue_id = ? AND m.status = 'interrupted' AND m.error LIKE 'issue closed%'`,
+      [issueId]
+    );
+    for (const r of rows) await this.updateMessageStatus(r.uid, "pending");
+    return rows.length;
+  }
+
   async hasNewerActiveMessage(sessionId: string, createdAt: Date): Promise<boolean> {
     const row = await getDB().get<{ n: number }>(
       `SELECT COUNT(*) AS n FROM {{messages}}

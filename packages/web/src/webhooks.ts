@@ -137,10 +137,16 @@ export async function migrateWebhookEvents(): Promise<void> {
   const rows = await getDB().all<WebhookRow>("SELECT * FROM {{webhooks}}");
   for (const wh of rows) {
     const current = parseEvents(wh.events);
-    if (!current.includes("status_changed")) {
-      const updated = [...current, "status_changed"];
+    const missing: WebhookEventName[] = [];
+    if (!current.includes("status_changed")) missing.push("status_changed");
+    // e-work daemon hooks must receive issue_boosted (the ⚡接单 button) even
+    // when the row was created before this event existed and never listed it
+    // (dog/ework-aio#6: boost clicks were silently dropped by fanOut).
+    // Daemon endpoints are identified by their URL path.
+    if (!current.includes("issue_boosted") && /\/webhook\/gitea$/.test(String(wh.url ?? ""))) missing.push("issue_boosted");
+    if (missing.length > 0) {
       await getDB().run("UPDATE {{webhooks}} SET events = ? WHERE id = ?", [
-        JSON.stringify(updated),
+        JSON.stringify([...current, ...missing]),
         wh.id,
       ]);
     }
