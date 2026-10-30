@@ -370,13 +370,25 @@ export class Store {
     }));
   }
 
-  async getOldestPendingCreatedAt(): Promise<Date | undefined> {
+  async getOldestPendingCreatedAt(infra?: boolean): Promise<Date | undefined> {
     // Fairness must yield only to older work that can actually run: a
     // pending message parked on a busy (state=running) session cannot
     // dispatch until that session frees, and yielding the whole queue to
     // it froze all dispatch (global fairness deadlock, 2026-10-27).
+    // Bucket-scoped comparison (2026-10-30): the drain order drains the
+    // infra bucket before ordinary rows, so the global oldest — often an
+    // ordinary row the drain cannot reach yet — made every infra claim
+    // yield while the infra bucket never emptied (cross-bucket mutual
+    // starvation, 128 yields/min with zero spawns). Compare within the
+    // claimed row's own bucket instead.
+    const laneFilter =
+      infra === undefined
+        ? ""
+        : infra
+          ? ` AND (s.name LIKE 'conflict-worker%' OR s.name LIKE 'ci-worker%' OR s.name LIKE 'ci-master%' OR s.name LIKE 'release-worker%' OR s.name LIKE 'merge-guard%' OR s.name LIKE 'review-worker%')`
+          : ` AND (s.name NOT LIKE 'conflict-worker%' AND s.name NOT LIKE 'ci-worker%' AND s.name NOT LIKE 'ci-master%' AND s.name NOT LIKE 'release-worker%' AND s.name NOT LIKE 'merge-guard%' AND s.name NOT LIKE 'review-worker%')`;
     const rows = await getDB().all<{ oldest?: string }>(
-      `SELECT MIN(m.created_at) AS oldest FROM {{messages}} m JOIN {{op_sessions}} s ON s.uid = m.session_id WHERE m.status = 'pending' AND s.state != 'running'`,
+      `SELECT MIN(m.created_at) AS oldest FROM {{messages}} m JOIN {{op_sessions}} s ON s.uid = m.session_id WHERE m.status = 'pending' AND s.state != 'running'${laneFilter}`,
     );
     const v = (rows[0] as { oldest?: string } | undefined)?.oldest;
     return v ? new Date(v) : undefined;

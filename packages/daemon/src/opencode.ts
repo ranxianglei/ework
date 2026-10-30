@@ -3381,7 +3381,14 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
         // re-yields boosted work while any older backlog message pends.
         let yieldToOlder = false;
         try {
-          const oldest = await this.store.getOldestPendingCreatedAt();
+          const oldest = await this.store.getOldestPendingCreatedAt(
+            session.name.startsWith("conflict-worker") ||
+            session.name.startsWith("ci-worker") ||
+            session.name.startsWith("ci-master") ||
+            session.name.startsWith("release-worker") ||
+            session.name.startsWith("merge-guard") ||
+            session.name.startsWith("review-worker"),
+          );
           if (
             oldest &&
             next.createdAt.getTime() > oldest.getTime() + 10 * 60_000 &&
