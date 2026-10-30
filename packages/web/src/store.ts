@@ -554,7 +554,7 @@ export async function markIssueAnnounced(issueId: number): Promise<void> {
 export async function getUnannouncedIssues(projectId: number, olderThanMs: number, limit: number): Promise<IssueRow[]> {
   const cutoff = new Date(Date.now() - olderThanMs).toISOString();
   return getDB().all(
-    "SELECT * FROM {{issues}} WHERE project_id = ? AND state = 'open' AND announced_at IS NULL AND created_at < ? AND upstream_issue_number IS NOT NULL ORDER BY created_at ASC LIMIT ?",
+    "SELECT * FROM {{issues}} WHERE project_id = ? AND state = 'open' AND announced_at IS NULL AND created_at < ? AND upstream_issue_number IS NOT NULL AND kind = 'issue' ORDER BY created_at ASC LIMIT ?",
     [projectId, cutoff, limit],
   );
 }
