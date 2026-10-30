@@ -20,6 +20,8 @@ import {
   updateUpstreamSyncState,
   listEnabledUpstreamSyncs,
   updateIssueConflictState,
+  markIssueAnnounced,
+  getUnannouncedIssues,
 } from "./store";
 import { emitIssueEvent, emitCommentEvent, emitMergeConflictEvent, emitCiFailedEvent, emitMasterCiFailedEvent } from "./webhooks";
 import { getDB, getConfigAll } from "./db";
@@ -420,8 +422,13 @@ export class UpstreamSync {
     if (gi.pull_request && created) {
       await ensureIssueHasLabel(this.project.id, created.id, "pr", "#576699");
     }
-    if (emit && created) {
-      void emitIssueEvent(this.project.id, created.id, "opened", this.origin);
+    if (created) {
+      if (emit) void emitIssueEvent(this.project.id, created.id, "opened", this.origin);
+      // Crawl imports (emit=false) count as announced-by-history — sweeping
+      // thousands of historical rows would storm the daemon.
+      void markIssueAnnounced(created.id);
+    } else {
+      log.error(`upstream-sync: import of #${gi.number} lost its row after create — sweep will re-emit`);
     }
   }
 
@@ -1126,7 +1133,25 @@ export class UpstreamSync {
       commentCursor: commentCursor ?? undefined,
       lastError: null,
     });
+    await this.sweepUnannounced();
     return result;
+  }
+
+  // Imported-but-unannounced crack (dog/ework-aio#6 2026-10-30): issues #5203/
+  // #5204 landed in the mirror with their opened event silently never fanned
+  // out, and the cursor then guarantees the poll never looks at them again.
+  // This sweep is the backstop — re-emit whatever the emission path lost.
+  private async sweepUnannounced(): Promise<void> {
+    try {
+      const unannounced = await getUnannouncedIssues(this.project.id, 10 * 60_000, 10);
+      for (const row of unannounced) {
+        log.warn(`upstream-sync: announce sweep re-emitting opened for #${row.upstream_issue_number} (lost announcement)`);
+        await emitIssueEvent(this.project.id, row.id, "opened", this.origin);
+        await markIssueAnnounced(row.id);
+      }
+    } catch (err) {
+      log.warn(`upstream-sync: announce sweep failed: ${String(err)}`);
+    }
   }
 
   private async importDiscussion(d: GithubDiscussion, emit: boolean): Promise<void> {

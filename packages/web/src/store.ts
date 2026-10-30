@@ -81,6 +81,7 @@ export interface IssueRow {
   upstream_merge_checked_at: string | null;
   upstream_ci_state: string | null;
   upstream_conflict_state: string | null;
+  announced_at: string | null;
   kind: "issue" | "discussion";
 }
 
@@ -544,6 +545,18 @@ export async function updateIssueCiState(issueId: number, ciState: string | null
 
 export async function updateIssueChecks(issueId: number, checks: string | null): Promise<void> {
   await getDB().run("UPDATE {{issues}} SET upstream_checks = ? WHERE id = ?", [checks, issueId]);
+}
+
+export async function markIssueAnnounced(issueId: number): Promise<void> {
+  await getDB().run("UPDATE {{issues}} SET announced_at = ? WHERE id = ?", [new Date().toISOString(), issueId]);
+}
+
+export async function getUnannouncedIssues(projectId: number, olderThanMs: number, limit: number): Promise<IssueRow[]> {
+  const cutoff = new Date(Date.now() - olderThanMs).toISOString();
+  return getDB().all(
+    "SELECT * FROM {{issues}} WHERE project_id = ? AND state = 'open' AND announced_at IS NULL AND created_at < ? AND upstream_issue_number IS NOT NULL ORDER BY created_at ASC LIMIT ?",
+    [projectId, cutoff, limit],
+  );
 }
 
 export async function updateIssueMergeState(

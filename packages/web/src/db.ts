@@ -158,6 +158,14 @@ function migrateIssuesTable(db: Database): void {
   if (!have.has("upstream_checks")) {
     db.exec(applyPrefix("ALTER TABLE {{issues}} ADD COLUMN upstream_checks TEXT"));
   }
+  // Announced reconciliation (dog/ework-aio#6 2026-10-30): NULL = opened never
+  // proven emitted; the upstream-sync sweep re-emits and stamps it. The
+  // backfill stamp is mandatory — without it the first sweep mass-fires the
+  // entire pre-existing backlog.
+  if (!have.has("announced_at")) {
+    db.exec(applyPrefix("ALTER TABLE {{issues}} ADD COLUMN announced_at TEXT"));
+    db.exec(applyPrefix("UPDATE {{issues}} SET announced_at = datetime('now') WHERE announced_at IS NULL"));
+  }
   if (!have.has("kind")) {
     db.exec(applyPrefix("ALTER TABLE {{issues}} ADD COLUMN kind TEXT NOT NULL DEFAULT 'issue'"));
   }
@@ -471,6 +479,7 @@ async function migrateMysqlAttachmentsNullable(pool: Pool): Promise<void> {
 async function migrateMysqlDiscussions(pool: Pool): Promise<void> {
   await migrateMysqlColumn(pool, "issues", "upstream_ci_state", "upstream_ci_state VARCHAR(512) DEFAULT NULL");
   await migrateMysqlColumn(pool, "issues", "upstream_checks", "upstream_checks TEXT");
+  await migrateMysqlColumn(pool, "issues", "announced_at", "announced_at TEXT");
   await migrateMysqlColumn(pool, "issues", "upstream_conflict_state", "upstream_conflict_state VARCHAR(128) DEFAULT NULL");
   await migrateMysqlColumn(pool, "issues", "kind", "kind VARCHAR(16) NOT NULL DEFAULT 'issue'");
   await migrateMysqlColumn(pool, "upstream_sync", "discussion_cursor", "discussion_cursor VARCHAR(40) DEFAULT NULL");

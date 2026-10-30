@@ -36,6 +36,7 @@ import {
   getProjectById,
   getIssueWithMeta,
   createIssue,
+  markIssueAnnounced,
   createProject,
   postComment,
   setIssueState,
@@ -2263,6 +2264,7 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
         const issue = await createIssue(project.id, title, body, ctx.user!.login, issueOpts);
         await bindOrphanAttachments(extractAttachmentUUIDs(body), issue.id, ctx.user!.login);
         void emitIssueEvent(project.id, issue.id, "opened", url.origin);
+        void markIssueAnnounced(issue.id);
         return Response.redirect(
           `${url.origin}/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${issue.number}`,
           303

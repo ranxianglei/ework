@@ -84,6 +84,7 @@ CREATE TABLE IF NOT EXISTS {{issues}} (
   upstream_merge_guard_at TEXT,
   upstream_ci_state TEXT,
   upstream_checks TEXT,
+  announced_at TEXT,
   -- 'issue' (default) or 'discussion' — GitHub Discussions mirrored by the
   -- discussions poll stream share this table; kind scopes upstream-number
   -- lookups because GitHub numbers the two sequences independently.

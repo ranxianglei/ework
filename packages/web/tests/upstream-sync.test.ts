@@ -3,6 +3,7 @@ import { afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { getDB, initDB } from "../src/db";
 import {
   createProject,
+  createIssue,
   ensureUser,
   getIssueByUpstreamNumber,
   getCommentByUpstreamId,
@@ -637,4 +638,44 @@ test("applyCiState persists the global check cache workers read instead of gh-po
   snap = JSON.parse(row.c);
   expect(snap.checks[0].conclusion).toBe("success");
   expect(snap.fetched_at).toBeTruthy();
+});
+
+describe("announce sweep (dog/ework-aio#6)", () => {
+  test("re-emits opened for imported-but-unannounced issues", async () => {
+    const { sync } = await setup();
+    issuePages = [[giteaIssue(1)]];
+    issueComments = { 1: [] };
+    mockFetch();
+    await makeSyncer(sync).pollOnce();
+    await settle();
+    hookCalls = [];
+
+    await getDB().run("UPDATE {{issues}} SET announced_at = NULL WHERE upstream_issue_number = 1", []);
+
+    issuePages = [[]];
+    repoComments = [];
+    await makeSyncer((await getUpstreamSync(projectId))!).pollOnce();
+    await settle();
+
+    expect(hookCalls.some((c) => c.body?.action === "opened" && c.body?.issue?.number === 1)).toBe(true);
+    const row = await getIssueByUpstreamNumber(projectId, 1);
+    expect(row?.announced_at).toBeTruthy();
+  });
+
+  test("leaves recently created rows alone (10min grace)", async () => {
+    const { sync } = await setup();
+    issuePages = [[]];
+    issueComments = {};
+    mockFetch();
+    await makeSyncer(sync).pollOnce();
+    await settle();
+    hookCalls = [];
+
+    await createIssue(projectId, "fresh orphan", "b", "alice", { upstreamIssueNumber: 9, number: 9, createdAt: freshTs(), updatedAt: freshTs() });
+
+    await makeSyncer((await getUpstreamSync(projectId))!).pollOnce();
+    await settle();
+
+    expect(hookCalls.length).toBe(0);
+  });
 });
