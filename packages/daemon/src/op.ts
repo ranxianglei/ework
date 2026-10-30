@@ -337,7 +337,11 @@ export class Store {
     // Prefix matching: worker sessions rotate (conflict-worker-N-r1) and are
     // categorized (conflict-worker-E) — exact IN() missed every suffixed
     // generation, skewing the night-boost demand count (owner 2026-10-21).
-    const likes = ["conflict-worker%", "ci-worker%", "ci-master%", "release-worker%"];
+    // The caller's family list is authoritative (it sizes infra demand);
+    // an empty list falls back to the legacy worker families.
+    const likes = (
+      names.length > 0 ? names : ["conflict-worker", "ci-worker", "ci-master", "release-worker"]
+    ).map((n) => `${n}%`);
     const where = likes.map(() => "s.name LIKE ?").join(" OR ");
     const rows = await getDB().all<{ n?: number }>(
       `SELECT COUNT(*) AS n FROM {{messages}} m JOIN {{op_sessions}} s ON s.uid = m.session_id WHERE m.status = 'pending' AND (${where})`,
@@ -552,8 +556,13 @@ export class Store {
   }
 
   async countAutoLaneMessages(issueId: string, sourcePrefix: string, sinceIso: string): Promise<number> {
+    // Count only attempts that actually consumed a worker (running/done/failed
+    // rows whose failure is NOT an infra kill). Rows interrupted by web-gate
+    // flaps, restarts, operator stops or issue-close must not burn the retry
+    // budget (2026-10-30 postmortem: lanes degraded while zero real fix
+    // attempts had even run).
     const res = await getDB().get<{ n: number }>(
-      "SELECT COUNT(*) AS n FROM {{messages}} m JOIN {{op_sessions}} s ON s.uid = m.session_id WHERE s.issue_id = ? AND m.source_comment_id LIKE ? AND m.created_at >= ?",
+      "SELECT COUNT(*) AS n FROM {{messages}} m JOIN {{op_sessions}} s ON s.uid = m.session_id WHERE s.issue_id = ? AND m.source_comment_id LIKE ? AND m.created_at >= ? AND m.status IN ('running','done','failed') AND NOT (m.status='failed' AND (m.error LIKE 'infra:%' OR m.error LIKE 'web transient%' OR m.error LIKE 'gate: web%' OR m.error LIKE 'force stopped%' OR m.error LIKE 'engine crash%' OR m.error LIKE 'issue closed%'))",
       [issueId, `${sourcePrefix}%`, sinceIso]
     );
     return res?.n ?? 0;
