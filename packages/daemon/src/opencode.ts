@@ -756,6 +756,13 @@ export class Engine {
   // Issues pinned to the front of the global pending queue by owner boost (web ⚡).
   private readonly boostedIssueIds = new Set<string>();
 
+  // Fresh-submission pins (owner directive 2026-10-30: 优先级永远派发新提交的).
+  // Semantics differ from ⚡ boost: dispatch FIRST but WITHIN the ordinary
+  // concurrency cap (18) — never the 2× oversubscription ceiling, which is
+  // reserved for explicit owner boosts (总模型负载 ≤18, owner ruling
+  // 2026-10-27). Both sets exempt the issue from the fairness yield.
+  private readonly pinnedIssueIds = new Set<string>();
+
   // Boost is an explicit owner action: it must jump the queue even when the
   // API-active slots are saturated (owner policy 2026-10-23). Oversubscribing
   // is bounded by the hard 2× process ceiling so a boost can never blow past
@@ -2325,14 +2332,15 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
     const msg = await this.store.createMessage(session.id, prompt, sourceCommentId, undefined, model);
 
     // New submissions always dispatch first (owner directive 2026-10-30:
-    // "优先级永远派发新提交的"). Pin the issue like an owner boost so the
-    // fairness yield in dequeueOrIdle can never veto a fresh wake behind
-    // older backlog rows — pool-saturated lanes (merge-guard 8/8, ci 2/2)
-    // leave stale pendings that the yield misreads as deliverable older
-    // work, freezing every fresh claim (priority-inversion redux). The pin
-    // self-cleans: drainGlobalPending's boost loop deletes it once the
-    // issue has no pending message left (or is closed).
-    this.boostedIssueIds.add(issue.id);
+    // "优先级永远派发新提交的"). Pin the issue so the fairness yield in
+    // dequeueOrIdle can never veto a fresh wake behind older backlog rows —
+    // pool-saturated lanes (merge-guard 8/8, ci 2/2) leave stale pendings
+    // that the yield misreads as deliverable older work, freezing every
+    // fresh claim (priority-inversion redux). Pinned dispatches stay within
+    // the ordinary cap; see pinnedIssueIds for the ⚡-boost distinction.
+    // Self-cleans in drainGlobalPending once the issue has no pending
+    // message left (or is closed).
+    this.pinnedIssueIds.add(issue.id);
 
     if (this.running.has(k)) {
       // PREEMPTIVE: Kill running process, new message takes priority
@@ -3256,6 +3264,43 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
       }
       if (!this.slotAvailable()) return;
     }
+    // Fresh-submission pins (owner directive 2026-10-30: 优先级永远派发新
+    // 提交的): dispatch before the global priority query, but gated by the
+    // ORDINARY cap — unlike ⚡ boosts these must not oversubscribe past
+    // maxConcurrent (总模型负载 ≤18, owner ruling 2026-10-27).
+    if (this.pinnedIssueIds.size > 0 && this.slotAvailable()) {
+      for (const issueId of [...this.pinnedIssueIds]) {
+        if (!this.slotAvailable()) break;
+        let pendings: Awaited<ReturnType<Store["getPendingForIssue"]>>;
+        try {
+          pendings = await this.store.getPendingForIssue(issueId);
+        } catch {
+          continue;
+        }
+        if (pendings.length === 0) {
+          this.pinnedIssueIds.delete(issueId);
+          continue;
+        }
+        const issue = await this.store.getIssue(issueId);
+        if (!issue || issue.state === "closed") {
+          this.pinnedIssueIds.delete(issueId);
+          continue;
+        }
+        for (const msg of pendings) {
+          if (!this.slotAvailable()) break;
+          const session = await this.store.getSession(msg.sessionId);
+          if (!session || session.state === "running") continue;
+          const k = this.sessionKey(session, issue);
+          if (this.running.has(k)) continue;
+          const won = await this.store.claimMessage(msg.id);
+          if (!won) continue;
+          log.info(`engine: fresh-pin dispatched msg ${msg.id.slice(0, 8)} for ${k}`);
+          await this.dequeueOrIdle(k, session, issue, msg);
+        }
+        const remaining = await this.store.getPendingForIssue(issueId);
+        if (remaining.length === 0) this.pinnedIssueIds.delete(issueId);
+      }
+    }
     const slotsAvailable = Math.min(
       this.maxConcurrent - this.activeRunningCount(),
       this.maxConcurrent * 2 - this.running.size,
@@ -3340,7 +3385,8 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
           if (
             oldest &&
             next.createdAt.getTime() > oldest.getTime() + 10 * 60_000 &&
-            !this.boostedIssueIds.has(issue.id)
+            !this.boostedIssueIds.has(issue.id) &&
+            !this.pinnedIssueIds.has(issue.id)
           ) {
             yieldToOlder = true;
           }

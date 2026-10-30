@@ -27,6 +27,7 @@ describe("owner boost (web ⚡ button)", () => {
     };
     self.dequeueOrIdle = vi.fn(async () => {});
     self.boostedIssueIds = new Set();
+    self.pinnedIssueIds = new Set();
     return self;
   }
 
@@ -107,6 +108,8 @@ describe("fresh submissions pin the issue (owner directive 2026-10-30: 优先级
     self.processExitNudgeRounds = new Map();
     self.running = new Set();
     self.boostedIssueIds = new Set();
+    self.pinnedIssueIds = new Set();
+    self.pinnedIssueIds = new Set();
     self.isSentinelSource = () => false;
     self.isMergeGuardSource = () => false;
     self.isReviewSource = () => false;
@@ -121,7 +124,8 @@ describe("fresh submissions pin the issue (owner directive 2026-10-30: 优先级
       self, session as never, { ...issue, id: "iss-1" }, "fresh prompt", tracker as never, ref,
     );
 
-    expect((self.boostedIssueIds as Set<string>).has("iss-1")).toBe(true);
+    expect((self.pinnedIssueIds as Set<string>).has("iss-1")).toBe(true);
+    expect((self.boostedIssueIds as Set<string>).size).toBe(0);
     expect(self.executeMessage).toHaveBeenCalledTimes(1);
   });
 });

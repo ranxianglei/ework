@@ -11,6 +11,7 @@ const makeSelf = () => {
   self.apiIdleGraceMs = 180_000;
   self.startedAt = new Map();
   self.boostedIssueIds = new Set();
+    self.pinnedIssueIds = new Set();
   return self;
 };
 
