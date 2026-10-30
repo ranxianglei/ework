@@ -236,7 +236,7 @@ describe("boot-race tolerance (web unreachable at recover)", () => {
     expect(row?.error).toBeFalsy();
   });
 
-  test("policy deny still discards queued messages", async () => {
+  test("policy deny keeps queued messages pending instead of destroying them", async () => {
     const { engine, store, daemonId } = await bootEngine(async () => ({
       allowed: false,
       reason: "dispatch off",
@@ -248,9 +248,12 @@ describe("boot-race tolerance (web unreachable at recover)", () => {
 
     await (engine as unknown as { recover: () => Promise<void> }).recover();
 
+    // A gate condition (policy or transient) must never destroy user input:
+    // the row stays queued and runs once dispatch is allowed again.
+    // 2026-10-30 incident class: latched gates used to fail whole queues here.
     const row = await store.getMessage(msg.id);
-    expect(row?.status).toBe("failed");
-    expect(row?.error).toContain("web gate: dispatch off");
+    expect(row?.status).toBe("pending");
+    expect(row?.error).toBeFalsy();
   });
 });
 

@@ -279,7 +279,7 @@ describe("infra failure auto-retry (ework#5)", () => {
     expect(row?.infraAttempts).toBe(0);
   });
 
-  test("web-unreachable gate requeues with backoff and only fails after the budget", async () => {
+  test("web-unreachable gate requeues with backoff and holds (never fails) past the budget", async () => {
     const { engine, store, daemonId } = await bootEngine({
       bin: FAKE_BIN_OK,
       work: { infraRetryMax: 2, infraRetryBaseMs: 50 },
@@ -292,14 +292,19 @@ describe("infra failure auto-retry (ework#5)", () => {
     // for sessions whose run starts while the web is down mid-flight.
     await (engine as unknown as EnginePriv).deactivateIfIdle(KEY, session, issue);
 
+    // Past the infra budget the row must be HELD in the queue behind a
+    // backoff, never terminally failed: killing user input over a web blip
+    // was the silent-queue-killer of the 2026-10-30 incident. The observer
+    // drain (or a manual retry) dispatches it once the web answers again.
     await eventually(async () => {
       const row = await store.getMessage(msg.id);
-      if (row?.status !== "failed") throw new Error(`status=${row?.status} error=${row?.error}`);
-      if (!row.error?.startsWith("gate: web unreachable")) throw new Error(`error=${row?.error}`);
+      if (row?.status !== "pending") throw new Error(`status=${row?.status} error=${row?.error}`);
+      if (!row.error?.startsWith("web transient")) throw new Error(`error=${row?.error}`);
     });
 
     const row = await store.getMessage(msg.id);
     expect(row?.infraAttempts).toBe(2);
+    expect(row?.retryAfter instanceof Date && row.retryAfter.getTime() > Date.now()).toBe(true);
     expect(tracker.comments.some((c) => c.includes("infrastructure failure"))).toBe(true);
   });
 });
