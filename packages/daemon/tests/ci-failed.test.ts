@@ -63,6 +63,7 @@ describe("execProcess ci-fix cap", () => {
     const self = Object.create(Engine.prototype) as Record<string, unknown>;
     self.store = {
       getSession: vi.fn(async () => session),
+      getIssue: vi.fn(async () => ({ id: 7, state: "open" })),
       countRunningCiMessages: vi.fn(async () => runningCi),
       updateMessageStatus,
     };
@@ -78,6 +79,13 @@ describe("execProcess ci-fix cap", () => {
     self.currentModel = new Map();
     self.generation = new Map();
     self.projectConcurrencyCache = new Map();
+    self.processes = new Map();
+    self.stopping = new Map();
+    self.progressCommentId = new Map();
+    self.nudgeRounds = new Map();
+    self.processExitNudgeRounds = new Map();
+    self.stuckNudgeRounds = new Map();
+    self.currentPrompt = new Map();
     self.dequeueAfterGate = vi.fn(async () => {});
     return { self, updateMessageStatus, gateChecker };
   }
@@ -91,5 +99,13 @@ describe("execProcess ci-fix cap", () => {
     const free = makeSelf(0);
     await Engine.prototype.execProcess.call(free.self, "k2", session, issue, { id: "m2", uid: "m2", sourceCommentId: "ci-fail-42-abc" });
     expect(free.gateChecker).toHaveBeenCalledTimes(1);
+  });
+
+  test("settles messages as superseded when the issue closed while queued (billion-context#4948)", async () => {
+    const closedWorld = makeSelf(0);
+    (closedWorld.self.store as { getIssue: unknown }).getIssue = vi.fn(async () => ({ id: 7, state: "closed" }));
+    await Engine.prototype.execProcess.call(closedWorld.self, "k3", session, issue, { id: "m3", uid: "m3", sourceCommentId: "ci-fail-42-abc" });
+    expect(closedWorld.updateMessageStatus).toHaveBeenCalledWith("m3", "superseded", "issue closed while queued");
+    expect(closedWorld.gateChecker).not.toHaveBeenCalled();
   });
 });

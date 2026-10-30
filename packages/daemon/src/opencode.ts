@@ -2492,6 +2492,20 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
       this.running.delete(k);
       return;
     }
+    // Closed-issue guard: the upstream issue can be closed while this message
+    // sits queued (close-race — dispatched open, closed before spawn, e.g.
+    // billion-context#4948 2026-10-30). Re-read the issue at spawn time;
+    // settled superseded, no agent spawned (owner report 2026-10-30).
+    const liveIssue = await this.store.getIssue(issue.id);
+    if (liveIssue?.state === "closed") {
+      log.info(
+        `engine: execProcess skipped for ${k} — issue closed while queued, settling msg ${msg.id.slice(0, 8)} as superseded`,
+      );
+      await this.store.updateMessageStatus(msg.id, "superseded", "issue closed while queued");
+      await this.clearRuntimeState(k);
+      this.running.delete(k);
+      return;
+    }
     // Owner policy 2026-10-14: conflict-rebase work must not fan out across the
     // whole fleet — cap concurrent merge-conflict runs so they never eat more
     // than their share of slots (default 1). Deferred messages stay pending;

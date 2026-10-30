@@ -129,7 +129,7 @@ export interface Message {
   content: string;
   sourceCommentId?: string;
   reactionCommentId?: string;
-  status: "pending" | "running" | "done" | "failed" | "interrupted";
+  status: "pending" | "running" | "done" | "failed" | "interrupted" | "superseded";
   attempts: number;
   /** Infra-failure retry budget used (web unreachable / ENOSPC / signal-kill). */
   infraAttempts?: number;

@@ -52,6 +52,7 @@ describe("execProcess merge-conflict concurrency cap", () => {
     const self = Object.create(Engine.prototype) as Record<string, unknown>;
     self.store = {
       getSession: vi.fn(async () => ({ id: "s1", name: "ework-daemon" })),
+      getIssue: vi.fn(async () => ({ id: 7, state: "open" })),
       countRunningConflictMessages: vi.fn(async () => opts.runningConflicts),
       updateMessageStatus,
     };
