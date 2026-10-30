@@ -77,12 +77,12 @@ export const configSchema = z.object({
     // merge-conflict auto-repair loops get their own timeout/retry/degrade
     // policy — at most N dispatches per PR within the window; beyond that the
     // lane degrades (one issue comment, no dispatch) until the window expires.
-    ciFixMaxAttempts: z.coerce.number().int().positive().default(2),
+    ciFixMaxAttempts: z.coerce.number().int().positive().default(3), // raised 2→3 with real-attempt counting (2026-10-30 postmortem)
   mergeGuardConcurrency: z.coerce.number().int().positive().default(4),
   reviewConcurrency: z.coerce.number().int().positive().default(4),
     ciMasterFixMaxAttempts: z.coerce.number().int().positive().default(3),
     sentinelRotateMessages: z.coerce.number().int().positive().default(100),
-    conflictFixMaxAttempts: z.coerce.number().int().positive().default(2),
+    conflictFixMaxAttempts: z.coerce.number().int().positive().default(3), // raised 2→3 with real-attempt counting (2026-10-30 postmortem)
     autoLaneWindowMs: z.coerce.number().int().positive().default(86_400_000),
   }),
   db: z.object({

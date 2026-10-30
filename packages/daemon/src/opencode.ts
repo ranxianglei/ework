@@ -1373,6 +1373,25 @@ export class Engine {
     const tracker = this.getTracker(ref.trackerType);
     const scopeKey = tracker.formatScopeKey(ref.scope);
 
+    // Every event type whose handler can spawn a worker. The paused /
+    // halted / dispatch_off gates below must cover ALL of these — the
+    // 2026-10-30 audit found the auto-lane events (pr_unmergeable & co)
+    // bypassing them and still spawning workers on halted projects.
+    // Deliberately EXCLUDED: issue_closed and status_changed (bookkeeping
+    // must survive every gate so close/reopen stays honest) and
+    // issue_boosted (explicit owner action).
+    const spawningTypes = [
+      "issue_opened",
+      "comment_created",
+      "merge_conflict",
+      "ci_failed",
+      "ci_coord_comment",
+      "master_ci_failed",
+      "pr_unmergeable",
+      "pr_review_pending",
+    ];
+    const spawnsWorker = spawningTypes.includes(event.type);
+
     // State bookkeeping that must survive every wake gate: `issue_closed` is
     // never gated, so if a later `reopened` (mapped to issue_opened) is
     // dropped by paused/halted/dispatch_off/wake gates, the row stays
@@ -1388,12 +1407,12 @@ export class Engine {
       }
     }
 
-    if (this.paused && (event.type === "issue_opened" || event.type === "comment_created" || event.type === "merge_conflict" || event.type === "ci_failed")) {
+    if (this.paused && spawnsWorker) {
       log.info(`engine: paused — skipping ${event.type} for ${ref.trackerType}:${scopeKey}#${ref.issueId}`);
       return;
     }
 
-    if ((issueData.ai_status === "halted" || issueData.ai_status === "dispatch_off") && (event.type === "issue_opened" || event.type === "comment_created" || event.type === "merge_conflict" || event.type === "ci_failed")) {
+    if ((issueData.ai_status === "halted" || issueData.ai_status === "dispatch_off") && spawnsWorker) {
       log.info(`engine: issue ${issueData.ai_status} — skipping ${event.type} for ${ref.trackerType}:${scopeKey}#${ref.issueId}`);
       return;
     }
@@ -1744,7 +1763,7 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
         ).catch(() => {});
         this.autoLaneDegradeNotified.set(dkey, Date.now());
       }
-      log.info(
+      log.warn(
         `engine: merge-conflict lane cap reached (${cfAttempts}/${this.cfg.work.conflictFixMaxAttempts}) on ${scopeKey}#${ref.issueId} — degraded, no dispatch`,
       );
       return;
@@ -1824,7 +1843,7 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
         ).catch(() => {});
         this.autoLaneDegradeNotified.set(dkey, Date.now());
       }
-      log.info(
+      log.warn(
         `engine: ci-fail lane cap reached (${ciAttempts}/${this.cfg.work.ciFixMaxAttempts}) on ${scopeKey}#${ref.issueId} — degraded, no dispatch`,
       );
       return;
@@ -1895,7 +1914,7 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
         ).catch(() => {});
         this.autoLaneDegradeNotified.set(dkey, Date.now());
       }
-      log.info(
+      log.warn(
         `engine: master-ci sentinel cap reached (${attempts}/${this.cfg.work.ciMasterFixMaxAttempts}) on ${scopeKey}#${ref.issueId} — degraded, no dispatch`,
       );
       return;
@@ -3423,7 +3442,15 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
       const session = await this.store.getSession(msg.sessionId);
       if (!session || session.state === "running") continue;
       const issue = await this.store.getIssue(session.issueId);
-      if (!issue || issue.state === "closed") continue;
+      if (!issue) continue;
+      if (issue.state === "closed") {
+        // Dead letter on the NORMAL scan too, matching the saturated branch:
+        // a closed-issue row skipped forever here just sits in pending as a
+        // zombie (queue depth inflated forever). Same accepted race as the
+        // saturated branch (reopen-flap window; manual retry exists).
+        await this.store.updateMessageStatus(msg.id, "failed", "issue closed").catch(() => {});
+        continue;
+      }
       const k = this.sessionKey(session, issue);
       if (this.running.has(k)) continue;
     const projKey = this.projectKeyFor(k);
