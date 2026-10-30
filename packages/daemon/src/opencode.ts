@@ -433,7 +433,7 @@ export interface EngineOptions {
   daemonId: number;
   takeover?: TakeoverStrategy;
   backend?: RuntimeBackend;
-  gateChecker?: (issue: Issue) => Promise<{ allowed: boolean; reason: string; resetMs?: number; concurrency?: number | null }>;
+  gateChecker?: (issue: Issue) => Promise<{ allowed: boolean; reason: string; resetMs?: number; concurrency?: number | null; unreachable?: boolean; httpError?: boolean }>;
   replyBurst?: { max: number; windowMs: number };
   /** Set false in tests to drive recover() explicitly instead of fire-and-forget from the constructor. */
   recoverOnBoot?: boolean;
@@ -627,7 +627,9 @@ export class Engine {
   private readonly daemonId: number;
   private readonly takeover: TakeoverStrategy;
   private readonly backend: RuntimeBackend;
-  private gateChecker: (issue: Issue) => Promise<{ allowed: boolean; reason: string; resetMs?: number; concurrency?: number | null; unreachable?: boolean }>;
+  private gateChecker: (issue: Issue) => Promise<{ allowed: boolean; reason: string; resetMs?: number; concurrency?: number | null; unreachable?: boolean; httpError?: boolean }>;
+  /** Throttles repeated web-gate HTTP-error logs to one per minute. */
+  private lastGateErrLogAt = 0;
   private heartbeatTimer?: ReturnType<typeof setInterval>;
   private maxConcurrent: number;
   private maxConcurrentExplicit: boolean;
@@ -985,7 +987,7 @@ export class Engine {
     log.info(`engine: session reset via web for ${issue.trackerScopeKey}#${issue.trackerIssueId} — pointers cleared, starting fresh session`);
   }
 
-  private async webGateAllows(issue: Issue): Promise<{ allowed: boolean; reason: string; resetMs?: number; concurrency?: number | null; unreachable?: boolean }> {
+  private async webGateAllows(issue: Issue): Promise<{ allowed: boolean; reason: string; resetMs?: number; concurrency?: number | null; unreachable?: boolean; httpError?: boolean }> {
     const parts = issue.trackerScopeKey.split("/");
     const owner = parts[0] ?? "";
     const repo = parts.slice(1).join("/");
@@ -993,7 +995,19 @@ export class Engine {
     const url = `${this.cfg.gitea.url}/api/v1/dispatch-state?owner=${encodeURIComponent(owner)}&repo=${encodeURIComponent(repo)}&number=${encodeURIComponent(issue.trackerIssueId)}`;
     try {
       const resp = await fetch(url, { signal: AbortSignal.timeout(5000), headers: { Authorization: `token ${this.cfg.gitea.token}` } });
-      if (!resp.ok) return { allowed: false, reason: `web returned ${resp.status}` };
+      if (!resp.ok) {
+        // An HTTP error from a LIVE web is an infrastructure blip, NOT a
+        // policy decision: policy travels in the 200 JSON body (dispatchOff /
+        // ai_status). Failing every spawn on !ok killed whole queues behind
+        // one bad response and latched the safety-net drain off. Mark it
+        // transient: callers backoff-requeue and retry instead of terminal.
+        const nowMs = Date.now();
+        if (nowMs - this.lastGateErrLogAt > 60_000) {
+          this.lastGateErrLogAt = nowMs;
+          log.error(`engine: web gate returned HTTP ${resp.status} for ${issue.trackerScopeKey}#${issue.trackerIssueId} — treating as transient infra failure (retries with backoff)`);
+        }
+        return { allowed: false, reason: `web returned ${resp.status}`, httpError: true };
+      }
       const data = await resp.json() as { dispatchOff?: boolean; aiStatus?: string; sessionResetMs?: number | null; concurrency?: number | null };
       if (data.dispatchOff) return { allowed: false, reason: "dispatch off", concurrency: data.concurrency ?? null };
       if (data.aiStatus === "halted" || data.aiStatus === "dispatch_off") return { allowed: false, reason: `ai_status=${data.aiStatus}`, concurrency: data.concurrency ?? null };
@@ -2467,7 +2481,24 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
       );
     }
 
-    void this.execProcess(k, session, issue, msg);
+    // A rejection escaping execProcess would leave the slot claimed forever
+    // (inflated active count ⇒ fleet-wide stall until restart): compensate by
+    // releasing the slot, failing the claimed row, and re-draining.
+    void this.execProcess(k, session, issue, msg).catch(async (err) => {
+      log.error(`engine: execProcess crashed for ${k} (msg ${msg.id.slice(0, 8)}):`, err instanceof Error ? err.stack ?? err.message : String(err));
+      try {
+        this.running.delete(k);
+        this.currentMessage.delete(k);
+        this.currentModel.delete(k);
+        if ((await this.store.getMessage(msg.id))?.status === "running") {
+          await this.store.updateMessageStatus(msg.id, "failed", `engine crash before spawn: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        await this.store.updateSession(session.id, { state: "idle", opencodePid: undefined });
+      } catch (e2) {
+        log.error(`engine: crash-compensation store error for ${k}:`, (e2 as Error).message);
+      }
+      void this.drainGlobalPending();
+    });
   }
 
   // ─── Process Manager ───
@@ -2593,7 +2624,8 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
       // Web unreachable is an infrastructure failure, not a policy block —
       // the message never ran, so failing it loses user input (ework#5).
       // Requeue with backoff; policy blocks below still fail immediately.
-      if (gate.unreachable && await this.requeueInfraFailure(k, session, issue, msg, "web unreachable")) {
+      const transientWeb = gate.unreachable || gate.httpError;
+      if (transientWeb && await this.requeueInfraFailure(k, session, issue, msg, gate.reason)) {
         this.running.delete(k);
         this.currentMessage.delete(k);
         this.currentModel.delete(k);
@@ -2601,7 +2633,28 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
         void this.getTracker(issue.trackerType)
           .updateStatus(this.sessionToRef(session, issue), "queued")
           .catch(() => { /* web is down by definition */ });
-        log.info(`engine: web unreachable for ${k} — requeued msg ${msg.id.slice(0, 8)} with backoff, idling until retry fires`);
+        log.info(`engine: web transient (${gate.reason}) for ${k} — requeued msg ${msg.id.slice(0, 8)} with backoff, idling until retry fires`);
+        return;
+      }
+      if (transientWeb) {
+        // Infra-retry budget spent (or another decision already moved the row):
+        // NEVER kill user input over a web blip. Hold it in the queue behind a
+        // short backoff; once the web answers again the observer drain (or a
+        // manual retry) dispatches it. This was the silent-queue-killer in the
+        // 2026-10-30 incident: one bad response terminated every queued spawn.
+        const fresh = await this.store.getMessage(msg.id);
+        if (fresh?.status === "running") {
+          const until = new Date(Date.now() + 60_000);
+          await this.store.requeueWithBackoff(msg.id, `web transient (${gate.reason}) — held in queue after infra retries`, until.toISOString());
+          log.warn(`engine: web transient (${gate.reason}) for ${k} past infra budget — holding msg ${msg.id.slice(0, 8)} pending; observer drain picks it up when web recovers`);
+        }
+        this.running.delete(k);
+        this.currentMessage.delete(k);
+        this.currentModel.delete(k);
+        await this.store.updateSession(session.id, { state: "idle", opencodePid: undefined });
+        void this.getTracker(issue.trackerType)
+          .updateStatus(this.sessionToRef(session, issue), "queued")
+          .catch(() => { /* web may be down */ });
         return;
       }
       log.info(`engine: execProcess blocked by web gate (${gate.reason}) for ${k}`);
@@ -3441,7 +3494,22 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
     this.running.add(k);
     this.currentMessage.set(k, msg.id);
     await this.store.updateSession(session.id, { state: "running" });
-    void this.execProcess(k, session, issue, msg);
+    // Crash compensation (see the other execProcess funnel site below).
+    void this.execProcess(k, session, issue, msg).catch(async (err) => {
+      log.error(`engine: execProcess crashed for ${k} (msg ${msg.id.slice(0, 8)}):`, err instanceof Error ? err.stack ?? err.message : String(err));
+      try {
+        this.running.delete(k);
+        this.currentMessage.delete(k);
+        this.currentModel.delete(k);
+        if ((await this.store.getMessage(msg.id))?.status === "running") {
+          await this.store.updateMessageStatus(msg.id, "failed", `engine crash before spawn: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        await this.store.updateSession(session.id, { state: "idle", opencodePid: undefined });
+      } catch (e2) {
+        log.error(`engine: crash-compensation store error for ${k}:`, (e2 as Error).message);
+      }
+      void this.drainGlobalPending();
+    });
   }
 
   // ─── Prompts ───
@@ -3648,8 +3716,18 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
           // In-memory slot — normally trusted, but a process that died
           // without its exit handler running leaks the slot forever
           // (#4352). Park only when the recorded pid is verifiably dead;
-          // null pid = claimed but not yet spawned, keep waiting.
-          if (r.pid == null) continue;
+          // null pid = claimed but not yet spawned — normally keep waiting,
+          // but a spawn crash between claim and process start never persists
+          // a pid: park after a generous 10-min window so one exception
+          // cannot hold the fleet hostage until restart.
+          if (r.pid == null) {
+            if (now - r.updatedAt.getTime() >= 10 * 60_000) {
+              log.error(`engine: reconciler parking claim on ${r.key} — null pid for over 10min (spawn crashed between claim and start)`);
+              dead.push({ id: r.id, key: r.key });
+              continue;
+            }
+            continue;
+          }
           let alive = false;
           try { process.kill(r.pid, 0); alive = true; } catch { /* dead */ }
           if (alive) continue;
@@ -3787,6 +3865,10 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
     const gate = await this.gateChecker(issue);
         if (!gate.allowed) {
           if (gate.unreachable) { webReachable = false; break; }
+          // Live web answering with an HTTP error: skip this issue this cycle,
+          // do NOT latch webReachable off — otherwise one flaky response
+          // disables the stranded-message safety drain fleet-wide.
+          if (gate.httpError) continue;
           log.info(`engine: observer — web gate blocked ${issue.trackerScopeKey}#${issue.trackerIssueId} (${gate.reason})`);
           continue;
         }
@@ -4133,13 +4215,13 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
         continue;
       }
       if (!gate.allowed) {
-        log.info(`engine: recover — web gate blocked ${issue.trackerScopeKey}#${issue.trackerIssueId} (${gate.reason}), discarding queued (pending) messages`);
-        for (const m of msgs) {
-          if (m.status === "pending") {
-            await this.store.updateMessageStatus(m.id, "failed", `web gate: ${gate.reason}`);
-          }
-          report.deferred++;
-        }
+        // Never destroy queued user input over a gate condition (transient OR
+        // policy): keep the rows pending. Spawns stay gated while the condition
+        // lasts; the moment dispatch is allowed again, the drain picks these up.
+        // Terminal loss here cost whole queues in the 2026-10-30 incident.
+        const pendingCount = msgs.filter((m) => m.status === "pending").length;
+        log.warn(`engine: recover — web gate blocked ${issue.trackerScopeKey}#${issue.trackerIssueId} (${gate.reason}) — keeping ${pendingCount} pending message(s) queued instead of discarding`);
+        report.deferred += msgs.length;
         continue;
       }
 
@@ -4387,7 +4469,12 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
 
   async retryMessage(messageId: string): Promise<boolean> {
     const msg = await this.store.getMessage(messageId);
-    if (!msg || msg.status !== "failed") return false;
+    // Operator override: failed always; pending/interrupted too, so ops can
+    // unstick rows wedged behind stale backoff windows or interrupted holds.
+    // The closed-issue check below and the spawn gates still apply.
+    if (!msg || !["failed", "pending", "interrupted"].includes(msg.status)) return false;
+    await this.store.resetInfraAttempts(messageId);
+
     const session = await this.store.getSession(msg.sessionId);
     if (!session) return false;
     const issue = await this.store.getIssue(session.issueId);

@@ -424,6 +424,14 @@ export class Store {
     ]);
   }
 
+  /** Manual retry resets the infra budget so an exhausted row can run again. */
+  async resetInfraAttempts(id: string): Promise<void> {
+    await getDB().run("UPDATE {{messages}} SET infra_attempts = 0, updated_at = ? WHERE uid = ?", [
+      new Date().toISOString(),
+      id,
+    ]);
+  }
+
   /** Set/clear the backoff hold. ISO-8601 strings compare lexicographically. */
   async setRetryAfter(id: string, untilIso: string | null): Promise<void> {
     await getDB().run(
