@@ -178,3 +178,66 @@ describe("reopened heals stale closed state (bc#255)", () => {
     expect(tracker.comments[0]).toContain("picked up this issue");
   });
 });
+
+describe("reopened revives close-interrupted messages (dog/ework-aio#6)", () => {
+  async function seedInterrupted(store: Store, error: string): Promise<string> {
+    const issue = await store.findIssue("gitea", "ranxianglei/billion-context", "255");
+    if (!issue) throw new Error("seed issue missing");
+    const session = await store.createSession(issue.id, "dog");
+    const msg = await store.createMessage(session.id, "queued before close");
+    await store.updateMessageStatus(msg.id, "interrupted", error);
+    return msg.id;
+  }
+
+  test("'issue closed' rows return to pending on reopen", async () => {
+    const cfg = makeConfig(["dog"]);
+    const { engine, store } = await bootEngine(cfg);
+    await seedClosedIssue(store);
+    const msgId = await seedInterrupted(store, "issue closed");
+
+    await engine.handleEvent(reopenedEvent("Rika-xie"), undefined);
+
+    // Revival is the only thing that can flip interrupted rows in-test
+    // (observer ticks are minutes away); the blocked test gate may then
+    // re-fail the row downstream — anything but 'interrupted' proves the
+    // revival fired.
+    for (let i = 0; i < 50 && (await store.getMessage(msgId))?.status === "interrupted"; i++) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    const after = await store.getMessage(msgId);
+    expect(after?.status).not.toBe("interrupted");
+    expect(
+      after?.status === "pending" || after?.status === "running" || after?.error?.startsWith("gate:"),
+    ).toBe(true);
+    // Non-wake author: revival only — no new dispatch side effects.
+    const fresh = await store.findIssue("gitea", "ranxianglei/billion-context", "255");
+    expect(fresh?.state).toBe("active");
+  });
+
+  test("rows interrupted for other reasons are left alone", async () => {
+    const cfg = makeConfig(["dog"]);
+    const { engine, store } = await bootEngine(cfg);
+    await seedClosedIssue(store);
+    const msgId = await seedInterrupted(store, "force stopped");
+
+    await engine.handleEvent(reopenedEvent("Rika-xie"), undefined);
+
+    const after = await store.getMessage(msgId);
+    expect(after?.status).toBe("interrupted");
+  });
+
+  test("first open (never closed) revives nothing", async () => {
+    const cfg = makeConfig(["dog"]);
+    const { engine, store } = await bootEngine(cfg);
+    // No seedClosedIssue: brand-new issue.
+    const issue = await store.findOrCreateIssue(REF, "ranxianglei/billion-context", "t");
+    const session = await store.createSession(issue.id, "dog");
+    const msg = await store.createMessage(session.id, "queued");
+    await store.updateMessageStatus(msg.id, "interrupted", "issue closed");
+
+    await engine.handleEvent(reopenedEvent("Rika-xie"), undefined);
+
+    const after = await store.getMessage(msg.id);
+    expect(after?.status).toBe("interrupted");
+  });
+});

@@ -181,7 +181,7 @@ async function autoWireDaemon(projectId: number, origin: string): Promise<void> 
           project_id: projectId,
           url: target,
           secret: cfg.daemonWebhookSecret,
-          events: ["issues", "issue_comment", "status_changed"],
+          events: ["issues", "issue_comment", "status_changed", "issue_boosted"],
         });
         void emitPingEvent(projectId, origin);
       }
