@@ -1615,7 +1615,7 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
   // Owner-driven queue boost (web ⚡ button): dispatch this issue's pending
   // messages immediately if a slot is free; otherwise pin the issue to the
   // absolute front of the global queue (owner policy 2026-10-17).
-  private async handleBoost(ref: TrackerRef, scopeKey: string, _issueData: NonNullable<TrackerEvent["issue"]>, _tracker: unknown): Promise<void> {
+  private async handleBoost(ref: TrackerRef, scopeKey: string, issueData: NonNullable<TrackerEvent["issue"]>, tracker: IssueTracker): Promise<void> {
     const issue = await this.store.findIssue(ref.trackerType, scopeKey, ref.issueId);
     if (!issue) {
       log.info(`engine: boost — no local issue state for ${scopeKey}#${ref.issueId}, nothing to boost`);
@@ -1623,7 +1623,32 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
     }
     const pendings = await this.store.getPendingForIssue(issue.id);
     if (pendings.length === 0) {
-      log.info(`engine: boost — ${scopeKey}#${ref.issueId} has no pending messages (running or idle)`);
+      // Owner ⚡ on an empty queue IS the owner decision that auto-lane
+      // degrade notices wait for (dog/ework-aio#6, 2026-10-30: #5185's ci
+      // lane was capped and its only pending had settled — the click had
+      // nothing to promote and silently no-oped). Create a fresh wake on the
+      // last-active (or default) session; enqueueOrRun pins it and
+      // dispatches at the next free slot. Auto-lane attempt caps do not
+      // apply: this message carries a boost- source id, not a lane id.
+      if (issue.state === "closed") {
+        log.info(`engine: boost — ${scopeKey}#${ref.issueId} is closed, nothing to boost`);
+        return;
+      }
+      const sessions = await this.store.getSessionsForIssue(issue.id);
+      const session = (sessions.length ? pickLastActive(sessions) : undefined)
+        ?? (await this.store.createSession(issue.id, this.cfg.bot.username));
+      const workdir = await this.resolveWorkdir(session, issue);
+      const instructions = tracker.getTrackerInstructions(ref);
+      const body =
+        `[SYSTEM] Owner ⚡boost on an empty queue — explicit re-dispatch (owner decision).\n` +
+        `Re-examine this issue end-to-end: read the latest comments and, for PR mirrors, the check cache ` +
+        `(curl -s -H "Authorization: token $(grep ^GITEA_TOKEN= /var/lib/ework-daemon/share/ework-daemon/.env | cut -d= -f2)" ` +
+        `"http://127.0.0.1:3002/api/v1/upstream-checks?owner=<owner>&repo=<repo>&number=<n>"), decide what still ` +
+        `needs doing, do it under the standing rules, and reply with the outcome.`;
+      const prompt = this.buildForwardPrompt(session.name, body, "owner", "human", issueData.title, workdir, instructions);
+      log.info(`engine: boost — ${scopeKey}#${ref.issueId} queue empty, creating owner wake on ${session.name}`);
+      await tracker.createComment(ref, `[system] 🏷 ${this.sessionRef(session)} ⚡ Owner boost — 队列为空, 已创建新派单。`).catch(() => {});
+      await this.enqueueOrRun(session, issue, prompt, tracker, ref, `boost-${ref.issueId}-${Date.now()}`);
       return;
     }
     // Pin before dispatching: the fairness yield in dequeueOrIdle exempts

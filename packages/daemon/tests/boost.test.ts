@@ -24,12 +24,25 @@ describe("owner boost (web ⚡ button)", () => {
       getSession: vi.fn(async () => session),
       getIssue: vi.fn(async () => issue),
       claimMessage: vi.fn(async () => true),
+      getSessionsForIssue: vi.fn(async () => []),
+      createSession: vi.fn(async () => session),
     };
     self.dequeueOrIdle = vi.fn(async () => {});
+    self.enqueueOrRun = vi.fn(async () => {});
+    self.resolveWorkdir = vi.fn(async () => "/tmp/wd");
+    self.buildForwardPrompt = vi.fn(() => "prompt");
+    self.handleLargeContent = vi.fn((_wd: string, body: string) => body);
+    self.sessionRef = vi.fn(() => "ework-daemon-test");
+    self.cfg = { bot: { username: "ework-daemon-test" } };
     self.boostedIssueIds = new Set();
     self.pinnedIssueIds = new Set();
     return self;
   }
+
+  const stubTracker = {
+    getTrackerInstructions: () => "",
+    createComment: () => Promise.resolve({}),
+  } as unknown as Parameters<typeof Engine.prototype.handleBoost>[3];
 
   it("free slot → dispatches immediately, no queue pin", async () => {
     const self = makeSelf(0);
@@ -57,12 +70,21 @@ describe("owner boost (web ⚡ button)", () => {
     expect((self.boostedIssueIds as Set<string>).has("iss-1")).toBe(true);
   });
 
-  it("no pending messages → no-op", async () => {
+  it("no pending messages → creates an owner wake (empty-queue boost = owner decision, dog/ework-aio#6 2026-10-30)", async () => {
     const self = makeSelf(0);
     self.store.getPendingForIssue = vi.fn(async () => []);
-    await Engine.prototype.handleBoost.call(self, ref, "acme/widgets", { title: "t", body: "", state: "open", author: "dog" }, null);
+    await Engine.prototype.handleBoost.call(self, ref, "acme/widgets", { title: "t", body: "", state: "open", author: "dog" }, stubTracker);
+    expect(self.store.createSession).toHaveBeenCalledTimes(1);
+    expect(self.enqueueOrRun).toHaveBeenCalledTimes(1);
     expect(self.store.claimMessage).not.toHaveBeenCalled();
-    expect((self.boostedIssueIds as Set<string>).size).toBe(0);
+  });
+
+  it("no pending messages → closed issue stays a no-op", async () => {
+    const self = makeSelf(0);
+    self.store.getPendingForIssue = vi.fn(async () => []);
+    self.store.findIssue = vi.fn(async () => ({ ...issue, state: "closed" }));
+    await Engine.prototype.handleBoost.call(self, ref, "acme/widgets", { title: "t", body: "", state: "closed", author: "dog" }, stubTracker);
+    expect(self.enqueueOrRun).not.toHaveBeenCalled();
   });
 
   it("pinned issue is exempt from the fairness yield (2026-10-23 #4373 regression)", async () => {
