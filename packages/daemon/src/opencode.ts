@@ -3371,56 +3371,12 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
         ? { trackerType: issue.trackerType, scope: { owner: scopeParts[0]!, repo: scopeParts[1]! }, issueId: String(issue.trackerIssueId) }
         : undefined;
       while (next) {
-        // Fairness guard (owner 2026-10-21): per-session continuation and
-        // targeted pickups must not leapfrog a much older queued message in
-        // another session — #3975 starved ~10h while spawns flowed via this
-        // path. Yield to the global drain (age grace 10min to avoid thrash
-        // when a batch clusters in time).
-        // Owner boost (web ⚡, 2026-10-23) is an explicit per-issue override:
-        // the pinned issue's dispatches are exempt, else the guard eternally
-        // re-yields boosted work while any older backlog message pends.
-        let yieldToOlder = false;
-        try {
-          const oldest = await this.store.getOldestPendingCreatedAt(
-            session.name.startsWith("conflict-worker") ||
-            session.name.startsWith("ci-worker") ||
-            session.name.startsWith("ci-master") ||
-            session.name.startsWith("release-worker") ||
-            session.name.startsWith("merge-guard") ||
-            session.name.startsWith("review-worker"),
-          );
-          if (
-            oldest &&
-            next.createdAt.getTime() > oldest.getTime() + 10 * 60_000 &&
-            !this.boostedIssueIds.has(issue.id) &&
-            !this.pinnedIssueIds.has(issue.id)
-          ) {
-            yieldToOlder = true;
-          }
-        } catch {
-          /* fairness check is best-effort */
-        }
-        if (yieldToOlder) {
-          // Release the claim before yielding. The initially dispatched
-          // message was already claimed running by the caller (drain CAS /
-          // webhook dispatch); bailing out without releasing leaves a
-          // running row with no process that the reconciler parks and the
-          // stranded-resurrect sweep revives every cycle — the
-          // claim→yield→park→resurrect carousel (2026-10-23). Follow-up
-          // rows (from the expiry chain below) were fetched from pending
-          // and need no release. No drain re-trigger here: the in-flight
-          // drain loop already advances to the next (older) candidate, and
-          // a fresh drain would re-pick this same just-released message
-          // infra-first — the recursive yield storm (2026-10-23, 0.4.136).
-          if (next.id === msg.id) {
-            await this.store.updateMessageStatus(next.id, "pending");
-            this.running.delete(k);
-            this.currentMessage.delete(k);
-            await this.store.updateSession(session.id, { state: "idle" });
-            log.info(`engine: fairness yield — released claim on msg ${next.id.slice(0, 8)} for ${k} (older work waiting)`);
-          }
-          return;
-        }
+        // Dispatch-on-free-slot (owner 2026-10-30): ordering is decided by
+        // the queue itself (age-first, pins for fresh submissions), never by
+        // releasing claims here. The former "yield to older" gate turned
+        // ordering into blocking and deadlocked the fleet three times
+        // (2026-10-27 busy-session freeze, 2026-10-30 cross-bucket mutual
+        // starvation, 0.4.136's claim→park→resurrect carousel).
         // Age from pending_since (when it entered/last re-entered pending),
         // NOT created_at: recover() shifts pending_since to now on restart,
         // so time spent down never expires a queued message (ework#5).

@@ -370,30 +370,6 @@ export class Store {
     }));
   }
 
-  async getOldestPendingCreatedAt(infra?: boolean): Promise<Date | undefined> {
-    // Fairness must yield only to older work that can actually run: a
-    // pending message parked on a busy (state=running) session cannot
-    // dispatch until that session frees, and yielding the whole queue to
-    // it froze all dispatch (global fairness deadlock, 2026-10-27).
-    // Bucket-scoped comparison (2026-10-30): the drain order drains the
-    // infra bucket before ordinary rows, so the global oldest — often an
-    // ordinary row the drain cannot reach yet — made every infra claim
-    // yield while the infra bucket never emptied (cross-bucket mutual
-    // starvation, 128 yields/min with zero spawns). Compare within the
-    // claimed row's own bucket instead.
-    const laneFilter =
-      infra === undefined
-        ? ""
-        : infra
-          ? ` AND (s.name LIKE 'conflict-worker%' OR s.name LIKE 'ci-worker%' OR s.name LIKE 'ci-master%' OR s.name LIKE 'release-worker%' OR s.name LIKE 'merge-guard%' OR s.name LIKE 'review-worker%')`
-          : ` AND (s.name NOT LIKE 'conflict-worker%' AND s.name NOT LIKE 'ci-worker%' AND s.name NOT LIKE 'ci-master%' AND s.name NOT LIKE 'release-worker%' AND s.name NOT LIKE 'merge-guard%' AND s.name NOT LIKE 'review-worker%')`;
-    const rows = await getDB().all<{ oldest?: string }>(
-      `SELECT MIN(m.created_at) AS oldest FROM {{messages}} m JOIN {{op_sessions}} s ON s.uid = m.session_id WHERE m.status = 'pending' AND s.state != 'running'${laneFilter}`,
-    );
-    const v = (rows[0] as { oldest?: string } | undefined)?.oldest;
-    return v ? new Date(v) : undefined;
-  }
-
   async getGlobalPendingMessages(limit: number): Promise<Message[]> {
     const now = new Date().toISOString();
     const rows = this.projectPriorities.length > 0
@@ -406,21 +382,13 @@ export class Store {
   }
 
   /**
-   * WORK_PROJECT_PRIORITIES pickup: (priority DESC, created_at ASC). The
-   * no-config path above keeps the original single-table query byte-for-byte;
-   * this joined variant only runs when priorities are configured. Values are
-   * bound parameters (never interpolated), and scope keys are matched exactly
-   * against issues.tracker_scope_key ("owner/repo" form).
-   *
-   * Infra-lane membership MUST cover every dedicated-pool lane (merge-guard,
-   * review included): buckets sort ahead of ordinary age order, and the drain's
-   * fairness gate (dequeueOrIdle) aborts the whole pass when the claimed head
-   * is younger than the oldest deliverable row. With merge-guard outside the
-   * bucket, its stale pendings (idle sessions → "deliverable") sat behind
-   * younger ci-worker heads — every pass claimed a ci head, yielded to the
-   * unreachable older guard rows, and returned: 833 yields/30min, concurrency
-   * 11→1 (2026-10-30). Age order within the bucket lets the drain reach the
-   * stale rows first and the pool caps (mergeGuardConcurrency) pace them.
+   * WORK_PROJECT_PRIORITIES pickup, age-first across all lanes (owner
+   * 2026-10-30): fresh submissions are protected by issue pins at enqueue
+   * time, and saturated lanes are skipped by the drain's per-lane caps —
+   * so global age order starves nobody and no claim is ever released for
+   * ordering reasons. The former infra-lane-bucket-first ordering plus the
+   * yield gate deadlocked the fleet three times (2026-10-27 busy-session
+   * freeze, 2026-10-30 cross-bucket mutual starvation, 0.4.136 carousel).
    */
   private async priorityOrderedPending(nowIso: string, limit: number): Promise<MessageRow[]> {
     const whens: string[] = [];
@@ -434,8 +402,8 @@ export class Store {
        JOIN {{op_sessions}} s ON s.uid = m.session_id
        JOIN {{issues}} i ON i.uid = s.issue_id
        WHERE m.status = 'pending' AND (m.retry_after IS NULL OR m.retry_after <= ?)
-       ORDER BY CASE WHEN s.name LIKE 'conflict-worker%' OR s.name LIKE 'ci-worker%' OR s.name LIKE 'ci-master%' OR s.name LIKE 'release-worker%' OR s.name LIKE 'merge-guard%' OR s.name LIKE 'review-worker%' THEN 1 ELSE 0 END DESC,
-         CASE ${whens.join(" ")} ELSE 0 END DESC, m.created_at ASC
+       ORDER BY m.created_at ASC,
+         CASE ${whens.join(" ")} ELSE 0 END DESC
        LIMIT ?`,
       [nowIso, ...caseParams, limit]
     );

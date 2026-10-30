@@ -90,30 +90,35 @@ describe("infra idle-fill (owner policy 2026-10-20)", () => {
   });
 });
 
-// Fairness guard (owner 2026-10-21): per-session continuation must yield to a
-// much older pending message in another session instead of leapfrogging it.
+// Dispatch-on-free-slot (owner 2026-10-30): ordering is decided by the
+// age-first queue and issue pins, never by releasing claims — the former
+// yield gate deadlocked the fleet three times.
 describe("queue fairness guard", () => {
-  test("newer per-session candidate yields to older global pending", async () => {
+  test("newer per-session candidate dispatches; claims are never released for ordering", async () => {
     const self = makeSelf();
     self.running = new Set();
     self.currentMessage = new Map();
-    const older = new Date(Date.now() - 30 * 60_000);
     const newer = new Date(Date.now() - 1 * 60_000);
     let drained = false;
+    let executed = false;
     const updateMessageStatus = vi.fn(async () => {});
     const updateSession = vi.fn(async () => {});
     self.store = {
-      getOldestPendingCreatedAt: async () => older,
+      getPendingForIssue: async () => [],
+      getMessagesForSession: async () => [],
+      countMessagesByStatus: async () => 0,
       updateMessageStatus,
       updateSession,
     };
     self.startObserver = () => {};
+    self.execProcess = async () => { executed = true; };
     self.drainGlobalPending = async () => { drained = true; };
     const msg = { id: "m1", createdAt: newer, pendingSince: newer };
     await (self as { dequeueOrIdle(k: string, s: unknown, i: unknown, m: unknown): Promise<void> }).dequeueOrIdle("k@git:x/y#1@ework-daemon", { id: "s1", name: "ework-daemon" }, { id: "i1", trackerType: "gitea", trackerScopeKey: "x/y", trackerIssueId: 1 }, msg as never);
     expect(drained).toBe(false);
-    expect(updateMessageStatus).toHaveBeenCalledWith("m1", "pending");
-    expect(updateSession).toHaveBeenCalledWith("s1", { state: "idle" });
+    expect(updateMessageStatus).not.toHaveBeenCalledWith("m1", "pending");
+    expect(updateSession).not.toHaveBeenCalledWith("s1", { state: "idle" });
+    expect(executed).toBe(true);
   });
 
   test("globally-oldest message proceeds without yielding", async () => {

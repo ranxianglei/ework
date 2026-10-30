@@ -191,51 +191,6 @@ describe("Store: messages", () => {
     await store.close();
   });
 
-  it("getOldestPendingCreatedAt skips messages parked on busy sessions (fairness deadlock 2026-10-27)", async () => {
-    const { store, issue } = await seed();
-    const busy = await store.createSession(issue.id, "busy-worker");
-    const idle = await store.createSession(issue.id, "idle-worker");
-    await store.updateSession(busy.id, { state: "running" });
-    // Older message on the BUSY session, younger on the idle one.
-    // Backdate by 1s: on fast runners both inserts can land in the same
-    // millisecond, which would make the strict ordering assertions flaky.
-    const old = await store.createMessage(busy.id, "older but undeliverable");
-    await getDB().run(
-      "UPDATE {{messages}} SET created_at = ? WHERE uid = ?",
-      [new Date(old.createdAt.getTime() - 1000).toISOString(), old.id],
-    );
-    const young = await store.createMessage(idle.id, "younger deliverable");
-    const oldest = await store.getOldestPendingCreatedAt();
-    expect(oldest?.getTime()).toBe(young.createdAt.getTime());
-    // With every session idle the true oldest must win again.
-    await store.updateSession(busy.id, { state: "idle" });
-    const allIdle = await store.getOldestPendingCreatedAt();
-    expect(allIdle!.getTime()).toBeLessThan(young.createdAt.getTime());
-    await store.close();
-  });
-
-  it("getOldestPendingCreatedAt scopes to the caller's lane bucket (cross-bucket starvation 2026-10-30)", async () => {
-    const { store, issue } = await seed();
-    const ordinary = await store.createSession(issue.id, "ework-daemon");
-    const guard = await store.createSession(issue.id, "merge-guard-r1");
-    // Ancient ordinary row must not gate infra claims (the drain order
-    // cannot reach ordinary rows while the infra bucket is non-empty) and
-    // vice versa — global comparison starved both buckets against each other.
-    const ancient = await store.createMessage(ordinary.id, "ancient ordinary");
-    const ancientTime = ancient.createdAt.getTime() - 3 * 60 * 60_000;
-    await getDB().run(
-      "UPDATE {{messages}} SET created_at = ? WHERE uid = ?",
-      [new Date(ancientTime).toISOString(), ancient.id],
-    );
-    const infra = await store.createMessage(guard.id, "fresh infra");
-    const oldestInfra = await store.getOldestPendingCreatedAt(true);
-    expect(oldestInfra?.getTime()).toBe(infra.createdAt.getTime());
-    const oldestOrdinary = await store.getOldestPendingCreatedAt(false);
-    expect(oldestOrdinary?.getTime()).toBe(ancientTime);
-    const global = await store.getOldestPendingCreatedAt();
-    expect(global?.getTime()).toBe(ancientTime);
-    await store.close();
-  });
 
   it("model override survives a DB round-trip (queued/nudged/recovered paths)", async () => {
     const { store, session } = await seed();

@@ -67,37 +67,35 @@ describe("getGlobalPendingMessages ordering", () => {
     await store.close();
   });
 
-  it("prioritized project jumps ahead of older unprioritized messages", async () => {
-    await seedPending("ranxianglei/opencode-acp", "1", "2026-09-29T10:00:00.000Z");
-    await seedPending("ranxianglei/other", "2", "2026-09-29T10:30:00.000Z");
+  it("age order wins across projects; priority cannot leapfrog older work (owner 2026-10-30)", async () => {
+    const acp = await seedPending("ranxianglei/opencode-acp", "1", "2026-09-29T10:00:00.000Z");
+    const other = await seedPending("ranxianglei/other", "2", "2026-09-29T10:30:00.000Z");
     const bc = await seedPending("ranxianglei/billion-context", "3", "2026-09-29T11:00:00.000Z");
     const store = new Store([{ scope: "ranxianglei/billion-context", priority: 100 }]);
     const picked = await store.getGlobalPendingMessages(3);
-    expect(picked[0]!.id).toBe(bc);
-    expect(picked).toHaveLength(3);
+    expect(picked.map((m) => m.id)).toEqual([acp, other, bc]);
     await store.close();
   });
 
-  it("same priority falls back to FIFO; higher wins over lower", async () => {
-    const acpOlder = await seedPending("ranxianglei/opencode-acp", "1", "2026-09-29T10:00:00.000Z");
-    const bcOlder = await seedPending("ranxianglei/billion-context", "2", "2026-09-29T10:05:00.000Z");
-    const bcNewer = await seedPending("ranxianglei/billion-context", "3", "2026-09-29T10:10:00.000Z");
+  it("priority breaks exact-age ties: higher priority first (owner 2026-10-30)", async () => {
+    const acp = await seedPending("ranxianglei/opencode-acp", "1", "2026-09-29T10:00:00.000Z");
+    const bc = await seedPending("ranxianglei/billion-context", "2", "2026-09-29T10:00:00.000Z");
     const store = new Store([
       { scope: "ranxianglei/opencode-acp", priority: 10 },
       { scope: "ranxianglei/billion-context", priority: 100 },
     ]);
-    const picked = await store.getGlobalPendingMessages(3);
-    expect(picked.map((m) => m.id)).toEqual([bcOlder, bcNewer, acpOlder]);
+    const picked = await store.getGlobalPendingMessages(2);
+    expect(picked.map((m) => m.id)).toEqual([bc, acp]);
     await store.close();
   });
 
-  it("unconfigured projects all sit at priority 0, FIFO among themselves, behind configured ones", async () => {
+  it("unconfigured projects are not deprioritized below configured ones (age decides)", async () => {
     const otherOld = await seedPending("a/other", "1", "2026-09-29T09:00:00.000Z");
     const otherNew = await seedPending("b/other", "2", "2026-09-29T09:30:00.000Z");
     const acp = await seedPending("ranxianglei/opencode-acp", "3", "2026-09-29T10:00:00.000Z");
     const store = new Store([{ scope: "ranxianglei/opencode-acp", priority: 10 }]);
     const picked = await store.getGlobalPendingMessages(3);
-    expect(picked.map((m) => m.id)).toEqual([acp, otherOld, otherNew]);
+    expect(picked.map((m) => m.id)).toEqual([otherOld, otherNew, acp]);
     await store.close();
   });
 
@@ -117,12 +115,12 @@ describe("getGlobalPendingMessages ordering", () => {
     const store = new Store([{ scope: "ranxianglei/billion-context", priority: 100 }]);
     const picked = await store.getGlobalPendingMessages(1);
     expect(picked).toHaveLength(1);
-    expect(picked[0]!.content).toContain("billion-context");
+    expect(picked[0]!.content).toContain("opencode-acp");
     await store.close();
   });
 });
 
-it("infra worker sessions (conflict-worker/ci-worker) outrank project priority", async () => {
+it("age order spans lanes: infra sessions do not leapfrog older ordinary work (owner 2026-10-30)", async () => {
   const store = new Store([{ scope: "acme/widgets", priority: 100 }]);
   const issueA = await store.findOrCreateIssue(ref("1", "acme/widgets"), "acme/widgets", "normal");
   const issueB = await store.findOrCreateIssue(ref("2", "acme/widgets"), "acme/widgets", "ci");
@@ -133,12 +131,12 @@ it("infra worker sessions (conflict-worker/ci-worker) outrank project priority",
   await getDB().run("UPDATE {{messages}} SET created_at = ? WHERE uid = ?", ["2026-10-17T01:00:00.000Z", mOld.id]);
   await getDB().run("UPDATE {{messages}} SET created_at = ? WHERE uid = ?", ["2026-10-17T02:00:00.000Z", mNew.id]);
   const pending = await store.getGlobalPendingMessages(5);
-  expect(pending[0]!.id).toBe(mNew.id);
-  expect(pending[1]!.id).toBe(mOld.id);
+  expect(pending[0]!.id).toBe(mOld.id);
+  expect(pending[1]!.id).toBe(mNew.id);
   await store.close();
 });
 
-it("release-worker session ranks in the infra tier", async () => {
+it("release-worker sessions follow the same age order", async () => {
   const store = new Store([{ scope: "acme/widgets", priority: 100 }]);
   const issueA = await store.findOrCreateIssue(ref("1", "acme/widgets"), "acme/widgets", "normal");
   const issueB = await store.findOrCreateIssue(ref("2", "acme/widgets"), "acme/widgets", "rel");
@@ -149,7 +147,7 @@ it("release-worker session ranks in the infra tier", async () => {
   await getDB().run("UPDATE {{messages}} SET created_at = ? WHERE uid = ?", ["2026-10-17T03:00:00.000Z", mOld.id]);
   await getDB().run("UPDATE {{messages}} SET created_at = ? WHERE uid = ?", ["2026-10-17T04:00:00.000Z", mNew.id]);
   const pending = await store.getGlobalPendingMessages(5);
-  expect(pending[0]!.id).toBe(mNew.id);
+  expect(pending[0]!.id).toBe(mOld.id);
   await store.close();
 });
 
