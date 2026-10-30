@@ -152,3 +152,25 @@ it("release-worker session ranks in the infra tier", async () => {
   expect(pending[0]!.id).toBe(mNew.id);
   await store.close();
 });
+
+it("stale merge-guard pending outranks a younger ci-worker head (2026-10-30 fairness inversion)", async () => {
+  // Drain claims infra-bucket heads in list order; the fairness gate aborts
+  // the whole pass when the claimed head is younger than the oldest
+  // deliverable row. A merge-guard pending outside the infra bucket sat
+  // behind younger ci-worker heads: every pass claimed a ci head, yielded to
+  // the unreachable guard row, and returned — 833 yields/30min, concurrency
+  // 11→1. In-bucket age ordering lets the drain reach the stale row first.
+  const store = new Store([{ scope: "acme/widgets", priority: 100 }]);
+  const issueA = await store.findOrCreateIssue(ref("1", "acme/widgets"), "acme/widgets", "guard");
+  const issueB = await store.findOrCreateIssue(ref("2", "acme/widgets"), "acme/widgets", "ci");
+  const guard = await store.createSession(issueA.id, "merge-guard-r1");
+  const ci = await store.createSession(issueB.id, "ci-worker-r1");
+  const mGuard = await store.createMessage(guard.id, "stale guard msg");
+  const mCi = await store.createMessage(ci.id, "younger ci msg");
+  await getDB().run("UPDATE {{messages}} SET created_at = ? WHERE uid = ?", ["2026-10-29T15:57:51.000Z", mGuard.id]);
+  await getDB().run("UPDATE {{messages}} SET created_at = ? WHERE uid = ?", ["2026-10-30T07:00:00.000Z", mCi.id]);
+  const pending = await store.getGlobalPendingMessages(5);
+  expect(pending[0]!.id).toBe(mGuard.id);
+  expect(pending[1]!.id).toBe(mCi.id);
+  await store.close();
+});
