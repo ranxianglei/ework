@@ -96,3 +96,32 @@ describe("owner boost (web ⚡ button)", () => {
     expect(updateMessageStatus).not.toHaveBeenCalledWith("m1", "pending");
   });
 });
+
+describe("fresh submissions pin the issue (owner directive 2026-10-30: 优先级永远派发新提交的)", () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const { Engine } = require("../src/opencode") as { Engine: any };
+
+  it("enqueueOrRun pins the issue so the fairness yield cannot veto it behind stale backlog rows", async () => {
+    const self = Object.create(Engine.prototype) as Record<string, any>;
+    self.stuckNudgeRounds = new Map();
+    self.processExitNudgeRounds = new Map();
+    self.running = new Set();
+    self.boostedIssueIds = new Set();
+    self.isSentinelSource = () => false;
+    self.isMergeGuardSource = () => false;
+    self.isReviewSource = () => false;
+    self.slotAvailable = () => true;
+    self.projectConcurrencyCache = new Map();
+    self.sessionKey = () => "gitea:acme/widgets#7@ework-daemon";
+    self.executeMessage = vi.fn(async () => {});
+    self.store = { createMessage: vi.fn(async () => ({ id: "m-9", sourceCommentId: undefined })) };
+    const tracker = { updateStatus: vi.fn(async () => {}) };
+
+    await Engine.prototype.enqueueOrRun.call(
+      self, session as never, { ...issue, id: "iss-1" }, "fresh prompt", tracker as never, ref,
+    );
+
+    expect((self.boostedIssueIds as Set<string>).has("iss-1")).toBe(true);
+    expect(self.executeMessage).toHaveBeenCalledTimes(1);
+  });
+});

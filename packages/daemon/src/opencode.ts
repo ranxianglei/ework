@@ -2324,6 +2324,16 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
 
     const msg = await this.store.createMessage(session.id, prompt, sourceCommentId, undefined, model);
 
+    // New submissions always dispatch first (owner directive 2026-10-30:
+    // "优先级永远派发新提交的"). Pin the issue like an owner boost so the
+    // fairness yield in dequeueOrIdle can never veto a fresh wake behind
+    // older backlog rows — pool-saturated lanes (merge-guard 8/8, ci 2/2)
+    // leave stale pendings that the yield misreads as deliverable older
+    // work, freezing every fresh claim (priority-inversion redux). The pin
+    // self-cleans: drainGlobalPending's boost loop deletes it once the
+    // issue has no pending message left (or is closed).
+    this.boostedIssueIds.add(issue.id);
+
     if (this.running.has(k)) {
       // PREEMPTIVE: Kill running process, new message takes priority
       log.info(`engine: preempting ${k} with new message ${msg.id.slice(0, 8)}`);
