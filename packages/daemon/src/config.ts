@@ -85,6 +85,9 @@ export const configSchema = z.object({
     // Still red at verify time → re-check after this interval (one round).
     ciVerifyRetryMs: z.coerce.number().int().positive().default(1_800_000),
   mergeGuardConcurrency: z.coerce.number().int().positive().default(4),
+  // Per-PR wake budget for the merge-guard lane; 0 = lane fully disabled
+  // (owner kill-switch 2026-10-31 — guard wakeups starved user tasks).
+  mergeGuardMaxAttempts: z.coerce.number().int().min(0).default(3),
   reviewConcurrency: z.coerce.number().int().positive().default(4),
     ciMasterFixMaxAttempts: z.coerce.number().int().positive().default(3),
     sentinelRotateMessages: z.coerce.number().int().positive().default(100),
@@ -182,6 +185,9 @@ function readWorkSection() {
     mergeGuardConcurrency: process.env.WORK_MERGE_GUARD_CONCURRENCY != null && process.env.WORK_MERGE_GUARD_CONCURRENCY !== ""
       ? Math.max(1, Math.trunc(Number(process.env.WORK_MERGE_GUARD_CONCURRENCY)))
       : 4,
+    mergeGuardMaxAttempts: process.env.WORK_MERGE_GUARD_MAX_ATTEMPTS != null && process.env.WORK_MERGE_GUARD_MAX_ATTEMPTS !== ""
+      ? Math.max(0, Math.trunc(Number(process.env.WORK_MERGE_GUARD_MAX_ATTEMPTS))) // 0 = lane fully disabled (owner kill-switch)
+      : 3, // default 3; zod default kept in sync
     reviewConcurrency: process.env.WORK_REVIEW_CONCURRENCY != null && process.env.WORK_REVIEW_CONCURRENCY !== ""
       ? Math.max(1, Math.trunc(Number(process.env.WORK_REVIEW_CONCURRENCY)))
       : 4,
