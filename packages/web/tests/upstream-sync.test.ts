@@ -533,7 +533,7 @@ test("merge-guard truth poll emits pr_unmergeable on dirty/behind transitions on
   us.project = { id: proj.id, owner: "ranxianglei", name: "billion-context" };
   us.mergeGuardTick = 0;
   us.mergeGuardCursor = 0;
-  us.mergeGuardLastEmit = new Map();
+  us.mergeGuardDocs = new Map();
   us.origin = "http://origin";
   let stale = false;
   // Guard reads PR truth via GraphQL pagination (REST fan-out retired for
@@ -588,7 +588,7 @@ test("merge-guard truth poll emits pr_unmergeable on dirty/behind transitions on
     // a PR older than 72h is outside the scan horizon
     posted.length = 0;
     stale = true;
-    us.mergeGuardLastEmit.clear();
+    us.mergeGuardDocs.clear();
     await mod.UpstreamSync.prototype.pollMergeGuard.call(us);
     expect(posted.length).toBe(0);
     await waitForWebhookQueueIdle(4_000).catch(() => {});
@@ -597,6 +597,148 @@ test("merge-guard truth poll emits pr_unmergeable on dirty/behind transitions on
   }
   const row: any = await db.get("SELECT upstream_merge_guard_at g FROM issues i JOIN (SELECT id FROM issues WHERE project_id = ? AND upstream_issue_number = 501) t ON i.id = t.id", [proj.id]);
   expect(row.g).toBeTruthy();
+  const gd = JSON.parse(row.g);
+  expect(gd.v).toBe(1);
+  expect(gd.cells["unmergeable:dirty"]).toBeTruthy();
+});
+
+describe("merge-guard wake-once fingerprints (audit RC1)", () => {
+  type NodeState = { status: string; head: string; base?: string | null };
+
+  async function mkGuard(prs: Record<number, NodeState>) {
+    const { getDB } = await import("../src/db");
+    const db = getDB();
+    const { createIssue, createProject } = await import("../src/store");
+    const proj = await createProject("wonce-owner", "fleet", "");
+    for (const n of Object.keys(prs)) {
+      await createIssue(proj.id, `[PR] pr ${n}`, "", "dog", { upstreamIssueNumber: Number(n), state: "open" });
+    }
+    const mod: any = await import("../src/upstream-sync");
+    const us = Object.create(mod.UpstreamSync.prototype);
+    Object.defineProperty(us, "isGithub", { value: true });
+    us.project = { id: proj.id, owner: "ranxianglei", name: "fleet" };
+    us.mergeGuardDocs = new Map();
+    us.origin = "http://origin";
+    // Fresh updatedAt every pass so the 72h horizon never masks the case.
+    us.fetchGql = async (_q: string, vars: Record<string, unknown>) => {
+      const updated = new Date(Date.now() - 3600_000).toISOString();
+      if (vars.end) return { repository: { pullRequests: { pageInfo: { hasNextPage: false }, nodes: [] } } };
+      return {
+        repository: {
+          pullRequests: {
+            pageInfo: { hasNextPage: false },
+            nodes: Object.entries(prs).map(([n, s]) => ({ number: Number(n), updatedAt: updated, mergeStateStatus: s.status, headRefOid: s.head, baseRefOid: s.base ?? null })),
+          },
+        },
+      };
+    };
+    us.fetchJson = async (_url: string) => ({}) as any;
+    const { createWebhook } = await import("../src/webhooks");
+    await createWebhook({ project_id: proj.id, url: "http://hook.local/w", secret: "s3cret" });
+    const posted: string[] = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (_url: any, init: any) => {
+      if (init?.body) posted.push(String(init.body));
+      return { ok: true, status: 200, text: async () => "" } as any;
+    }) as any;
+    // pollMergeGuardInner directly: each call is exactly one scan pass
+    // (pollMergeGuard's odd-tick gate would silently skip alternating ones).
+    const scan = async () => {
+      await mod.UpstreamSync.prototype.pollMergeGuardInner.call(us);
+      const { waitForWebhookQueueIdle } = await import("../src/webhooks");
+      await waitForWebhookQueueIdle(4_000).catch(() => {});
+    };
+    const guardCellFor = async (upNumber: number) => {
+      const row: any = await db.get("SELECT id, upstream_merge_guard_at c FROM issues WHERE upstream_issue_number = ?", [upNumber]);
+      return { id: row.id, raw: row.c as string | null };
+    };
+    return { db, proj, mod, us, prs, posted, scan, realFetch, guardCellFor };
+  }
+
+  const unmerge = (posted: string[], n: number) =>
+    posted.filter((b) => b.includes("pr_unmergeable") && b.includes(String(n)));
+
+  test("same state twice in quick succession → exactly 1 emit", async () => {
+    const g = await mkGuard({ 511: { status: "DIRTY", head: "aaa111aa", base: "bbb222bb" } });
+    try {
+      await g.scan();
+      expect(unmerge(g.posted, 511).length).toBe(1);
+      g.posted.length = 0;
+      await g.scan(); // same sha-shape seconds later → nothing changed, no wake
+      expect(unmerge(g.posted, 511).length).toBe(0);
+      expect(g.posted.length).toBe(0);
+    } finally {
+      globalThis.fetch = g.realFetch;
+    }
+  });
+
+  test("state unchanged after 7h → still 0 extra emits (wall clock no longer re-arms)", async () => {
+    const g = await mkGuard({ 512: { status: "BEHIND", head: "ccc333cc", base: "ddd444dd" } });
+    try {
+      await g.scan();
+      expect(unmerge(g.posted, 512).length).toBe(1);
+      // Age the PERSISTED fingerprint 7h while keeping its shape — the old
+      // 6h re-arm would fire again here; wake-once must stay silent.
+      const cell = await g.guardCellFor(512);
+      const doc = JSON.parse(cell.raw!);
+      doc.cells["unmergeable:behind"].at = Date.now() - 7 * 3600_000;
+      await g.db.exec(`UPDATE issues SET upstream_merge_guard_at = '${JSON.stringify(doc).replaceAll("'", "''")}' WHERE id = ${cell.id}`);
+      g.us.mergeGuardDocs.clear(); // re-seed from DB, like a web restart
+      g.posted.length = 0;
+      await g.scan();
+      expect(unmerge(g.posted, 512).length).toBe(0);
+      expect(g.posted.length).toBe(0);
+    } finally {
+      globalThis.fetch = g.realFetch;
+    }
+  });
+
+  test("base tip advances → immediate wake even seconds after the last emit", async () => {
+    const g = await mkGuard({ 513: { status: "DIRTY", head: "eee555ee", base: "fff666ff" } });
+    try {
+      await g.scan();
+      expect(unmerge(g.posted, 513).length).toBe(1);
+      g.posted.length = 0;
+      g.prs[513]!.base = "ggg777gg"; // master merged something → shape changed
+      await g.scan();
+      expect(unmerge(g.posted, 513).length).toBe(1); // woke immediately
+    } finally {
+      globalThis.fetch = g.realFetch;
+    }
+  });
+
+  test("legacy plain-timestamp cell parses without crash and converges to JSON", async () => {
+    const g = await mkGuard({ 514: { status: "DIRTY", head: "hhh888hh" } });
+    const cell = await g.guardCellFor(514);
+    // A pre-fingerprint build left a bare ISO timestamp in the column.
+    await g.db.exec(`UPDATE issues SET upstream_merge_guard_at = '2026-11-01T00:00:00.000Z' WHERE id = ${cell.id}`);
+    try {
+      await expect(g.scan()).resolves.toBeUndefined();
+      expect(unmerge(g.posted, 514).length).toBe(1); // unknown fingerprint → one convergence emit
+      const upgraded = await g.guardCellFor(514);
+      const doc = JSON.parse(upgraded.raw!);
+      expect(doc.v).toBe(1);
+      expect(doc.cells["unmergeable:dirty"]?.fp).toBe("nb:hhh888hh");
+      g.posted.length = 0;
+      await g.scan();
+      expect(g.posted.length).toBe(0);
+    } finally {
+      globalThis.fetch = g.realFetch;
+    }
+    // Direct parser edge cases (no scan involved).
+    const mod: any = await import("../src/upstream-sync");
+    expect(mod.parseMergeGuardDoc(null).cells).toEqual({});
+    expect(mod.parseMergeGuardDoc("").cells).toEqual({});
+    expect(mod.parseMergeGuardDoc("2026-11-01T00:00:00.000Z").cells).toEqual({});
+    expect(mod.parseMergeGuardDoc("{not json").cells).toEqual({});
+    expect(mod.parseMergeGuardDoc("{} ").cells).toEqual({});
+    const p = mod.parseMergeGuardDoc(JSON.stringify({ v: 1, cells: { ci: { at: 123, fp: "x" }, junk: { at: "bad", fp: 9 } } }));
+    expect(p.cells["ci"]).toEqual({ at: 123, fp: "x" });
+    expect(p.cells["junk"]).toBeUndefined();
+    expect(mod.guardFingerprint("ci", "abc")).toBe("abc");
+    expect(mod.guardFingerprint("unmergeable:behind", "abc", "def")).toBe("def:abc");
+    expect(mod.guardFingerprint("unmergeable:dirty", undefined)).toBe("nb:nosha");
+  });
 });
 
 test("applyCiState persists the global check cache workers read instead of gh-polling (owner directive 2026-10-27)", async () => {
