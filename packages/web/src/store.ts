@@ -553,9 +553,13 @@ export async function markIssueAnnounced(issueId: number): Promise<void> {
 
 export async function getUnannouncedIssues(projectId: number, olderThanMs: number, limit: number): Promise<IssueRow[]> {
   const cutoff = new Date(Date.now() - olderThanMs).toISOString();
+  // Floor at 48h: with confirm-then-stamp (2026-10-31), un-stamped rows are
+  // recent losses worth retrying; ancient rows were stamped by migration or
+  // are intentionally out of scope — sweeping them would storm the daemon.
+  const floor = new Date(Date.now() - 48 * 3_600_000).toISOString();
   return getDB().all(
-    "SELECT * FROM {{issues}} WHERE project_id = ? AND state = 'open' AND announced_at IS NULL AND created_at < ? AND upstream_issue_number IS NOT NULL AND kind = 'issue' ORDER BY created_at ASC LIMIT ?",
-    [projectId, cutoff, limit],
+    "SELECT * FROM {{issues}} WHERE project_id = ? AND state = 'open' AND announced_at IS NULL AND created_at < ? AND created_at > ? AND upstream_issue_number IS NOT NULL AND kind IN ('issue','pr') ORDER BY created_at ASC LIMIT ?",
+    [projectId, cutoff, floor, limit],
   );
 }
 

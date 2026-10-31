@@ -28,6 +28,7 @@ import {
   resolveModel,
   listLabelsForIssue,
   getUserByLogin,
+  markIssueAnnounced,
   type UserRow,
   type IssueRow,
   type ProjectRow,
@@ -819,7 +820,7 @@ async function deliver(
   webhook: WebhookRow,
   event: WebhookEventName,
   rawBody: string
-): Promise<void> {
+): Promise<boolean> {
   await acquireDeliverySlot();
   try {
     for (const attempt of RETRY_DELAYS_MS) {
@@ -829,9 +830,10 @@ async function deliver(
       const result = await postWithTimeout(webhook.url, rawBody, headers);
       const success = result.status !== null && result.status >= 200 && result.status < 300;
       await recordDelivery(webhook.id, event, deliveryUuid, rawBody, result);
-      if (success) return;
+      if (success) return true;
       // 410 Gone: receiver explicitly says "stop sending" — honor it, no retry.
-      if (result.status === 410) return;
+      // Counted as confirmed so the announcement stamp can proceed.
+      if (result.status === 410) return true;
     }
     log.warn("webhook: gave up after retries", {
       attempts: RETRY_DELAYS_MS.length,
@@ -839,6 +841,7 @@ async function deliver(
       url: webhook.url,
       event,
     });
+    return false;
   } finally {
     releaseDeliverySlot();
   }
@@ -848,15 +851,14 @@ async function fanOut(
   projectId: number,
   event: WebhookEventName,
   rawBody: string
-): Promise<void> {
+): Promise<boolean> {
   const webhooks = await getDB().all<WebhookRow>(
     "SELECT * FROM {{webhooks}} WHERE project_id = ? AND active = 1",
     [projectId]
   );
-  for (const wh of webhooks) {
-    if (!parseEvents(wh.events).includes(event)) continue;
-    void deliver(wh, event, rawBody);
-  }
+  const targets = webhooks.filter((wh) => parseEvents(wh.events).includes(event));
+  const results = await Promise.all(targets.map((wh) => deliver(wh, event, rawBody)));
+  return results.some(Boolean);
 }
 
 // ─── Public emit API ─────────────────────────────────────────
@@ -896,7 +898,16 @@ export async function emitIssueEvent(
       payload.issue.user = buildUserFromRow(authorUser, origin);
     }
     const rawBody = JSON.stringify(payload);
-    await fanOut(projectId, "issues", rawBody);
+    const delivered = await fanOut(projectId, "issues", rawBody);
+    if (delivered) {
+      // Confirm-then-stamp: announced_at must mean "a receiver actually got
+      // the opened event". Stamping before confirmation left a permanent
+      // blind spot (2026-10-31: seven opens were imported while receivers
+      // were down/unreachable, stamped at import time, never retried).
+      await markIssueAnnounced(issueId);
+    } else {
+      log.error("webhook: emitIssueEvent reached no receiver — leaving un-announced so the sweep retries", { projectId, issueId, action });
+    }
   } catch (e) {
     log.error("webhook: emitIssueEvent failed", {
       err: e as Error,
