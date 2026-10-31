@@ -2630,6 +2630,23 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
   }
 
   private async execProcess(k: string, session: OpSession, issue: Issue, msg: Message) {
+    // Kill-switch guard (owner hold 2026-10-31): with cap 0 the auto-lane is
+    // fully disabled — including messages already queued or recovered across
+    // restarts, which never pass the ingestion-time budget check a second time.
+    // Ingestion (handleCiFailed / handleMergeConflict) also refuses new events.
+    const src = msg.sourceCommentId ?? "";
+    const laneOff =
+      (src.startsWith("ci-fail-") && this.cfg.work.ciFixMaxAttempts === 0) ||
+      (src.startsWith("merge-conflict-") && this.cfg.work.conflictFixMaxAttempts === 0);
+    if (laneOff) {
+      log.info(
+        `engine: execProcess skipped for ${k} — ${src.split("-").slice(0, 2).join("-")} lane disabled by owner config (cap=0), settling msg ${msg.id.slice(0, 8)}`,
+      );
+      await this.store.updateMessageStatus(msg.id, "superseded", "lane disabled by owner config (cap=0)");
+      await this.clearRuntimeState(k);
+      this.running.delete(k);
+      return;
+    }
     // Orphan guard: the session row may have been removed (GC/recovery) while this
     // spawn was queued — spawning against it creates an unmanaged process no
     // watchdog ever reaps (the dsh#133 orphan family).
