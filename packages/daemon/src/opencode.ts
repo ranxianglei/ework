@@ -4167,7 +4167,15 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
 
     const nmTtlMs = this.cfg.opencode.nodeModulesTtlDays * 24 * 60 * 60 * 1000;
     const wdTtlMs = this.cfg.opencode.workdirTtlDays * 24 * 60 * 60 * 1000;
-    if ((nmTtlMs > 0 || wdTtlMs > 0) && Date.now() - this.lastWorkdirGcAt > 24 * 60 * 60 * 1000) {
+    if (nmTtlMs > 0 || wdTtlMs > 0) {
+      // Pressure-aware cadence (incident 2026-10-31 ENOSPC, owner-approved):
+      // the fixed 24h cycle let flood-era churn accumulate to a full disk
+      // before the first pickup. Tighten to 5min while free space < 30G,
+      // relax back to 24h once headroom returns.
+      const freeMb = freeSpaceMb(this.cfg.opencode.baseWorkdir);
+      const gcIntervalMs =
+        freeMb !== null && freeMb < 30_720 ? 5 * 60 * 1000 : 24 * 60 * 60 * 1000;
+      if (Date.now() - this.lastWorkdirGcAt > gcIntervalMs) {
       this.lastWorkdirGcAt = Date.now();
       try {
         // busy cwds cover live processes from ANY daemon sharing baseWorkdir.
@@ -4189,6 +4197,7 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
         }
       } catch (err) {
         log.warn("workdir-gc failed:", (err as Error).message);
+      }
       }
     }
 
