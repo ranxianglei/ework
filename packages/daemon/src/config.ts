@@ -168,7 +168,7 @@ function readWorkSection() {
       ? Math.min(8, Math.max(1, Math.trunc(Number(process.env.WORK_CI_MAX_CONCURRENT))))
       : 1,
     ciFixMaxAttempts: process.env.WORK_CI_FIX_MAX_ATTEMPTS != null && process.env.WORK_CI_FIX_MAX_ATTEMPTS !== ""
-      ? Math.max(1, Math.trunc(Number(process.env.WORK_CI_FIX_MAX_ATTEMPTS)))
+      ? Math.max(0, Math.trunc(Number(process.env.WORK_CI_FIX_MAX_ATTEMPTS))) // 0 = lane fully disabled (owner kill-switch)
       : 2,
     ciVerifyDelayMs: process.env.WORK_CI_VERIFY_DELAY_MS != null && process.env.WORK_CI_VERIFY_DELAY_MS !== ""
       ? Math.max(1, Math.trunc(Number(process.env.WORK_CI_VERIFY_DELAY_MS)))
@@ -186,7 +186,7 @@ function readWorkSection() {
       ? Math.max(1, Math.trunc(Number(process.env.WORK_REVIEW_CONCURRENCY)))
       : 4,
     conflictFixMaxAttempts: process.env.WORK_CONFLICT_FIX_MAX_ATTEMPTS != null && process.env.WORK_CONFLICT_FIX_MAX_ATTEMPTS !== ""
-      ? Math.max(1, Math.trunc(Number(process.env.WORK_CONFLICT_FIX_MAX_ATTEMPTS)))
+      ? Math.max(0, Math.trunc(Number(process.env.WORK_CONFLICT_FIX_MAX_ATTEMPTS))) // 0 = lane fully disabled (owner kill-switch)
       : 2,
     autoLaneWindowMs: process.env.WORK_AUTO_LANE_WINDOW_MS != null && process.env.WORK_AUTO_LANE_WINDOW_MS !== ""
       ? Math.max(1, Math.trunc(Number(process.env.WORK_AUTO_LANE_WINDOW_MS)))
