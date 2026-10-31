@@ -644,10 +644,19 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
       if (!owner || !repo || !number) return json({ error: "owner, repo, number required" }, 400);
       const project = await getProject(owner, repo);
       if (!project) return json({ error: "unknown project" }, 404);
-      const row = await getDB().get<{ upstream_checks: string | null }>(
+      let row = await getDB().get<{ upstream_checks: string | null }>(
         "SELECT upstream_checks FROM {{issues}} WHERE project_id = ? AND upstream_issue_number = ? AND kind = 'issue' LIMIT 1",
         [project.id, Number(number)],
       );
+      if (!row) {
+        // Fallback (audit RC3): daemon lanes address issues by LOCAL mirror
+        // number, not the upstream PR number. Restricted to mirror rows
+        // (upstream_issue_number set), so the lookup stays unambiguous.
+        row = await getDB().get<{ upstream_checks: string | null }>(
+          "SELECT upstream_checks FROM {{issues}} WHERE project_id = ? AND number = ? AND kind = 'issue' AND upstream_issue_number IS NOT NULL LIMIT 1",
+          [project.id, Number(number)],
+        );
+      }
       if (!row?.upstream_checks) return json({ error: "no cached checks" }, 404);
       try {
         const snap = JSON.parse(row.upstream_checks);

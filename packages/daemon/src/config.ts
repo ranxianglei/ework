@@ -78,6 +78,12 @@ export const configSchema = z.object({
     // policy — at most N dispatches per PR within the window; beyond that the
     // lane degrades (one issue comment, no dispatch) until the window expires.
     ciFixMaxAttempts: z.coerce.number().int().positive().default(3), // raised 2→3 with real-attempt counting (2026-10-30 postmortem)
+    // CI-lane post-fix verification (audit RC3): once a lane message reaches
+    // done, wait this long before asking the web mirror whether the checks
+    // actually turned green.
+    ciVerifyDelayMs: z.coerce.number().int().positive().default(900_000),
+    // Still red at verify time → re-check after this interval (one round).
+    ciVerifyRetryMs: z.coerce.number().int().positive().default(1_800_000),
   mergeGuardConcurrency: z.coerce.number().int().positive().default(4),
   reviewConcurrency: z.coerce.number().int().positive().default(4),
     ciMasterFixMaxAttempts: z.coerce.number().int().positive().default(3),
@@ -162,8 +168,14 @@ function readWorkSection() {
       ? Math.min(8, Math.max(1, Math.trunc(Number(process.env.WORK_CI_MAX_CONCURRENT))))
       : 1,
     ciFixMaxAttempts: process.env.WORK_CI_FIX_MAX_ATTEMPTS != null && process.env.WORK_CI_FIX_MAX_ATTEMPTS !== ""
-      ? Math.max(1, Math.trunc(Number(process.env.WORK_CI_FIX_MAX_ATTEMPTS)))
+      ? Math.max(0, Math.trunc(Number(process.env.WORK_CI_FIX_MAX_ATTEMPTS))) // 0 = lane fully disabled (owner kill-switch)
       : 2,
+    ciVerifyDelayMs: process.env.WORK_CI_VERIFY_DELAY_MS != null && process.env.WORK_CI_VERIFY_DELAY_MS !== ""
+      ? Math.max(1, Math.trunc(Number(process.env.WORK_CI_VERIFY_DELAY_MS)))
+      : 900_000,
+    ciVerifyRetryMs: process.env.WORK_CI_VERIFY_RETRY_MS != null && process.env.WORK_CI_VERIFY_RETRY_MS !== ""
+      ? Math.max(1, Math.trunc(Number(process.env.WORK_CI_VERIFY_RETRY_MS)))
+      : 1_800_000,
     ciMasterFixMaxAttempts: process.env.WORK_CI_MASTER_MAX_ATTEMPTS != null && process.env.WORK_CI_MASTER_MAX_ATTEMPTS !== ""
       ? Math.max(1, Math.trunc(Number(process.env.WORK_CI_MASTER_MAX_ATTEMPTS)))
       : 3,
@@ -174,7 +186,7 @@ function readWorkSection() {
       ? Math.max(1, Math.trunc(Number(process.env.WORK_REVIEW_CONCURRENCY)))
       : 4,
     conflictFixMaxAttempts: process.env.WORK_CONFLICT_FIX_MAX_ATTEMPTS != null && process.env.WORK_CONFLICT_FIX_MAX_ATTEMPTS !== ""
-      ? Math.max(1, Math.trunc(Number(process.env.WORK_CONFLICT_FIX_MAX_ATTEMPTS)))
+      ? Math.max(0, Math.trunc(Number(process.env.WORK_CONFLICT_FIX_MAX_ATTEMPTS))) // 0 = lane fully disabled (owner kill-switch)
       : 2,
     autoLaneWindowMs: process.env.WORK_AUTO_LANE_WINDOW_MS != null && process.env.WORK_AUTO_LANE_WINDOW_MS !== ""
       ? Math.max(1, Math.trunc(Number(process.env.WORK_AUTO_LANE_WINDOW_MS)))

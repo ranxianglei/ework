@@ -207,6 +207,55 @@ const mergeGuardCooldownUntil = new Map<number, number>();
 const reprobeDrainThrottle = { lastAt: 0 };
 const githubCircuit = { until: 0 };
 
+// ─── Merge-guard wake-once fingerprints (audit RC1(a)/(c)) ──────────────────
+// Emission memory lives in issues.upstream_merge_guard_at as JSON
+// ({v:1, cells:{<family>:{at,fp}}}) so a daemon/web restart cannot replay
+// yesterday's wakes. A family re-emits ONLY when its fingerprint differs from
+// the one last emitted — master forward / new head wakes immediately, and a
+// steady state never re-wakes (the old 6h wall-clock re-arm fired up to 4x/day
+// per PR even when nothing changed). Legacy cells hold a plain ISO timestamp
+// (pre-fingerprint builds): they parse as "no fingerprints known", which costs
+// at most one convergence emit per family on the first scan after rollout,
+// after which the JSON shape takes over. Corrupt cells reset the same way.
+export interface MergeGuardCell { at: number; fp: string }
+export interface MergeGuardDoc { v: number; cells: Record<string, MergeGuardCell> }
+
+export function parseMergeGuardDoc(raw: string | null | undefined): MergeGuardDoc {
+  const empty: MergeGuardDoc = { v: 1, cells: {} };
+  if (!raw) return empty;
+  const s = String(raw).trim();
+  if (s.startsWith("{")) {
+    try {
+      const p = JSON.parse(s) as { cells?: unknown };
+      if (p && typeof p === "object" && p.cells && typeof p.cells === "object") {
+        const cells: Record<string, MergeGuardCell> = {};
+        for (const [k, c] of Object.entries(p.cells as Record<string, unknown>)) {
+          const cc = c as { at?: unknown; fp?: unknown };
+          if (cc && typeof cc === "object" && typeof cc.at === "number" && Number.isFinite(cc.at) && typeof cc.fp === "string") {
+            cells[k] = { at: cc.at, fp: cc.fp };
+          }
+        }
+        return { v: 1, cells };
+      }
+    } catch {
+      /* corrupt cell → treat as fresh */
+    }
+    return empty;
+  }
+  // Legacy plain-timestamp cell: it records WHEN something was emitted but not
+  // WHAT state-shape — with no fingerprint there is nothing to compare against.
+  return empty;
+}
+
+/** Per-family fingerprint = the state SHAPE, not the wall clock.
+ * ci/review keys off the head sha (a new head is the thing that needs a new
+ * fix attempt); unmergeable:* keys off base-tip+head so a master forward
+ * behind a stable head produces a fresh wake immediately. */
+export function guardFingerprint(family: string, headSha: string | undefined, baseSha?: string | undefined): string {
+  if (family.startsWith("unmergeable")) return `${baseSha ?? "nb"}:${headSha ?? "nosha"}`;
+  return headSha ?? "nosha";
+}
+
 export class UpstreamSync {
   private readonly sync: UpstreamSyncRow;
   private readonly project: ProjectRow;
@@ -532,7 +581,9 @@ export class UpstreamSync {
   // dirty→conflict, behind→needs-master-sync, blocked+red→CI fix; blocked
   // with green checks = review pending (human state, never wakes).
   private mergeGuardTick = 0;
-  private mergeGuardLastEmit = new Map<number, { state: string; at: number }>();
+  // Per-PR guard doc cache over issues.upstream_merge_guard_at (see
+  // parseMergeGuardDoc). issueId 0 = PR has no mirrored row (emit skipped).
+  private mergeGuardDocs = new Map<number, { issueId: number; doc: MergeGuardDoc }>();
 
   private async pollMergeGuard(): Promise<void> {
     this.mergeGuardTick++;
@@ -575,7 +626,7 @@ export class UpstreamSync {
     // alone burned ~24 req/min against the owner's 10 req/min ceiling.
     // GraphQL batches 100 PRs of mergeableState per query on its separate
     // 5000-point/h quota, so the guard now reads ALL open PRs per pass.
-    const pulls: { number?: number; updated_at?: string; mergeable_state?: string; head?: { sha?: string } }[] = [];
+    const pulls: { number?: number; updated_at?: string; mergeable_state?: string; head?: { sha?: string }; base?: { sha?: string } }[] = [];
     let endCursor: string | null = null;
     for (let page = 0; page < 4; page++) {
       type GqlPulls = {
@@ -585,12 +636,12 @@ export class UpstreamSync {
           // GraphQL field is mergeStateStatus (BEHIND/BLOCKED/CLEAN/DIRTY) —
           // REST's mergeable_state maps to it; `mergeableState` doesn't exist
           // in the GraphQL schema (26h guard-blind window 2026-10-28/29).
-          nodes?: { number: number; updatedAt: string; mergeStateStatus?: string; headRefOid?: string }[];
+          nodes?: { number: number; updatedAt: string; mergeStateStatus?: string; headRefOid?: string; baseRefOid?: string }[];
         };
         };
       };
       const data: GqlPulls | null = await this.fetchGql<GqlPulls>(
-        `query($o: String!, $r: String!, $end: String) { repository(owner: $o, name: $r) { pullRequests(first: 100, states: OPEN, after: $end) { pageInfo { endCursor hasNextPage } nodes { number updatedAt mergeStateStatus headRefOid } } } }`,
+        `query($o: String!, $r: String!, $end: String) { repository(owner: $o, name: $r) { pullRequests(first: 100, states: OPEN, after: $end) { pageInfo { endCursor hasNextPage } nodes { number updatedAt mergeStateStatus headRefOid baseRefOid } } } }`,
         { o: this.sync?.upstream_owner ?? this.project.owner, r: this.sync?.upstream_repo ?? this.project.name, end: endCursor },
       );
       type PullConn = NonNullable<NonNullable<GqlPulls["repository"]>["pullRequests"]>;
@@ -601,6 +652,7 @@ export class UpstreamSync {
           updated_at: node.updatedAt,
           mergeable_state: String(node.mergeStateStatus ?? "").toLowerCase(),
           head: node.headRefOid ? { sha: node.headRefOid } : undefined,
+          base: node.baseRefOid ? { sha: node.baseRefOid } : undefined,
         });
       }
       endCursor = conn?.pageInfo?.endCursor ?? null;
@@ -615,100 +667,132 @@ export class UpstreamSync {
         const state = String(pr?.mergeable_state ?? "");
         if (!Number.isInteger(n) || n <= 0 || updatedMs < horizon) continue;
         let reason = "";
+        const headSha = pr.head?.sha;
         if (state === "dirty") reason = "conflict";
         else if (state === "behind") reason = "behind";
         else if (state === "blocked") {
           // Truth-driven wake covers ALL unmergeable states (owner directive
-          // 2026-10-26). "blocked" mixes review-pending (green checks — never
-          // wake) with red checks. The old ci probe is stream-gated and its
-          // per-sha attempt budget expires, so an idle red PR (#4485: 3-day-old
-          // sha, attempts 2/2, nobody watching) was a coverage hole. One extra
-          // check-runs GET per blocked PR, throttled by the same 6h window.
-          const lastB = this.mergeGuardLastEmit.get(n);
-          const nowB = Date.now();
-          if (!(lastB && lastB.state === state && nowB - lastB.at < 6 * 3600_000)) {
-            const sha = (pr as { head?: { sha?: string } }).head?.sha;
-            if (sha) {
-              try {
+          // 2026-10-26). "blocked" mixes review-pending (green checks — review
+          // lane) with red checks (ci lane). One extra check-runs GET per
+          // blocked PR — now gated on fingerprint movement instead of the 6h
+          // wall clock (RC1): a steady-state blocked PR costs ZERO requests,
+          // while a new head sha re-probes immediately (the 2026-10-28 rate-
+          // budget incident made unconditional per-pass probes unaffordable).
+          if (headSha) {
+            try {
+              const e = await this.ensureMergeGuardDoc(n);
+              const ciMoved = e.doc.cells["ci"]?.fp !== headSha;
+              const rvMoved = e.doc.cells["review"]?.fp !== headSha;
+              if (ciMoved || rvMoved) {
                 const cr = await this.fetchJson<{ total_count?: number; check_runs?: { status?: string; conclusion?: string }[] } | null>(
-                  `/commits/${sha}/check-runs`,
+                  `/commits/${headSha}/check-runs`,
                 );
                 const runs = cr?.check_runs ?? [];
                 const allDone = runs.length > 0 && runs.every((r) => r.status === "completed");
                 const anyFail = runs.some((r) => r.conclusion === "failure");
-                if (allDone && anyFail) {
-                  const issue2 = await getIssueByUpstreamNumber(this.project.id, n);
-                  if (issue2) {
-                    this.mergeGuardLastEmit.set(n, { state, at: nowB });
-                    await getDB().run(
-                      "UPDATE issues SET upstream_merge_guard_at = ? WHERE id = ?",
-                      [new Date(nowB).toISOString(), issue2.id],
-                    );
+                if (allDone && anyFail && ciMoved && e.issueId) {
+                  const issueId = e.issueId;
+                  await this.tryEmitMergeGuard(e, "ci", headSha, async () => {
                     const { emitCiFailedEvent } = await import("./webhooks");
                     await emitCiFailedEvent(
                       this.project.id,
-                      issue2.id,
+                      issueId,
                       this.origin,
-                      sha,
+                      headSha,
                       runs
                         .filter((r) => r.conclusion === "failure")
                         .map((r) => ({ name: String((r as { name?: string }).name ?? "check"), html_url: String((r as { html_url?: string }).html_url ?? ""), conclusion: "failure" })),
                     );
-                    bad++;
-                    continue;
-                  }
+                  });
+                  bad++;
+                } else if (allDone && !anyFail && rvMoved && e.issueId) {
                   // Green blocked = checks pass but the PR awaits review.
                   // Owner directive 2026-10-28: reviews are fleet work too —
                   // emit review_pending so the review lane picks it up
                   // (#4982 sat "awaiting review" a full night with nobody
-                  // watching; previously this state was "never wake").
-                  if (allDone && !anyFail) {
-                    const issueR = await getIssueByUpstreamNumber(this.project.id, n);
-                    if (issueR) {
-                      this.mergeGuardLastEmit.set(n, { state: "review", at: nowB });
-                      await getDB().run(
-                        "UPDATE issues SET upstream_merge_guard_at = ? WHERE id = ?",
-                        [new Date(nowB).toISOString(), issueR.id],
-                      );
-                      const { emitPrReviewPendingEvent } = await import("./webhooks");
-                      await emitPrReviewPendingEvent(this.project.id, issueR.id, this.origin ?? "http://upstream.invalid", sha);
-                      log.info(`upstream-sync: merge guard — PR#${n} blocked+green (review pending) emitted`);
-                    }
-                  }
+                  // watching).
+                  const issueId = e.issueId;
+                  await this.tryEmitMergeGuard(e, "review", headSha, async () => {
+                    const { emitPrReviewPendingEvent } = await import("./webhooks");
+                    await emitPrReviewPendingEvent(this.project.id, issueId, this.origin ?? "http://upstream.invalid", headSha);
+                    log.info(`upstream-sync: merge guard — PR#${n} blocked+green (review pending) emitted`);
+                  });
                 }
-              } catch {
-                // check-runes failure must not abort the pass
               }
+            } catch {
+              // check-runes failure must not abort the pass
             }
           }
-          this.mergeGuardLastEmit.delete(n);
           continue;
         }
-        if (!reason) {
-          this.mergeGuardLastEmit.delete(n);
-          continue;
-        }
-        const last = this.mergeGuardLastEmit.get(n);
-        const now = Date.now();
-        if (last && last.state === state && now - last.at < 6 * 3600_000) continue;
-        const issue = await getIssueByUpstreamNumber(this.project.id, n);
-        if (!issue) continue;
-        this.mergeGuardLastEmit.set(n, { state, at: now });
-        await getDB().run(
-          "UPDATE issues SET upstream_merge_guard_at = ? WHERE id = ?",
-          [new Date(now).toISOString(), issue.id],
-        );
-        const { emitPrUnmergeableEvent } = await import("./webhooks");
-        await emitPrUnmergeableEvent(this.project.id, issue.id, this.origin ?? "http://upstream.invalid", state, reason);
-        log.info(
-          `upstream-sync: merge guard — PR#${n} ${state} (${reason}) emitted`,
-        );
+        if (!reason) continue;
+        const e = await this.ensureMergeGuardDoc(n);
+        const family = `unmergeable:${state}`;
+        const fp = guardFingerprint(family, headSha, pr.base?.sha);
+        if (!e.issueId || e.doc.cells[family]?.fp === fp) continue;
+        const issueId = e.issueId;
+        await this.tryEmitMergeGuard(e, family, fp, async () => {
+          const { emitPrUnmergeableEvent } = await import("./webhooks");
+          await emitPrUnmergeableEvent(this.project.id, issueId, this.origin ?? "http://upstream.invalid", state, reason);
+          log.info(
+            `upstream-sync: merge guard — PR#${n} ${state} (${reason}) emitted`,
+          );
+        });
       } catch (err) {
         log.warn(`upstream-sync: merge-guard item failed for PR#${pr?.number}: ${String(err)}`);
       }
     }
     bad += pulls.filter((p) => p?.mergeable_state === "dirty" || p?.mergeable_state === "behind").length;
     if (bad > 0) log.info(`upstream-sync: merge guard scan: ${pulls.length} scanned, ${bad} bad`);
+  }
+
+  /** Lazy per-PR seed of the guard doc cache from issues.upstream_merge_guard_at
+   * (one SELECT per PR per process life, not per pass). */
+  private async ensureMergeGuardDoc(n: number): Promise<{ issueId: number; doc: MergeGuardDoc }> {
+    let e = this.mergeGuardDocs.get(n);
+    if (!e) {
+      let issueId = 0;
+      let raw: string | null = null;
+      const row = await getDB().get<{ id: number; cell: string | null }>(
+        "SELECT id, upstream_merge_guard_at AS cell FROM issues WHERE project_id = ? AND upstream_issue_number = ? LIMIT 1",
+        [this.project.id, n],
+      );
+      if (row) {
+        issueId = row.id;
+        raw = row.cell;
+      }
+      e = { issueId, doc: parseMergeGuardDoc(raw) };
+      this.mergeGuardDocs.set(n, e);
+    }
+    return e;
+  }
+
+  /** Fingerprint-gated emit (RC1): fires iff this family's last-emitted
+   * fingerprint differs from fp (or none was ever recorded), persists the new
+   * cell BEFORE emitting so a crash cannot double-wake, then runs emitFn.
+   * Returns whether it emitted. */
+  private async tryEmitMergeGuard(
+    e: { issueId: number; doc: MergeGuardDoc },
+    family: string,
+    fp: string,
+    emitFn: () => Promise<void>,
+  ): Promise<boolean> {
+    const cell = e.doc.cells[family];
+    if (cell && cell.fp === fp) return false;
+    const at = Date.now();
+    e.doc.cells[family] = { at, fp };
+    if (e.issueId) {
+      try {
+        await getDB().run(
+          "UPDATE issues SET upstream_merge_guard_at = ? WHERE id = ?",
+          [JSON.stringify(e.doc), e.issueId],
+        );
+      } catch (err) {
+        log.warn(`upstream-sync: merge-guard persist failed: ${String(err)}`);
+      }
+    }
+    await emitFn();
+    return true;
   }
 
   private async clearMergeProbesIfMasterMoved(): Promise<void> {

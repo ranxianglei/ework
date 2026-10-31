@@ -568,6 +568,17 @@ export class Store {
     return res?.n ?? 0;
   }
 
+  /** Audit RC3 (restart rebuild): lane messages that recently reached done,
+   * with the owning scope attached so the ci-verify queue can be
+   * reconstructed from scratch after a daemon restart. */
+  async listRecentLaneDoneMessages(sinceIso: string, limit = 500): Promise<{ sourceCommentId: string; scopeKey: string; doneAtMs: number }[]> {
+    const rows = await getDB().all<{ scid: string | null; scope: string; updatedAt: string }>(
+      "SELECT m.source_comment_id AS scid, i.tracker_scope_key AS scope, m.updated_at AS updatedAt FROM {{messages}} m JOIN {{op_sessions}} s ON s.uid = m.session_id JOIN {{issues}} i ON i.uid = s.issue_id WHERE m.status = 'done' AND m.source_comment_id IS NOT NULL AND m.updated_at >= ? ORDER BY m.updated_at DESC LIMIT ?",
+      [sinceIso, limit],
+    );
+    return rows.filter((r) => r.scid && r.scope).map((r) => ({ sourceCommentId: r.scid as string, scopeKey: r.scope, doneAtMs: Date.parse(r.updatedAt) || Date.now() }));
+  }
+
   async getMessagesForSession(sessionId: string): Promise<Message[]> {
     const rows = await getDB().all<MessageRow>(
       "SELECT * FROM {{messages}} WHERE session_id = ? ORDER BY created_at DESC",
