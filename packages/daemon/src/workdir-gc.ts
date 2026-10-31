@@ -188,6 +188,23 @@ export function shouldBlockSpawn(freeMb: number | null, minFreeMb: number): bool
   return freeMb < minFreeMb;
 }
 
+/** Tight-disk threshold for the pressure-aware GC cadence (30 GB, in MB). */
+export const GC_TIGHT_FREE_MB = 30_720;
+/** GC interval while free space is below the tight threshold (5 min). */
+export const GC_TIGHT_INTERVAL_MS = 5 * 60 * 1000;
+/** Baseline GC interval when disk has headroom or cannot be measured (24 h). */
+export const GC_BASELINE_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Pressure-aware GC cadence (incident 2026-10-31 ENOSPC, owner-approved):
+ * tight disk (measured free < 30G) → run the GC pass every 5 minutes;
+ * healthy disk keeps the daily baseline. null (df unavailable) means
+ * "unknown", never "tight" — it falls back to the baseline.
+ */
+export function gcIntervalMs(freeMb: number | null): number {
+  return freeMb !== null && freeMb < GC_TIGHT_FREE_MB ? GC_TIGHT_INTERVAL_MS : GC_BASELINE_INTERVAL_MS;
+}
+
 export async function purgeStaleNodeModules(
   root: string,
   ttlMs: number,
