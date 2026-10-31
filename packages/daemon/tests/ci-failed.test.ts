@@ -68,7 +68,7 @@ describe("execProcess ci-fix cap", () => {
       updateMessageStatus,
     };
     self.gateChecker = gateChecker;
-    self.cfg = { work: { ciFixMaxAttempts: 3, conflictFixMaxAttempts: 3 } };
+    self.cfg = { work: { ciFixMaxAttempts: 3, conflictFixMaxAttempts: 3, mergeGuardMaxAttempts: 3 } };
     self.ciMaxConcurrent = 1;
     self.conflictMaxConcurrent = 1;
     self.maxConcurrent = 1;
@@ -124,6 +124,13 @@ describe("execProcess ci-fix cap", () => {
     await Engine.prototype.execProcess.call(conflictOff.self, "k6", session, issue, { id: "m6", uid: "m6", sourceCommentId: "merge-conflict-42-abc" });
     expect(conflictOff.updateMessageStatus).toHaveBeenCalledWith("m6", "superseded", "lane disabled by owner config (cap=0)");
     expect(conflictOff.gateChecker).not.toHaveBeenCalled();
+
+    const guardOff = makeSelf(0);
+    (guardOff.self as Record<string, unknown>).cfg = { work: { ciFixMaxAttempts: 3, conflictFixMaxAttempts: 3, mergeGuardMaxAttempts: 0 } };
+    (guardOff.self as Record<string, unknown>).clearRuntimeState = vi.fn(async () => {});
+    await Engine.prototype.execProcess.call(guardOff.self, "k8", session, issue, { id: "m8", uid: "m8", sourceCommentId: "merge-guard-42-1700000000000" });
+    expect(guardOff.updateMessageStatus).toHaveBeenCalledWith("m8", "superseded", "lane disabled by owner config (cap=0)");
+    expect(guardOff.gateChecker).not.toHaveBeenCalled();
 
     // user-facing messages are never touched by the switch
     const userMsg = makeSelf(0);

@@ -80,4 +80,17 @@ describe("merge guard: truth-driven wake (owner directive 2026-10-26)", () => {
     );
     expect(enqueueOrRun).not.toHaveBeenCalled();
   });
+
+  test("kill-switch: cap 0 drops wakes at ingestion — no row, no session, no dispatch (owner hold 2026-10-31)", async () => {
+    const { self, enqueueOrRun, createSession } = makeSelf();
+    (self as Record<string, unknown>).cfg = {
+      bot: { username: "ework-daemon" },
+      daemon: { wakeLogins: ["ranxianglei"], noWakeLogins: [], nonWakingAuthors: [] },
+      work: { mergeGuardMaxAttempts: 0 },
+    };
+    const t = { createComment: vi.fn(async () => ({ id: "c1" })), getTrackerInstructions: () => ({ issueRef: "x" }) };
+    await call(self, t, "dirty", "conflict");
+    expect(createSession).not.toHaveBeenCalled();
+    expect(enqueueOrRun).not.toHaveBeenCalled();
+  });
 });

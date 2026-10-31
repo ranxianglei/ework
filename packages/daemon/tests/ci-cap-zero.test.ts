@@ -14,6 +14,7 @@ const KEYS = [
   "BOT_TOKEN",
   "WORK_CI_FIX_MAX_ATTEMPTS",
   "WORK_CONFLICT_FIX_MAX_ATTEMPTS",
+  "WORK_MERGE_GUARD_MAX_ATTEMPTS",
 ] as const;
 
 let saved: Record<string, string | undefined> = {};
@@ -45,6 +46,18 @@ describe("auto-lane cap kill-switch (0 = disabled)", () => {
     const cfg = loadConfig();
     expect(cfg.work.ciFixMaxAttempts).toBe(0);
     expect(cfg.work.conflictFixMaxAttempts).toBe(0);
+    expect(cfg.work.mergeGuardMaxAttempts).toBe(3); // unset here stays default
+  });
+
+  test("production load accepts WORK_MERGE_GUARD_MAX_ATTEMPTS=0 (guard-lane kill-switch, 2026-10-31)", () => {
+    process.env.DAEMON_ENV = "production";
+    process.env.GITEA_URL = "http://127.0.0.1:3000";
+    process.env.GITEA_TOKEN = "x";
+    process.env.BOT_USERNAME = "bot";
+    process.env.BOT_TOKEN = "x";
+    process.env.WORK_MERGE_GUARD_MAX_ATTEMPTS = "0";
+    const cfg = loadConfig();
+    expect(cfg.work.mergeGuardMaxAttempts).toBe(0);
   });
 
   test("unset values fall back to the default budget of 3", () => {
