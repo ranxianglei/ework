@@ -57,6 +57,7 @@ describe("execProcess merge-conflict concurrency cap", () => {
       updateMessageStatus,
     };
     self.gateChecker = gateChecker;
+    self.cfg = { work: { ciFixMaxAttempts: 3, conflictFixMaxAttempts: 3 } };
     self.conflictMaxConcurrent = opts.cap;
     // A busy ordinary fleet pins freeGlobal to 0 so infraIdleExpandedCap
     // resolves to the configured cap instead of expanding it.

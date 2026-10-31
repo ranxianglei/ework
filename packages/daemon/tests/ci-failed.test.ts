@@ -68,6 +68,7 @@ describe("execProcess ci-fix cap", () => {
       updateMessageStatus,
     };
     self.gateChecker = gateChecker;
+    self.cfg = { work: { ciFixMaxAttempts: 3, conflictFixMaxAttempts: 3 } };
     self.ciMaxConcurrent = 1;
     self.conflictMaxConcurrent = 1;
     self.maxConcurrent = 1;
@@ -107,5 +108,27 @@ describe("execProcess ci-fix cap", () => {
     await Engine.prototype.execProcess.call(closedWorld.self, "k3", session, issue, { id: "m3", uid: "m3", sourceCommentId: "ci-fail-42-abc" });
     expect(closedWorld.updateMessageStatus).toHaveBeenCalledWith("m3", "superseded", "issue closed while queued");
     expect(closedWorld.gateChecker).not.toHaveBeenCalled();
+  });
+
+  test("kill-switch: cap 0 settles queued/recovered lane messages without spawning (owner hold 2026-10-31)", async () => {
+    const ciOff = makeSelf(0);
+    (ciOff.self as Record<string, unknown>).cfg = { work: { ciFixMaxAttempts: 0, conflictFixMaxAttempts: 3 } };
+    (ciOff.self as Record<string, unknown>).clearRuntimeState = vi.fn(async () => {});
+    await Engine.prototype.execProcess.call(ciOff.self, "k5", session, issue, { id: "m5", uid: "m5", sourceCommentId: "ci-fail-42-abc" });
+    expect(ciOff.updateMessageStatus).toHaveBeenCalledWith("m5", "superseded", "lane disabled by owner config (cap=0)");
+    expect(ciOff.gateChecker).not.toHaveBeenCalled();
+
+    const conflictOff = makeSelf(0);
+    (conflictOff.self as Record<string, unknown>).cfg = { work: { ciFixMaxAttempts: 3, conflictFixMaxAttempts: 0 } };
+    (conflictOff.self as Record<string, unknown>).clearRuntimeState = vi.fn(async () => {});
+    await Engine.prototype.execProcess.call(conflictOff.self, "k6", session, issue, { id: "m6", uid: "m6", sourceCommentId: "merge-conflict-42-abc" });
+    expect(conflictOff.updateMessageStatus).toHaveBeenCalledWith("m6", "superseded", "lane disabled by owner config (cap=0)");
+    expect(conflictOff.gateChecker).not.toHaveBeenCalled();
+
+    // user-facing messages are never touched by the switch
+    const userMsg = makeSelf(0);
+    (userMsg.self as Record<string, unknown>).clearRuntimeState = vi.fn(async () => {});
+    await Engine.prototype.execProcess.call(userMsg.self, "k7", session, issue, { id: "m7", uid: "m7", sourceCommentId: "user-comment-42" });
+    expect(userMsg.gateChecker).toHaveBeenCalledTimes(1);
   });
 });
