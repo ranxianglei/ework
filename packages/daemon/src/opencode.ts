@@ -25,6 +25,29 @@ interface TrackerRegistry {
  * Phase 2 swaps in NAS-backed / OpenCode-server strategies without touching
  * the coordination layer.
  */
+/** CI-lane post-fix verification entry (audit RC3), keyed `<scope>#<pr>` in
+ * Engine.ciVerifyQueue. `pr` is the LOCAL mirror issue number (what the web
+ * /api/v1/upstream-checks route resolves); `sha` is the lowercased head sha
+ * when the source id carried one (`ci-fail-<n>-<sha>`). */
+interface CiVerifyEntry {
+  pr: number;
+  sha?: string;
+  attempt: number;
+  transient: number;
+  nextCheckAt: number;
+}
+
+/** A scid tail that looks like a real git sha (ci-fail lanes) vs a
+ * Date.now() timestamp tail (merge-guard / merge-conflict lanes). Decimal
+ * timestamps match [0-9a-f]{7,40} too, so require real hex letters or a
+ * ≥32-char tail before accepting it as a sha. */
+function ciVerifySha(tail: string | undefined): string | undefined {
+  if (!tail) return undefined;
+  const s = tail.toLowerCase();
+  if (!/[a-f]/.test(s) && s.length < 32) return undefined;
+  return s;
+}
+
 export interface TakeoverStrategy {
   acquireWorkdir(session: OpSession, issue: Issue, cloneUrl?: string, env?: Record<string, string>): Promise<string>;
   resumeOpenCodeSession(session: OpSession): Promise<string | null>;
@@ -802,6 +825,15 @@ export class Engine {
    * 2026-10-24): `${issue.id}:${lane}` → last notify timestamp. In-memory
    * only — a restart may re-notify once, which is acceptable. */
   private autoLaneDegradeNotified = new Map<string, number>();
+  /** CI-lane post-fix verification queue (audit RC3), keyed `<scope>#<pr>`.
+   * In-memory; rebuildCiVerifyQueueFromDb restores it from done rows on the
+   * first observer tick after a restart. */
+  private ciVerifyQueue = new Map<string, CiVerifyEntry>();
+  private ciVerifyQueueRebuilt = false;
+  /** Verification-exhausted lanes: auto-dispatch stays blocked while the head
+   * sha is unchanged (only ci-fail scids carry a sha, so guard/conflict lanes
+   * never lock anyone out). */
+  private ciVerifyExhausted = new Map<string, { sha?: string; at: number }>();
   private currentPrompt = new Map<string, string>();
   private paused = false;
 
@@ -849,6 +881,10 @@ export class Engine {
   private static MAX_STUCK_NUDGE_ROUNDS = 1;
   private static MAX_RUNTIME_MS = 3 * 60 * 60 * 1000;
   private static OBSERVER_INTERVAL_MS = 5 * 60 * 1000;
+  // CI-lane post-fix verification (audit RC3).
+  private static readonly CI_LANE_SOURCE_RE = /^(?:ci-fail|merge-conflict|merge-guard)-(\d+)(?:-([0-9a-fA-F]{7,40}))?$/;
+  // A 'checks still running' snapshot older than this is no longer evidence.
+  private static CI_VERIFY_EVIDENCE_TTL_MS = 30 * 60_000;
   private static STUCK_THRESHOLD_MS = 30 * 60 * 1000;
   private static MAX_REPLY_BURST = 8;
   private static REPLY_BURST_WINDOW_MS = 5 * 60 * 1000;
@@ -2396,6 +2432,14 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
   private async enqueueOrRun(session: OpSession, issue: Issue, prompt: string, tracker: IssueTracker, ref: TrackerRef, sourceCommentId?: string, model?: string) {
     const k = this.sessionKey(session, issue);
 
+    // Exhausted-lane parking (audit RC3): while the head sha we verified red
+    // twice stays unchanged, do not dispatch another automatic attempt — the
+    // ⛔ notice already asked for owner input. A new sha releases the lane.
+    if (this.isLaneExhausted(issue.trackerScopeKey, sourceCommentId)) {
+      log.info(`engine: enqueueOrRun skipped — ${issue.trackerScopeKey}#${ref.issueId} lane exhausted, head sha unchanged (${String(sourceCommentId).slice(0, 40)})`);
+      return;
+    }
+
     this.stuckNudgeRounds.delete(k);
     this.processExitNudgeRounds.delete(k);
 
@@ -2888,6 +2932,7 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
         if (stderr) log.warn(`engine: pid=${handle.pid} stderr on exit 0: ${stderr.slice(0, 500)}`);
         if (!session.opencodeSessionId) log.warn(`engine: pid=${handle.pid} produced NO sessionID (no stdout output)`);
         await this.store.updateMessageStatus(msg.id, "done");
+        void this.scheduleCiVerify(msg); // audit RC3: confirm the fix actually turned checks green
       }
     } catch (err) {
       log.error(`engine: exec failed for ${k}:`, err);
@@ -3703,6 +3748,235 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
     ].join("\n");
   }
 
+  // ─── CI-lane post-fix verification (audit RC3) ────────────────────────
+  // A done lane message means "a fix attempt finished", NOT "checks are
+  // green": the agent may have pushed a broken fix, and the wake that started
+  // the lane may predate the fix. This loop confirms the outcome against the
+  // web mirror (GET /api/v1/upstream-checks, refreshed ~60s while a suite
+  // runs) and only then closes the loop:
+  //   GREEN   → post one `[ework] CI fix verified green ✓`; remove entry.
+  //   still RED → attempt+1; after two red rounds → EXHAUSTED: post
+  //             `[ework] auto-fix stalled: …` plus ONE ⛔ cap notice via the
+  //             same throttle path as the existing auto-lane degradation
+  //             (autoLaneDegradeNotified), and mark ciVerifyExhausted so
+  //             enqueueOrRun refuses re-dispatch until the head sha changes.
+  //   no evidence (web down / no cache yet / pending too stale) → reschedule
+  //             without burning the red budget; dropped after 3 passes.
+  // The queue is in-memory; after a restart it rebuilds from done rows in the
+  // DB (last 6h) with attempt reset to 0. Combined with the web-side
+  // wake-once fingerprints (commit a), total wakes stay bounded even if a
+  // verify round is lost to a restart.
+
+  /** Done-transition hook: register/refresh the verification entry for this
+   * message's PR. Fire-and-forget at call sites (never throws). */
+  async scheduleCiVerify(msg: Message): Promise<void> {
+    const m = Engine.CI_LANE_SOURCE_RE.exec(String(msg.sourceCommentId ?? ""));
+    if (!m || !m[1]) return;
+    try {
+      const pr = Number(m[1]);
+      if (!Number.isInteger(pr) || pr <= 0) return;
+      const sha = ciVerifySha(m[2]);
+      const session = await this.store.getSession(msg.sessionId);
+      if (!session) return;
+      const issue = await this.store.getIssue(session.issueId);
+      if (!issue) return;
+      const key = `${issue.trackerScopeKey}#${pr}`;
+      const prev = this.ciVerifyQueue.get(key);
+      const ex = this.ciVerifyExhausted.get(key);
+      if (sha && ex?.sha && ex.sha !== sha) {
+        // Newer head than the exhausted sha ⇒ the parked lane releases
+        // (covers both live entries and entries already removed by
+        // exhaustCiVerifyLane).
+        this.ciVerifyExhausted.delete(key);
+        this.ciVerifyQueue.delete(key);
+        log.info(`engine: ci-verify ${key}: new head ${sha.slice(0, 10)} releases the exhausted lane`);
+      } else if (prev && prev.sha && sha && prev.sha !== sha) {
+        // Newer head sha first ⇒ the old cycle is moot; fresh cycle.
+        this.ciVerifyQueue.delete(key);
+        log.info(`engine: ci-verify ${key}: newer head ${sha.slice(0, 10)} — verify cycle reset`);
+      }
+      this.ciVerifyQueue.set(key, { pr, sha, attempt: 0, transient: 0, nextCheckAt: Date.now() + this.cfg.work.ciVerifyDelayMs });
+      log.info(`engine: ci-verify scheduled ${key} (first check in ~${Math.round(this.cfg.work.ciVerifyDelayMs / 60_000)}min${sha ? `, head ${sha.slice(0, 10)}` : ""})`);
+    } catch (err) {
+      log.warn(`engine: scheduleCiVerify failed for msg ${String(msg.id).slice(0, 8)}: ${(err as Error).message}`);
+    }
+  }
+
+  /** Rides the 5-min global observer tick; public so tests can drive it. */
+  async runCiVerifySweep(): Promise<void> {
+    if (this.destroyed) return;
+    if (!this.ciVerifyQueueRebuilt) {
+      this.ciVerifyQueueRebuilt = true;
+      await this.rebuildCiVerifyQueueFromDb();
+    }
+    const now = Date.now();
+    const due: [string, CiVerifyEntry][] = [];
+    for (const [key, entry] of this.ciVerifyQueue) if (entry.nextCheckAt <= now) due.push([key, entry]);
+    for (const [key, entry] of due) {
+      try {
+        await this.verifyCiEntry(key, entry);
+      } catch (err) {
+        log.warn(`engine: ci-verify sweep failed for ${key}: ${(err as Error).message}`);
+      }
+    }
+  }
+
+  private async rebuildCiVerifyQueueFromDb(): Promise<void> {
+    try {
+      const since = new Date(Date.now() - 6 * 3_600_000).toISOString();
+      const rows = await this.store.listRecentLaneDoneMessages(since, 500);
+      let n = 0;
+      for (const r of rows) {
+        const m = Engine.CI_LANE_SOURCE_RE.exec(r.sourceCommentId);
+        if (!m || !m[1]) continue;
+        const pr = Number(m[1]);
+        if (!Number.isInteger(pr) || pr <= 0) continue;
+        const key = `${r.scopeKey}#${pr}`;
+        if (this.ciVerifyQueue.has(key)) continue; // live entries win over rows
+        this.ciVerifyQueue.set(key, { pr, sha: ciVerifySha(m[2]), attempt: 0, transient: 0, nextCheckAt: r.doneAtMs + this.cfg.work.ciVerifyDelayMs });
+        n++;
+      }
+      if (n > 0) log.info(`engine: ci-verify rebuilt ${n} pending verification(s) from DB after restart`);
+    } catch (err) {
+      log.warn(`engine: ci-verify queue rebuild failed: ${(err as Error).message}`);
+    }
+  }
+
+  private async verifyCiEntry(key: string, entry: CiVerifyEntry): Promise<void> {
+    const sep = key.lastIndexOf("#");
+    const scopeKey = key.slice(0, sep);
+    const parts = scopeKey.split("/");
+    const owner = parts[0] ?? "";
+    const repo = parts.slice(1).join("/");
+    if (!owner || !repo) {
+      this.ciVerifyQueue.delete(key);
+      return;
+    }
+    type CheckSnap = { name?: unknown; conclusion?: unknown }[];
+    type CheckSnapData = { sha?: unknown; fetched_at?: unknown; summary?: { total?: number; failed?: number; pending?: number }; checks?: CheckSnap };
+    let data: CheckSnapData | null = null;
+    try {
+      const url = `${this.cfg.gitea.url}/api/v1/upstream-checks?owner=${encodeURIComponent(owner)}&repo=${encodeURIComponent(repo)}&number=${entry.pr}`;
+      const resp = await fetch(url, { signal: AbortSignal.timeout(5000), headers: { Authorization: `token ${this.cfg.gitea.token}` } });
+      if (!resp.ok) {
+        this.bumpCiVerifyTransient(key, entry, `web returned ${resp.status}`);
+        return;
+      }
+      data = (await resp.json()) as CheckSnapData;
+    } catch (err) {
+      this.bumpCiVerifyTransient(key, entry, (err as Error).message);
+      return;
+    }
+    // Head moved past what we're verifying ⇒ stale cycle; whatever fix landed
+    // will bring its own fresh wake + verify entry.
+    if (entry.sha && typeof data?.sha === "string" && data.sha.toLowerCase() !== entry.sha) {
+      log.info(`engine: ci-verify ${key}: head moved to ${String(data.sha).slice(0, 10)} — dropping stale verify cycle`);
+      this.ciVerifyQueue.delete(key);
+      return;
+    }
+    const s = data?.summary;
+    if (!s || !Number.isInteger(s.total) || (s.total ?? 0) === 0) {
+      this.bumpCiVerifyTransient(key, entry, "no cached checks yet");
+      return;
+    }
+    if ((s.pending ?? 0) > 0) {
+      // Still running: age matters here because the cache refreshes only
+      // while a suite is active — a frozen old 'running' snapshot is not
+      // evidence of anything.
+      const age = typeof data?.fetched_at === "string" ? Date.now() - (Date.parse(data.fetched_at) || 0) : 0;
+      if (age > Engine.CI_VERIFY_EVIDENCE_TTL_MS) this.bumpCiVerifyTransient(key, entry, `pending snapshot ${Math.round(age / 60_000)}min old`);
+      else this.rescheduleCiVerify(key, entry, "checks still running");
+      return;
+    }
+    if ((s.failed ?? 0) > 0) {
+      // Completed runs keep their conclusion stable, so a definitive red
+      // verdict is trusted even when the snapshot is dated; the retry round
+      // re-checks anyway.
+      entry.attempt += 1;
+      if (entry.attempt < 2) {
+        this.rescheduleCiVerify(key, entry, `still red (${s.failed}/${s.total}) — attempt ${entry.attempt}/2`);
+        return;
+      }
+      await this.exhaustCiVerifyLane(key, scopeKey, entry, data.checks ?? []);
+      return;
+    }
+    await this.finishCiVerifyGreen(key, scopeKey, entry);
+  }
+
+  private bumpCiVerifyTransient(key: string, entry: CiVerifyEntry, why: string): void {
+    entry.transient += 1;
+    if (entry.transient >= 3) {
+      this.ciVerifyQueue.delete(key);
+      log.warn(`engine: ci-verify ${key}: dropped after ${entry.transient} no-evidence passes (${why})`);
+    } else {
+      entry.nextCheckAt = Date.now() + this.cfg.work.ciVerifyRetryMs;
+      log.info(`engine: ci-verify ${key}: ${why} — rescheduling (${entry.transient}/3)`);
+    }
+  }
+
+  private rescheduleCiVerify(key: string, entry: CiVerifyEntry, why: string): void {
+    entry.nextCheckAt = Date.now() + this.cfg.work.ciVerifyRetryMs;
+    log.info(`engine: ci-verify ${key}: ${why} — next check in ${Math.round(this.cfg.work.ciVerifyRetryMs / 60_000)}min`);
+  }
+
+  /** True when an exhaustion marker blocks (scopeKey, sourceCommentId): same
+   * head sha never gets re-dispatched; a changed sha releases the lane. */
+  private isLaneExhausted(scopeKey: string, sourceCommentId: string | undefined): boolean {
+    const m = Engine.CI_LANE_SOURCE_RE.exec(String(sourceCommentId ?? ""));
+    if (!m || !m[1]) return false;
+    const ex = this.ciVerifyExhausted.get(`${scopeKey}#${m[1]}`);
+    if (!ex?.sha) return false;
+    const tail = ciVerifySha(m[2]);
+    return !!tail && tail === ex.sha;
+  }
+
+  private async finishCiVerifyGreen(key: string, scopeKey: string, entry: CiVerifyEntry): Promise<void> {
+    try {
+      const issue = await this.store.findIssue("gitea", scopeKey, String(entry.pr));
+      if (issue && issue.state !== "closed") {
+        const ref = { trackerType: issue.trackerType, scope: issue.trackerScope, issueId: issue.trackerIssueId };
+        await this.getTracker(issue.trackerType).createComment(ref, "[ework] CI fix verified green ✓");
+      }
+    } catch (err) {
+      log.warn(`engine: ci-verify green comment failed for ${key}: ${(err as Error).message}`);
+    }
+    this.ciVerifyExhausted.delete(key);
+    this.ciVerifyQueue.delete(key);
+    log.info(`engine: ci-verify ${key}: VERIFIED GREEN — lane closed out`);
+  }
+
+  private async exhaustCiVerifyLane(key: string, scopeKey: string, entry: CiVerifyEntry, checks: { name?: unknown; conclusion?: unknown }[]): Promise<void> {
+    const redNames = checks.filter((c) => c.conclusion === "failure").map((c) => String(c.name ?? "check")).filter(Boolean);
+    const names = redNames.length > 0 ? redNames.join(", ") : "checks";
+    try {
+      const issue = await this.store.findIssue("gitea", scopeKey, String(entry.pr));
+      if (issue && issue.state !== "closed") {
+        const ref = { trackerType: issue.trackerType, scope: issue.trackerScope, issueId: issue.trackerIssueId };
+        const tracker = this.getTracker(issue.trackerType);
+        // (1) stall notice — posted once per exhaustion (the entry is removed
+        // afterwards, so there is no second path back in for this sha).
+        await tracker.createComment(ref, `[ework] auto-fix stalled: ${names} — stopping for human review`).catch((err) => log.warn(`engine: ci-verify stall comment failed for ${key}: ${(err as Error).message}`));
+        // (2) decision request — same throttle path (autoLaneDegradeNotified,
+        // once per window) as the existing auto-lane degradation machinery.
+        const dkey = `${issue.id}:ci-verify`;
+        const windowMs = this.cfg.work.autoLaneWindowMs;
+        const lastNotice = this.autoLaneDegradeNotified.get(dkey) ?? 0;
+        if (Date.now() - lastNotice >= windowMs) {
+          await tracker.createComment(
+            ref,
+            `[system] ⛔ CI 自动修复车道已达上限(连续 ${entry.attempt} 轮修复后检查仍未变绿/${Math.round(windowMs / 3_600_000)}h 窗口) — 停止自动接单, 需要 owner 决策; 窗口过期或新 head sha 后自动恢复。`,
+          ).catch(() => {});
+          this.autoLaneDegradeNotified.set(dkey, Date.now());
+        }
+      }
+    } catch (err) {
+      log.warn(`engine: ci-verify exhaust notice failed for ${key}: ${(err as Error).message}`);
+    }
+    this.ciVerifyExhausted.set(key, { sha: entry.sha, at: Date.now() });
+    this.ciVerifyQueue.delete(key);
+    log.warn(`engine: ci-verify ${key}: EXHAUSTED after ${entry.attempt} red round(s) — lane parked until the head sha changes`);
+  }
+
   // ─── IssueObserver (Global Polling) ───
 
   private startGlobalObserver() {
@@ -3846,6 +4120,7 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
       if (alreadyAnswered) {
         log.info(`engine: observer — stranded msg ${msg.id.slice(0, 8)} for ${issue.trackerScopeKey}#${issue.trackerIssueId} already answered, marking done`);
         await this.store.updateMessageStatus(msg.id, "done");
+        void this.scheduleCiVerify(msg); // audit RC3
         continue;
       }
       log.info(`engine: observer — resurrecting stranded msg ${msg.id.slice(0, 8)} for ${issue.trackerScopeKey}#${issue.trackerIssueId}`);
@@ -3860,6 +4135,9 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
     } catch (err) {
       log.error("engine: releaseDeadOwners failed:", (err as Error).message);
     }
+    // CI-lane post-fix verification sweep piggybacks the 5-min observer tick
+    // (audit RC3) — nothing to do when the queue is empty or undue.
+    void this.runCiVerifySweep();
 
     const nmTtlMs = this.cfg.opencode.nodeModulesTtlDays * 24 * 60 * 60 * 1000;
     const wdTtlMs = this.cfg.opencode.workdirTtlDays * 24 * 60 * 60 * 1000;
@@ -4303,6 +4581,7 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
       if (hasRecoveryDelivery(comments, (a) => tracker.isBotUser(a), first.createdAt)) {
         log.info(`engine: recovered msg ${first.id.slice(0, 8)} for ${k} — post-prompt delivery reply detected, marking done`);
         await this.store.updateMessageStatus(first.id, "done");
+        void this.scheduleCiVerify(first); // audit RC3
         report.delivered++;
         const next = await this.store.getNextPendingMessage(session.id);
         if (next && this.running.size < this.maxConcurrent) { await this.dequeueOrIdle(k, session, issue, next); }
