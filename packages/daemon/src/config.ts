@@ -77,7 +77,7 @@ export const configSchema = z.object({
     // merge-conflict auto-repair loops get their own timeout/retry/degrade
     // policy — at most N dispatches per PR within the window; beyond that the
     // lane degrades (one issue comment, no dispatch) until the window expires.
-    ciFixMaxAttempts: z.coerce.number().int().positive().default(3), // raised 2→3 with real-attempt counting (2026-10-30 postmortem)
+    ciFixMaxAttempts: z.coerce.number().int().min(0).default(3), // raised 2→3 with real-attempt counting (2026-10-30 postmortem); 0 = lane disabled
     // CI-lane post-fix verification (audit RC3): once a lane message reaches
     // done, wait this long before asking the web mirror whether the checks
     // actually turned green.
@@ -88,7 +88,7 @@ export const configSchema = z.object({
   reviewConcurrency: z.coerce.number().int().positive().default(4),
     ciMasterFixMaxAttempts: z.coerce.number().int().positive().default(3),
     sentinelRotateMessages: z.coerce.number().int().positive().default(100),
-    conflictFixMaxAttempts: z.coerce.number().int().positive().default(3), // raised 2→3 with real-attempt counting (2026-10-30 postmortem)
+    conflictFixMaxAttempts: z.coerce.number().int().min(0).default(3), // raised 2→3 with real-attempt counting (2026-10-30 postmortem); 0 = lane disabled
     autoLaneWindowMs: z.coerce.number().int().positive().default(86_400_000),
   }),
   db: z.object({
@@ -169,7 +169,7 @@ function readWorkSection() {
       : 1,
     ciFixMaxAttempts: process.env.WORK_CI_FIX_MAX_ATTEMPTS != null && process.env.WORK_CI_FIX_MAX_ATTEMPTS !== ""
       ? Math.max(0, Math.trunc(Number(process.env.WORK_CI_FIX_MAX_ATTEMPTS))) // 0 = lane fully disabled (owner kill-switch)
-      : 2,
+      : 3, // default 3 (2026-10-30 postmortem); zod default kept in sync
     ciVerifyDelayMs: process.env.WORK_CI_VERIFY_DELAY_MS != null && process.env.WORK_CI_VERIFY_DELAY_MS !== ""
       ? Math.max(1, Math.trunc(Number(process.env.WORK_CI_VERIFY_DELAY_MS)))
       : 900_000,
@@ -187,7 +187,7 @@ function readWorkSection() {
       : 4,
     conflictFixMaxAttempts: process.env.WORK_CONFLICT_FIX_MAX_ATTEMPTS != null && process.env.WORK_CONFLICT_FIX_MAX_ATTEMPTS !== ""
       ? Math.max(0, Math.trunc(Number(process.env.WORK_CONFLICT_FIX_MAX_ATTEMPTS))) // 0 = lane fully disabled (owner kill-switch)
-      : 2,
+      : 3, // default 3 (2026-10-30 postmortem); zod default kept in sync
     autoLaneWindowMs: process.env.WORK_AUTO_LANE_WINDOW_MS != null && process.env.WORK_AUTO_LANE_WINDOW_MS !== ""
       ? Math.max(1, Math.trunc(Number(process.env.WORK_AUTO_LANE_WINDOW_MS)))
       : 86_400_000,
