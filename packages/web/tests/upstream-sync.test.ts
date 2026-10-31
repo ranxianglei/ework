@@ -792,7 +792,10 @@ describe("announce sweep (dog/ework-aio#6)", () => {
     await settle();
     hookCalls = [];
 
-    await getDB().run("UPDATE {{issues}} SET announced_at = NULL WHERE upstream_issue_number = 1", []);
+    // Simulate the real loss shape: a RECENT open whose announcement never
+    // confirmed (confirm-then-stamp leaves fresh losses <6h un-stamped;
+    // the sweep floor keeps ancient rows out, so age the fixture to 2h).
+    await getDB().run("UPDATE {{issues}} SET announced_at = NULL, created_at = datetime('now','-2 hours') WHERE upstream_issue_number = 1", []);
 
     issuePages = [[]];
     repoComments = [];

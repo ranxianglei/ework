@@ -474,8 +474,16 @@ export class UpstreamSync {
     if (created) {
       if (emit) void emitIssueEvent(this.project.id, created.id, "opened", this.origin);
       // Crawl imports (emit=false) count as announced-by-history — sweeping
-      // thousands of historical rows would storm the daemon.
-      void markIssueAnnounced(created.id);
+      // thousands of historical rows would storm the daemon. FRESH rows are
+      // deliberately left un-stamped here: their announcement is confirmed by
+      // emitIssueEvent itself (stamp only lands after a receiver accepts), and
+      // anything still un-stamped gets retried by sweepUnannounced. Import-time
+      // stamping was a permanent blind spot when the emission path or the
+      // receiver was down mid-import (2026-10-31: seven opens lost this way).
+      const ageMs = Date.now() - Date.parse(gi.created_at ?? "");
+      if (!(Number.isFinite(ageMs) && ageMs > 0 && ageMs <= 6 * 3_600_000)) {
+        void markIssueAnnounced(created.id);
+      }
     } else {
       log.error(`upstream-sync: import of #${gi.number} lost its row after create — sweep will re-emit`);
     }
