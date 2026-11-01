@@ -42,6 +42,7 @@ describe("review lane: green-blocked PRs get a reviewer (owner directive 2026-10
     expect(prompt).toContain("kernel");
     expect(prompt).toContain("需要决策");
     expect(prompt).toContain("needs-decision");
+    expect(prompt).toContain("已顺手修");
     expect(prompt).toContain("do not poll gh");
     expect(String(sourceCommentId)).toMatch(/^review-52-\d+$/);
   });
