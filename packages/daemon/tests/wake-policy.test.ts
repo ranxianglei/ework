@@ -219,7 +219,7 @@ describe("buildForwardPrompt backlog rendering", () => {
 
   test("backlog entries render with per-author trust framing", () => {
     const p = Engine.prototype.buildForwardPrompt.call(
-      self, "fwd", "继续", "dog", "human", "T", "/w", { issueRef: "o/r#1" }, [],
+      self, "fwd", "继续", "dog", "human", "T", "/w", { issueRef: "o/r#1" }, undefined, [],
       [{ author: "Bunny4Don", authorKind: "human", body: "如何排查", createdAt: "2026-09-21T08:53:58Z" }],
     ) as string;
     expect(p).toContain("not been answered yet");
@@ -228,7 +228,7 @@ describe("buildForwardPrompt backlog rendering", () => {
   });
 
   test("empty backlog keeps the prompt identical in shape", () => {
-    const p = Engine.prototype.buildForwardPrompt.call(self, "fwd", "hi", "dog", "human", "T", "/w", { issueRef: "o/r#1" }, [], []) as string;
+    const p = Engine.prototype.buildForwardPrompt.call(self, "fwd", "hi", "dog", "human", "T", "/w", { issueRef: "o/r#1" }, undefined, [], []) as string;
     expect(p).not.toContain("not been answered yet");
     expect(p).toContain("Reply using the `reply` tool.");
   }

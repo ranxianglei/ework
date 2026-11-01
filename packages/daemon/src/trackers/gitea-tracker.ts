@@ -162,6 +162,13 @@ export class GiteaTracker implements IssueTracker {
     const issueUser = issue.user as Record<string, string>;
     const aiStatus = typeof issue.ai_status === "string" ? issue.ai_status : "";
     const dispatchOff = payload.dispatch_off === true;
+    // ework-web extension (2026-11-01 dual-ledger fix): thread kind + upstream
+    // GitHub number ride in every payload; the engine pins them into prompts
+    // so workers never resolve the mirror-local "#N" against GitHub.
+    const kindRaw = issue.kind;
+    const kind = typeof kindRaw === "string" && kindRaw ? kindRaw : undefined;
+    const upstreamNumRaw = issue.upstream_issue_number;
+    const upstreamIssueNumber = typeof upstreamNumRaw === "number" ? upstreamNumRaw : undefined;
 
     if (action === "opened" || action === "reopened") {
       return {
@@ -174,6 +181,7 @@ export class GiteaTracker implements IssueTracker {
           state: (issue.state as string) ?? "open",
           author: issueUser?.login ?? "",
           ai_status: aiStatus,
+          kind, upstreamIssueNumber,
         },
         model,
         runtime,
@@ -193,6 +201,7 @@ export class GiteaTracker implements IssueTracker {
           state: (issue.state as string) ?? "open",
           author: issueUser?.login ?? "",
           ai_status: aiStatus,
+          kind, upstreamIssueNumber,
         },
         comment: {
           id: String(comment.id),
@@ -218,6 +227,7 @@ export class GiteaTracker implements IssueTracker {
           state: "closed",
           author: issueUser?.login ?? "",
           ai_status: aiStatus,
+          kind, upstreamIssueNumber,
         },
         model,
         runtime,
@@ -240,6 +250,7 @@ export class GiteaTracker implements IssueTracker {
           state: (issue.state as string) ?? "open",
           author: issueUser?.login ?? "",
           ai_status: aiStatus,
+          kind, upstreamIssueNumber,
         },
         ci: { sha: ci?.sha ?? "", checks: ci?.checks ?? [], branch: (ci as { branch?: string } | undefined)?.branch ?? "master" },
         model,
@@ -260,6 +271,7 @@ export class GiteaTracker implements IssueTracker {
           state: (issue.state as string) ?? "open",
           author: issueUser?.login ?? "",
           ai_status: aiStatus,
+          kind, upstreamIssueNumber,
         },
         ci: { sha: ci?.sha ?? "", checks: ci?.checks ?? [] },
         model,
@@ -280,6 +292,7 @@ export class GiteaTracker implements IssueTracker {
           state: (issue.state as string) ?? "open",
           author: issueUser?.login ?? "",
           ai_status: aiStatus,
+          kind, upstreamIssueNumber,
         },
         merge: { state: mergeState },
         model,
@@ -306,6 +319,7 @@ export class GiteaTracker implements IssueTracker {
           state: (issue.state as string) ?? "open",
           author: issueUser?.login ?? "",
           ai_status: aiStatus,
+          kind, upstreamIssueNumber,
         },
         merge: { state: mergeState },
         mergeReason,
@@ -330,6 +344,7 @@ export class GiteaTracker implements IssueTracker {
           state: (issue.state as string) ?? "open",
           author: issueUser?.login ?? "",
           ai_status: aiStatus,
+          kind, upstreamIssueNumber,
         },
         sha,
         model,
@@ -349,6 +364,7 @@ export class GiteaTracker implements IssueTracker {
           state: (issue.state as string) ?? "open",
           author: issueUser?.login ?? "",
           ai_status: aiStatus,
+          kind, upstreamIssueNumber,
         },
         sender,
       };
@@ -365,6 +381,7 @@ export class GiteaTracker implements IssueTracker {
           state: (issue.state as string) ?? "open",
           author: issueUser?.login ?? "",
           ai_status: aiStatus,
+          kind, upstreamIssueNumber,
         },
         status: {
           from: status?.from ?? "",
