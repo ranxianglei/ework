@@ -26,6 +26,11 @@ export interface TrackerEvent {
     state: string;
     author: string;
     ai_status?: string;
+    // ework-web extension (2026-11-01 dual-ledger fix): the row's kind
+    // (issue/pr/discussion/...) and its upstream GitHub number. Mirror-local
+    // numbers drift from GitHub's, so prompts pin the identity from these.
+    kind?: string;
+    upstreamIssueNumber?: number;
   };
   comment?: {
     id: string;
