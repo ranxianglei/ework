@@ -1,6 +1,6 @@
 {
   "name": "ework-daemon",
-  "version": "0.4.191",
+  "version": "0.4.192",
   "description": "Issue-driven AI development daemon. Spawns opencode subprocesses to resolve Gitea issues.",
   "module": "src/index.ts",
   "type": "module",
