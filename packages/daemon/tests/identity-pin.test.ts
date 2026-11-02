@@ -161,3 +161,25 @@ describe("identity pin in task prompts", () => {
     expect(prompt).not.toContain("Identity pin");
   });
 });
+
+describe("global no-decision-issue rule in base prompts", () => {
+  function engineSelf() {
+    const { Engine } = require("../src/opencode");
+    const self = Object.create(Engine.prototype);
+    self.cfg = { bot: { username: "ework-daemon" }, daemon: {}, work: {} };
+    return self;
+  }
+
+  test("buildInitialPrompt embeds the owner-policy ban on decision/follow-up issues", () => {
+    const { Engine } = require("../src/opencode");
+    const self = engineSelf();
+    const prompt = Engine.prototype.buildInitialPrompt.call(
+      self, "ework-daemon", "t", "b", "ranxianglei", "/wd",
+      { clone: "git clone x .", issueRef: "acme/widgets#42" }, null,
+    );
+    expect(prompt).toContain("no new issues for decisions or follow-ups");
+    expect(prompt).toContain("🔶 需要决策");
+    expect(prompt).toContain("add-label.sh");
+    expect(prompt).toContain("owner policy 2026-11-01");
+  });
+});
