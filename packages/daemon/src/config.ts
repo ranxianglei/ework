@@ -78,6 +78,12 @@ export const configSchema = z.object({
     // policy — at most N dispatches per PR within the window; beyond that the
     // lane degrades (one issue comment, no dispatch) until the window expires.
     ciFixMaxAttempts: z.coerce.number().int().min(0).default(3), // raised 2→3 with real-attempt counting (2026-10-30 postmortem); 0 = lane disabled
+    // Unified CI-engineer budget (owner policy 2026-11-03: fix 和接冲突由一个机器人干).
+    // Key PRESENCE (even =0) switches the daemon into engineer mode: ci-fail and
+    // merge-conflict share one bot/session/attempt-budget/concurrency pool; the
+    // two legacy per-lane caps are ignored. ABSENT ⇒ legacy per-lane behavior.
+    // 0 = both auto-fix lanes fully disabled.
+    ciEngineerMaxAttempts: z.coerce.number().int().min(0).optional(),
     // CI-lane post-fix verification (audit RC3): once a lane message reaches
     // done, wait this long before asking the web mirror whether the checks
     // actually turned green.
@@ -173,6 +179,9 @@ function readWorkSection() {
     ciFixMaxAttempts: process.env.WORK_CI_FIX_MAX_ATTEMPTS != null && process.env.WORK_CI_FIX_MAX_ATTEMPTS !== ""
       ? Math.max(0, Math.trunc(Number(process.env.WORK_CI_FIX_MAX_ATTEMPTS))) // 0 = lane fully disabled (owner kill-switch)
       : 3, // default 3 (2026-10-30 postmortem); zod default kept in sync
+    ciEngineerMaxAttempts: process.env.WORK_CI_ENGINEER_MAX_ATTEMPTS != null && process.env.WORK_CI_ENGINEER_MAX_ATTEMPTS !== ""
+      ? Math.max(0, Math.trunc(Number(process.env.WORK_CI_ENGINEER_MAX_ATTEMPTS))) // presence ⇒ engineer mode; 0 = both lanes off
+      : undefined,
     ciVerifyDelayMs: process.env.WORK_CI_VERIFY_DELAY_MS != null && process.env.WORK_CI_VERIFY_DELAY_MS !== ""
       ? Math.max(1, Math.trunc(Number(process.env.WORK_CI_VERIFY_DELAY_MS)))
       : 900_000,

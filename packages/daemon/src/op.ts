@@ -340,7 +340,7 @@ export class Store {
     // The caller's family list is authoritative (it sizes infra demand);
     // an empty list falls back to the legacy worker families.
     const likes = (
-      names.length > 0 ? names : ["conflict-worker", "ci-worker", "ci-master", "release-worker"]
+      names.length > 0 ? names : ["conflict-worker", "ci-worker", "ci-master", "release-worker", "ci-engineer"]
     ).map((n) => `${n}%`);
     const where = likes.map(() => "s.name LIKE ?").join(" OR ");
     const rows = await getDB().all<{ n?: number }>(
@@ -515,6 +515,29 @@ export class Store {
     const res = await getDB().get<{ n: number }>(
       "SELECT COUNT(*) AS n FROM {{messages}} WHERE status = 'running' AND source_comment_id LIKE 'ci-fail-%' AND uid != ?",
       [excludeUid]
+    );
+    return res?.n ?? 0;
+  }
+
+  /** Unified CI-engineer pool (owner policy 2026-11-03: one bot owns BOTH
+   * ci-fail and merge-conflict) — running messages of both scid families
+   * counted together against WORK_CI_MAX_CONCURRENT. */
+  async countRunningEngineerMessages(excludeUid: string): Promise<number> {
+    const res = await getDB().get<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM {{messages}} WHERE status = 'running' AND uid != ? AND (source_comment_id LIKE 'ci-fail-%' OR source_comment_id LIKE 'merge-conflict-%')",
+      [excludeUid]
+    );
+    return res?.n ?? 0;
+  }
+
+  /** Shared attempt budget for the unified engineer lane: real attempts across
+   * BOTH scid families for one issue within the window. Same infra-kill
+   * exclusion as countAutoLaneMessages (interrupted/web-gate rows do not burn
+   * the budget — 2026-10-30 postmortem). */
+  async countAutoLaneEngineerMessages(issueId: string, issueNumber: string, sinceIso: string): Promise<number> {
+    const res = await getDB().get<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM {{messages}} m JOIN {{op_sessions}} s ON s.uid = m.session_id WHERE s.issue_id = ? AND (m.source_comment_id LIKE ? OR m.source_comment_id LIKE ?) AND m.created_at >= ? AND m.status IN ('running','done','failed') AND NOT (m.status='failed' AND (m.error LIKE 'infra:%' OR m.error LIKE 'web transient%' OR m.error LIKE 'gate: web%' OR m.error LIKE 'force stopped%' OR m.error LIKE 'engine crash%' OR m.error LIKE 'issue closed%'))",
+      [issueId, `ci-fail-${issueNumber}-`, `merge-conflict-${issueNumber}-`, sinceIso]
     );
     return res?.n ?? 0;
   }
