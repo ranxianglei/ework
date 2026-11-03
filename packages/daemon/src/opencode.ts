@@ -685,7 +685,7 @@ export class Engine {
     // refreshed by the drain loop; stale values only over-squeeze briefly).
     let infraDemand = this.pendingInfraCount;
     for (const k of this.running.keys()) {
-      if (k.includes("@conflict-worker") || k.includes("@ci-worker") || k.includes("@ci-master") || k.includes("@merge-guard")) infraDemand++;
+      if (k.includes("@conflict-worker") || k.includes("@ci-worker") || k.includes("@ci-master") || k.includes("@merge-guard") || k.includes("@ci-engineer")) infraDemand++;
     }
     return infraDemand > 0 ? Math.floor(this.maxConcurrent / 2) : this.maxConcurrent;
   }
@@ -701,7 +701,7 @@ export class Engine {
     const now = Date.now();
     let ordinaryActive = 0;
     for (const k of this.running.keys()) {
-      if (k.includes("@conflict-worker") || k.includes("@ci-worker") || k.includes("@ci-master") || k.includes("@merge-guard")) continue;
+      if (k.includes("@conflict-worker") || k.includes("@ci-worker") || k.includes("@ci-master") || k.includes("@merge-guard") || k.includes("@ci-engineer")) continue;
       const last = this.lastOutputAt.get(k) ?? this.startedAt.get(k) ?? now;
       if (now - last <= this.apiIdleGraceMs) ordinaryActive++;
     }
@@ -770,6 +770,7 @@ export class Engine {
         "ci-worker",
         "ci-master",
         "merge-guard",
+        "ci-engineer",
       ]);
     } catch {
       this.pendingInfraCount = 0;
@@ -1228,7 +1229,7 @@ export class Engine {
     // kills while agents waited in queues (API/model congestion); 30 min keeps
     // the anti-local-integration-test guard without the misfires. Ordinary
     // agents keep the global stuckThresholdMs default.
-    const infra = key.includes("@ci-master-sentinel") || key.includes("@conflict-worker") || key.includes("@ci-worker") || key.includes("@merge-guard") || key.includes("@review-worker");
+    const infra = key.includes("@ci-master-sentinel") || key.includes("@conflict-worker") || key.includes("@ci-worker") || key.includes("@merge-guard") || key.includes("@review-worker") || key.includes("@ci-engineer");
     return infra ? 30 * 60 * 1000 : this.stuckThresholdMs;
   }
 
@@ -1775,6 +1776,93 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
     }
   }
 
+  // ── Unified CI-engineer lane (owner policy 2026-11-03: fix 和接冲突由一个
+  // 机器人干) ─────────────────────────────────────────────────────────────
+  // When WORK_CI_ENGINEER_MAX_ATTEMPTS is SET (even 0), the ci-fail and
+  // merge-conflict lanes collapse into ONE bot: one sticky session per PR,
+  // one shared attempt budget, one shared concurrency pool (WORK_CI_MAX_
+  // CONCURRENT). The scid keeps the original lane prefix (ci-fail- /
+  // merge-conflict-) so every downstream gate stays valid. Key ABSENT ⇒
+  // legacy per-lane paths run exactly as before (staged rollout).
+  private get engineerMode(): boolean {
+    return this.cfg.work.ciEngineerMaxAttempts !== undefined;
+  }
+
+  private get engineerCap(): number {
+    return this.cfg.work.ciEngineerMaxAttempts ?? 0;
+  }
+
+  /** Shared dispatcher for the unified CI-engineer lane (see header above). */
+  private async dispatchCiEngineer(
+    ref: TrackerRef,
+    scopeKey: string,
+    issueData: TrackerEvent["issue"],
+    tracker: IssueTracker,
+    issue: Issue,
+    model: string | undefined,
+    parts: { mergeState?: string; ci?: NonNullable<TrackerEvent["ci"]> },
+    scid: string,
+  ): Promise<void> {
+    const windowMs = this.cfg.work.autoLaneWindowMs;
+    const cap = this.engineerCap;
+    const attempts = await this.store.countAutoLaneEngineerMessages(
+      String(issue.id),
+      String(ref.issueId),
+      new Date(Date.now() - windowMs).toISOString(),
+    );
+    if (attempts >= cap) {
+      const dkey = `${issue.id}:engineer:${parts.mergeState ? "conflict" : "ci"}`;
+      const lastNotice = this.autoLaneDegradeNotified.get(dkey) ?? 0;
+      if (Date.now() - lastNotice >= windowMs) {
+        await tracker.createComment(
+          ref,
+          `[system] ⛔ CI 工程师车道（修CI+解冲突统一）已达上限(${attempts} 次/${Math.round(windowMs / 3_600_000)}h 窗口) — 停止自动接单, 需要 owner 决策; 窗口过期后自动恢复。`,
+        ).catch(() => {});
+        this.autoLaneDegradeNotified.set(dkey, Date.now());
+      }
+      log.warn(
+        `engine: ci-engineer lane cap reached (${attempts}/${cap}) on ${scopeKey}#${ref.issueId} — degraded, no dispatch`,
+      );
+      return;
+    }
+
+    const session = await this.workerSession(issue.id, "ci-engineer");
+    const workdir = await this.resolveWorkdir(session, issue);
+    const instructions = tracker.getTrackerInstructions(ref);
+    const steps: string[] = [];
+    let stepN = 1;
+    if (parts.mergeState) {
+      steps.push(`${stepN++}. The PR conflicts with its base branch (merge state: ${parts.mergeState}): rebase (or merge) the target branch into your branch, resolve ALL conflicts, force-push (rebase) or push (merge).`);
+    }
+    if (parts.ci) {
+      const checkList = parts.ci.checks.map((c) => `- ${c.name}${c.html_url ? ` (${c.html_url})` : ""}`).join("\n");
+      steps.push(`${stepN++}. Failing checks:\n${checkList}\nFix them directly on the PR branch (fetch check logs via the API as needed), push incrementally.`);
+    }
+    const body =
+      `[SYSTEM] Upstream PR blockers detected for mirror 「${issueData.title}」${parts.ci ? ` (head ${parts.ci.sha.slice(0, 10)})` : ""}.\n` +
+      `You are the CI engineer for this PR — ONE bot owns BOTH its merge-conflict resolution and its red-CI fixing (owner policy 2026-11-03: fix 和接冲突由同一个机器人干). Work in this order:\n` +
+      steps.join("\n") +
+      `\nWhen done, reply with a 七问 summary covering everything you did this run.\n` +
+      `This is an auto-fix lane: attempt ${attempts + 1}/${cap}. Rules: small mechanical fixes only; when something needs a design decision, NEVER open a NEW issue — post a comment here whose first line is "🔶 需要决策" listing options A/B/C + recommendation + default-if-undecided, apply the needs-decision label via add-label.sh (workdir-root tools/ dir, see AGENTS.md §需要人工决策时), and stop (owner policy 2026-11-01). ` +
+      `Authorization checkpoints are NOT yours to satisfy: if a gate blocks you (kernel-guard on kernel/ diffs or any owner-approval guard), NEVER edit the PR body to add a declaration — post a "🔶 需要决策" comment requesting the owner's explicit authorization citing the PR number and the exact gated diff, apply the needs-decision label, then stop touching that PR (owner policy 2026-11-01, superseding 2026-10-26). ` +
+      `Check states come from the mirror cache: curl -s -H "Authorization: token $(grep ^GITEA_TOKEN= /var/lib/ework-daemon/share/ework-daemon/.env | cut -d= -f2)" "http://127.0.0.1:3002/api/v1/upstream-checks?owner=<owner>&repo=<repo>&number=<PR>" (refreshed by the mirror poller ~60s). NEVER gh-poll check states — the shared GitHub PAT budget exhausts (owner policy 2026-10-27); gh is only for git push/PR operations.`;
+    const prompt = this.buildForwardPrompt(
+      session.name,
+      this.handleLargeContent(workdir, body, `ci-engineer-${ref.issueId}.txt`),
+      "ework-web",
+      "bot",
+      issueData.title,
+      workdir,
+      instructions,
+      this.identityNote(issueData),
+    );
+    const reason = parts.mergeState
+      ? `上游 PR 冲突(${parts.mergeState})，冲突与红项由 CI 工程师一次处理`
+      : `CI 失败(${parts.ci?.checks.map((c) => c.name).join(", ")})，红项与冲突由 CI 工程师一次处理`;
+    await tracker.createComment(ref, `[system] 🏷 ${this.sessionRef(session)} 🛠 CI 工程师接管：${reason}`).catch(() => {});
+    await this.enqueueOrRun(session, issue, prompt, tracker, ref, scid, model);
+  }
+
   private async handleMergeConflict(
     ref: TrackerRef,
     scopeKey: string,
@@ -1798,6 +1886,21 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
     }
     if (issue.state === "closed") return;
     if (!(await this.ensureOwned(issue))) return;
+
+    // Unified CI-engineer mode (owner policy 2026-11-03): one bot owns both
+    // conflict fixes and CI fixes — route into the shared dispatcher.
+    if (this.engineerMode) {
+      if (this.engineerCap === 0) {
+        log.warn(`engine: merge-conflict event ignored on ${scopeKey}#${ref.issueId} — engineer lane disabled (cap=0)`);
+        return;
+      }
+      await this.dispatchCiEngineer(
+        ref, scopeKey, issueData, tracker, issue, model,
+        { mergeState },
+        `merge-conflict-${ref.issueId}-${Date.now()}`,
+      );
+      return;
+    }
 
     // Same retry cap + degradation discipline as the ci-fail lane
     // (owner directive 2026-10-24) — a PR that keeps re-conflicting after N
@@ -1878,6 +1981,21 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
     }
     if (issue.state === "closed") return;
     if (!(await this.ensureOwned(issue))) return;
+
+    // Unified CI-engineer mode (owner policy 2026-11-03): one bot owns both
+    // CI fixes and conflict fixes — route into the shared dispatcher.
+    if (this.engineerMode) {
+      if (this.engineerCap === 0) {
+        log.warn(`engine: ci_failed event ignored on ${scopeKey}#${ref.issueId} — engineer lane disabled (cap=0)`);
+        return;
+      }
+      await this.dispatchCiEngineer(
+        ref, scopeKey, issueData, tracker, issue, model,
+        { ci },
+        `ci-fail-${ref.issueId}-${ci.sha || Date.now()}`,
+      );
+      return;
+    }
 
     // Retry cap + degradation (owner directive 2026-10-24): the lane gets its
     // own budget — beyond N dispatches per PR within the window, stop auto-
@@ -2651,10 +2769,18 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
     // Ingestion (handleCiFailed / handleMergeConflict / handlePrUnmergeable)
     // also refuses new events.
     const src = msg.sourceCommentId ?? "";
-    const laneOff =
-      (src.startsWith("ci-fail-") && this.cfg.work.ciFixMaxAttempts === 0) ||
-      (src.startsWith("merge-conflict-") && this.cfg.work.conflictFixMaxAttempts === 0) ||
-      (src.startsWith("merge-guard-") && this.cfg.work.mergeGuardMaxAttempts === 0);
+    // Engineer mode (WORK_CI_ENGINEER_MAX_ATTEMPTS present): the two auto-fix
+    // lanes are ONE bot — its single cap gates both scid prefixes and the
+    // legacy per-lane zeros are ignored. Merge-guard keeps its own switch.
+    const engOff =
+      this.engineerMode &&
+      this.engineerCap === 0 &&
+      (src.startsWith("ci-fail-") || src.startsWith("merge-conflict-"));
+    const legacyFixOff =
+      !this.engineerMode &&
+      ((src.startsWith("ci-fail-") && this.cfg.work.ciFixMaxAttempts === 0) ||
+        (src.startsWith("merge-conflict-") && this.cfg.work.conflictFixMaxAttempts === 0));
+    const laneOff = engOff || legacyFixOff || (src.startsWith("merge-guard-") && this.cfg.work.mergeGuardMaxAttempts === 0);
 
     if (laneOff) {
       log.info(
@@ -2690,30 +2816,29 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
       this.running.delete(k);
       return;
     }
-    // Owner policy 2026-10-14: conflict-rebase work must not fan out across the
-    // whole fleet — cap concurrent merge-conflict runs so they never eat more
-    // than their share of slots (default 1). Deferred messages stay pending;
-    // the next completion event drains them.
-    if (msg.sourceCommentId?.startsWith("merge-conflict-")) {
-      const conflictCap = this.infraIdleExpandedCap(
-        this.infraNightActive() ? this.conflictMaxConcurrent * 2 : this.conflictMaxConcurrent,
-      );
-      const runningConflicts = await this.store.countRunningConflictMessages(msg.id);
-      if (runningConflicts >= conflictCap) {
-        log.info(`engine: merge-conflict cap (${conflictCap}) reached — deferring msg ${msg.id.slice(0, 8)} for ${k}`);
-        await this.store.updateMessageStatus(msg.id, "pending");
-        this.running.delete(k);
-        return;
+    // Owner policy 2026-10-14: infra fix work must not fan out across the
+    // whole fleet — deferred messages stay pending; the next completion event
+    // drains them. Engineer mode (2026-11-03) counts BOTH prefixes in one pool.
+    if (msg.sourceCommentId?.startsWith("merge-conflict-") || msg.sourceCommentId?.startsWith("ci-fail-")) {
+      let poolCap: number;
+      let runningPool: number;
+      let poolName: string;
+      if (this.engineerMode) {
+        // One shared budget for the unified CI engineer.
+        poolCap = this.infraIdleExpandedCap(this.infraNightActive() ? this.ciMaxConcurrent * 2 : this.ciMaxConcurrent);
+        runningPool = await this.store.countRunningEngineerMessages(msg.id);
+        poolName = "ci-engineer";
+      } else if (msg.sourceCommentId.startsWith("merge-conflict-")) {
+        poolCap = this.infraIdleExpandedCap(this.infraNightActive() ? this.conflictMaxConcurrent * 2 : this.conflictMaxConcurrent);
+        runningPool = await this.store.countRunningConflictMessages(msg.id);
+        poolName = "merge-conflict";
+      } else {
+        poolCap = this.infraIdleExpandedCap(this.infraNightActive() ? this.ciMaxConcurrent * 2 : this.ciMaxConcurrent);
+        runningPool = await this.store.countRunningCiMessages(msg.id);
+        poolName = "ci-fix";
       }
-    }
-    // CI-fix lane shares the same discipline (owner policy 2026-10-14).
-    if (msg.sourceCommentId?.startsWith("ci-fail-")) {
-      const ciCap = this.infraIdleExpandedCap(
-        this.infraNightActive() ? this.ciMaxConcurrent * 2 : this.ciMaxConcurrent,
-      );
-      const runningCi = await this.store.countRunningCiMessages(msg.id);
-      if (runningCi >= ciCap) {
-        log.info(`engine: ci-fix cap (${ciCap}) reached — deferring msg ${msg.id.slice(0, 8)} for ${k}`);
+      if (runningPool >= poolCap) {
+        log.info(`engine: ${poolName} cap (${poolCap}) reached — deferring msg ${msg.id.slice(0, 8)} for ${k}`);
         await this.store.updateMessageStatus(msg.id, "pending");
         this.running.delete(k);
         return;
@@ -2831,7 +2956,7 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
     // ~267K chars -> every model call 400s). Rotate to a fresh opencode session
     // when the sticky one exceeds sentinelRotateMessages messages. Rotation
     // happens between dispatches, never mid-run.
-    if (resumeSessionId && (session.name.includes("ci-master-sentinel") || session.name.includes("merge-guard") || session.name.includes("review-worker"))) {
+    if (resumeSessionId && (session.name.includes("ci-master-sentinel") || session.name.includes("merge-guard") || session.name.includes("review-worker") || session.name.includes("ci-engineer"))) {
       resumeSessionId = await this.maybeRotateSentinelSession(session, resumeSessionId);
     }
 
