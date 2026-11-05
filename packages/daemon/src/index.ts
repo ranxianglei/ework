@@ -60,9 +60,12 @@ async function boot() {
 
   // Multi-machine coordination boot:
   // 1. Release any stale owners (dead-daemon cleanup) so we can adopt orphans.
-  // 2. Register this daemon (adopts an orphan slot if available).
-  // 3. First-boot migration: claim all pre-existing ownerless issues.
+  // 2. Release owners whose daemons row vanished entirely (DB wipe recovery).
+  // 3. Register this daemon (adopts an orphan slot if available).
+  // 4. First-boot migration: claim all pre-existing ownerless issues.
   await store.releaseDeadOwners(config.work.leaseTtlMs);
+  const dangling = await store.releaseDanglingOwners();
+  if (dangling > 0) log.info(`  recovered ${dangling} issue(s) owned by vanished daemon rows`);
   const displayName = hostname();
   const internalEndpoint = config.daemon.endpoint || `${config.daemon.host}:${config.daemon.port}`;
   const daemonId = await store.registerDaemon(displayName, internalEndpoint, config.work.capacity, config.work.leaseTtlMs);

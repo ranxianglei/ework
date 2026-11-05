@@ -69,6 +69,7 @@ export const configSchema = z.object({
     infraRetryMax: z.coerce.number().int().nonnegative().default(3),
     infraRetryBaseMs: z.coerce.number().int().positive().default(15_000),
     recoveryReport: z.boolean().default(true),
+    reconcileScopes: z.array(z.string()).default([]),
     // Stuck-badge sweep: how often to re-verify every "processing" badge.
     badgeSweepIntervalMs: z.coerce.number().int().positive().default(60_000),
     // A processing badge older than this with no live signal is stale.
@@ -177,6 +178,7 @@ function readWorkSection() {
       : 3,
     infraRetryBaseMs: process.env.WORK_INFRA_RETRY_BASE_MS ? Math.max(1, Number(process.env.WORK_INFRA_RETRY_BASE_MS)) : 15_000,
     recoveryReport: !(process.env.WORK_RECOVERY_REPORT === "false" || process.env.WORK_RECOVERY_REPORT === "0"),
+    reconcileScopes: (process.env.WORK_RECONCILE_SCOPES ?? "").split(",").map((sc) => sc.trim()).filter(Boolean),
     badgeSweepIntervalMs: process.env.WORK_BADGE_SWEEP_MS ? Math.max(1_000, Number(process.env.WORK_BADGE_SWEEP_MS)) : 60_000,
     badgeTtlMs: process.env.WORK_BADGE_TTL_MIN ? Math.max(1, Number(process.env.WORK_BADGE_TTL_MIN)) * 60_000 : 10 * 60_000,
     badgeOutputTtlMs: process.env.WORK_BADGE_OUTPUT_TTL_MIN ? Math.max(1, Number(process.env.WORK_BADGE_OUTPUT_TTL_MIN)) * 60_000 : 10 * 60_000,

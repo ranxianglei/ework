@@ -98,6 +98,11 @@ export function applyPrefix(sql: string): string {
 }
 
 // ---- driver selection (env-only; read once at module load) ----
+// Exported so tests can assert which file initDB() will open (the ranxianglei/
+// ework#7 regression suite compares this against the isolation-pinned path).
+export const RESOLVED_DB_PATH: string | undefined =
+  (process.env.WORK_DB_DRIVER ?? "sqlite").trim().toLowerCase() === "sqlite" ? DB_PATH : undefined;
+
 const DB_DRIVER = (process.env.WORK_DB_DRIVER ?? "sqlite").trim().toLowerCase();
 const DB_SKIP_CREATE =
   process.env.WORK_DB_SKIP_CREATE === "1" || process.env.WORK_DB_SKIP_CREATE === "true";

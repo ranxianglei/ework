@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, openSync, readFileSync, rmSync } from "node:fs";
 import {
   addProjectMember, createIssue, createPat, createProject, createUser,
   getProject, postComment,
@@ -19,6 +19,7 @@ let authHeaders: Record<string, string> = {};
 
 let child: ReturnType<typeof Bun.spawn> | null = null;
 let attRoot: string;
+let serverStderrPath = "";
 
 async function waitUntilUp(): Promise<void> {
   for (let i = 0; i < 80; i++) {
@@ -36,6 +37,8 @@ beforeAll(async () => {
   await initDB();
   await createUser({ login: "dup-admin", password: "password123", is_admin: true });
   attRoot = mkdtempSync(join(tmpdir(), "ework-dup-"));
+  serverStderrPath = join(tmpdir(), `ework-web-server-${process.pid}-${PORT}.stderr.log`);
+  const serverStderrFd = openSync(serverStderrPath, "w");
   child = Bun.spawn(["bun", "src/index.ts"], {
     cwd: join(import.meta.dir, ".."),
     env: {
@@ -48,9 +51,18 @@ beforeAll(async () => {
       WORK_WEBHOOK_SECRET: "whsec-test",
     },
     stdout: "ignore",
-    stderr: "ignore",
+    stderr: serverStderrFd,
   });
-  await waitUntilUp();
+  try {
+    await waitUntilUp();
+  } catch (err) {
+    // The server's own output was previously discarded (stderr: "ignore"), so
+    // a failed boot surfaced as a bare 20s timeout with zero diagnostics.
+    let tail = "";
+    try { tail = readFileSync(serverStderrPath, "utf8").slice(-2000); } catch { /* no output */ }
+    const base = err instanceof Error ? err.message : String(err);
+    throw new Error(`${base}\n--- spawned server stderr (tail) ---\n${tail || "(no output captured)"}`);
+  }
   const pat = await createPat({ user_login: "dup-admin", name: "dup-test" });
   authHeaders = { authorization: `token ${pat.plaintext}` };
   const project = (await getProject("dup-owner", REPO)) ?? (await createProject("dup-owner", REPO, "d"));
@@ -60,6 +72,7 @@ beforeAll(async () => {
 afterAll(() => {
   child?.kill();
   rmSync(attRoot, { recursive: true, force: true });
+  try { rmSync(serverStderrPath, { force: true }); } catch {}
 });
 
 async function makeIssue(): Promise<number> {
