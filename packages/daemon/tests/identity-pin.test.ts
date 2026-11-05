@@ -194,5 +194,9 @@ describe("global no-decision-issue rule in base prompts", () => {
     expect(prompt).toContain("per e-work#44 plan");
     expect(prompt).toContain("ADD your commits to that existing branch/PR instead of opening a parallel second one");
     expect(prompt).toContain("--jq .title and confirm its GitHub title actually matches");
+    expect(prompt).toContain("/api/v1/issues?owner=");
+    expect(prompt).toContain("Authorization: token $GITEA_TOKEN");
+    expect(prompt).toContain("(.number|tostring)");
+    expect(prompt).not.toContain("/api/<owner>/<repo>/issues");
   });
 });
