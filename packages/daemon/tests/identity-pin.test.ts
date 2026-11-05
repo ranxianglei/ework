@@ -141,7 +141,7 @@ describe("identity pin in task prompts", () => {
     const prompt = String(
       Engine.prototype.buildForwardPrompt.call(
         self, "ework-daemon", "please help", "alice", "human", "Issue title", "/tmp/wd",
-        { issueRef: "ranxianglei/billion-context#5316" }, computeNote(self, issueDataPin), [], [],
+        { issueRef: "ranxianglei/billion-context#5316" }, computeNote(self, issueDataPin), undefined, [],
       ),
     );
     expect(prompt).toContain('posted a new comment on ranxianglei/billion-context#5316 "Issue title".');

@@ -317,18 +317,39 @@ describe("concurrency: recover respects cap", () => {
     const cfg = makeConfig(1);
     const engine = await bootEngine("V", store, cfg, 7105);
 
-    await engine.handleEvent(openedEvent("400", "issue V1"));
-    await engine.handleEvent(openedEvent("401", "issue V2"));
-    await engine.handleEvent(openedEvent("402", "issue V3"));
-    await waitFor(() => readCounter() === 1, 3000);
-    expect(readCounter()).toBe(1);
-
+    // Seed the crash shape directly instead of dispatching events: three open
+    // issues, each with one session and one in-flight ('running') message,
+    // owned by this daemon. Dispatching real events would leave a live
+    // process behind, which recover()'s orphan sweep SIGTERMs; that process's
+    // exit event then frees a slot mid-test and drainGlobalPending picks up a
+    // freshly-pended message, racing the assertions below (CI flake
+    // 39959659283). With no live pids the outcome is deterministic: recovery
+    // must resume exactly maxConcurrent of the stuck messages.
     const db = getDB();
-    await db.run("UPDATE {{messages}} SET status = 'running' WHERE status = 'pending'");
+    const daemonRow = await db.get<{ id: number }>("SELECT id FROM {{daemons}} LIMIT 1");
+    expect(daemonRow).toBeDefined();
+    const nowIso = new Date().toISOString();
+    for (let n = 1; n <= 3; n++) {
+      await db.run(
+        "INSERT INTO {{issues}} (uid, tracker_type, tracker_scope_key, tracker_scope, tracker_issue_id, state, title, created_at, updated_at, owner_daemon_id) VALUES (?, 'gitea', 'dog/repo', ?, ?, 'open', ?, ?, ?, ?)",
+        [`conv-v-${n}`, JSON.stringify({ owner: "dog", repo: "repo" }), String(400 + n), `issue V${n}`, nowIso, nowIso, daemonRow!.id],
+      );
+      await db.run(
+        "INSERT INTO {{op_sessions}} (uid, issue_id, name, state, created_at) VALUES (?, ?, 'ework-daemon-test', 'running', ?)",
+        [`conv-v-ses-${n}`, `conv-v-${n}`, nowIso],
+      );
+      await db.run(
+        "INSERT INTO {{messages}} (uid, session_id, content, status, created_at, updated_at) VALUES (?, ?, 'seeded prompt', 'running', ?, ?)",
+        [`conv-v-msg-${n}`, `conv-v-ses-${n}`, nowIso, nowIso],
+      );
+    }
+
     await engine.recover();
 
     const statuses = await db.all<{ status: string; c: number }>("SELECT status, COUNT(*) AS c FROM {{messages}} GROUP BY status");
+    const runningLeft = statuses.find((r) => r.status === "running")?.c ?? 0;
     const pendingLeft = statuses.find((r) => r.status === "pending")?.c ?? 0;
-    expect(pendingLeft).toBe(2);
+    expect(runningLeft).toBe(1); // resumed within the cap
+    expect(pendingLeft).toBe(2); // rest stayed queued
   });
 });
