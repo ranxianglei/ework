@@ -1,10 +1,6 @@
 {
   "name": "ework-daemon",
-<<<<<<< HEAD
-  "version": "0.4.197",
-=======
-  "version": "0.4.192",
->>>>>>> 2c1fe45 (fix(daemon): sentinel-lane auth-gate clause still told agents to open NEW issues)
+  "version": "0.4.198",
   "description": "Issue-driven AI development daemon. Spawns opencode subprocesses to resolve Gitea issues.",
   "module": "src/index.ts",
   "type": "module",

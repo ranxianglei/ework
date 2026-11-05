@@ -10,6 +10,7 @@ import type {
   SessionOutputResult,
   LastModelResult,
 } from "./types";
+import { stripDeniedEnv } from "./env-deny";
 
 export class PiBackend implements RuntimeBackend {
   readonly name = "pi";
@@ -44,8 +45,7 @@ export class PiBackend implements RuntimeBackend {
 
     args.push(opts.prompt);
 
-    const childEnv = { ...opts.env };
-    for (const key of this.childEnvDeny) delete childEnv[key];
+    const childEnv = stripDeniedEnv(opts.env, this.childEnvDeny);
 
     const proc = spawn({
       cmd: args,

@@ -9,8 +9,7 @@ import type {
   SessionOutputResult,
   LastModelResult,
 } from "./types";
-
-const ENV_DENY_ALWAYS = ["OPENCODE", "OPENCODE_PID", "OPENCODE_RUN_ID", "OPENCODE_PROCESS_ROLE"] as const;
+import { stripDeniedEnv } from "./env-deny";
 
 export class OpencodeBackend implements RuntimeBackend {
   readonly name = "opencode";
@@ -32,10 +31,8 @@ export class OpencodeBackend implements RuntimeBackend {
     }
     args.push(opts.prompt);
 
-    const childEnv = { ...opts.env };
+    const childEnv = stripDeniedEnv(opts.env, this.childEnvDeny);
     if (!opts.model) delete childEnv.OPENCODE_MODEL;
-    for (const key of ENV_DENY_ALWAYS) delete childEnv[key];
-    for (const key of this.childEnvDeny) delete childEnv[key];
 
     const proc = spawn({
       cmd: args,

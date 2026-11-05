@@ -1,11 +1,11 @@
 import { Database } from "bun:sqlite";
 import { mkdirSync, writeFileSync, unlinkSync, rmdirSync, readdirSync, existsSync, readFileSync } from "fs";
 import { join, dirname, resolve, isAbsolute } from "path";
-import { homedir } from "os";
+import { homedir, hostname } from "os";
 import { log } from "./logger";
 import { freeSpaceMb, gcIntervalMs, listBusyOpencodeWorkdirs, purgeStaleNodeModules, purgeStaleWorkdirs, shouldBlockSpawn } from "./workdir-gc";
 import type { Config } from "./config";
-import type { Store } from "./op";
+import { isForeignKeyError, type Store } from "./op";
 import type { IssueTracker, TrackerRef, TrackerEvent, TrackerComment, Issue, OpSession, Message } from "./trackers/types";
 import { formatKey, parseKey } from "./trackers/types";
 import type { BadgeEntry } from "./trackers/types";
@@ -13,6 +13,7 @@ import type { RuntimeBackend, RuntimeHandle } from "./runtime/types";
 import { OpencodeBackend } from "./runtime/opencode-backend";
 import { PiBackend } from "./runtime/pi-backend";
 import { downloadIssueAttachments, attachmentNote } from "./attachments";
+import { reconcileWebIssues } from "./sync/web-reconcile";
 
 // ─── Types ───
 
@@ -724,7 +725,9 @@ export class Engine {
   private cfg: Config;
   private store: Store;
   private trackers: TrackerRegistry;
-  private readonly daemonId: number;
+  // Not readonly: healDaemonRow() re-registers the daemon after its identity
+  // row was lost (DB wipe) and reassigns this to the new row's id.
+  private daemonId: number;
   private readonly takeover: TakeoverStrategy;
   private readonly backend: RuntimeBackend;
   private gateChecker: (issue: Issue) => Promise<{ allowed: boolean; reason: string; resetMs?: number; concurrency?: number | null; unreachable?: boolean; httpError?: boolean }>;
@@ -923,6 +926,7 @@ export class Engine {
 
   private observedIssues = new Set<string>();
   private lastWorkdirGcAt = 0;
+  private lastWebReconcileAt = 0;
   private badgeWrites = new Map<string, string>();
   private observerTimer?: ReturnType<typeof setInterval>;
   // Stuck-badge sweep state (ework#12)
@@ -967,6 +971,7 @@ export class Engine {
   private static MAX_STUCK_NUDGE_ROUNDS = 1;
   private static MAX_RUNTIME_MS = 3 * 60 * 60 * 1000;
   private static OBSERVER_INTERVAL_MS = 5 * 60 * 1000;
+  private static WEB_RECONCILE_INTERVAL_MS = 60 * 60_000;
   // CI-lane post-fix verification (audit RC3).
   private static readonly CI_LANE_SOURCE_RE = /^(?:ci-fail|merge-conflict|merge-guard)-(\d+)(?:-([0-9a-fA-F]{7,40}))?$/;
   // A 'checks still running' snapshot older than this is no longer evidence.
@@ -1250,26 +1255,98 @@ export class Engine {
   /**
    * Ensure this engine owns the issue before doing work on it. Returns true
    * if we own it (either already, or just claimed). Returns false if another
-   * daemon won the claim — caller must skip.
+   * daemon won the claim — caller must skip. Public so tests can drive the
+   * self-heal paths directly (see sweepStrandedInterrupted precedent).
+   *
+   * Self-heals (ranxianglei/ework#7): a missing issues row is re-created
+   * first (claiming a nonexistent row matches zero rows and would read as
+   * "lost the race"), an FK failure on claim means our daemons row vanished
+   * (e.g. DB wipe) — re-register and retry once, and a losing claim retries
+   * after clearing stale leases so failover never waits for the observer
+   * cycle (e2e Phase 7 failover race, 2026-09-27). releaseDeadOwners is a
+   * heartbeat-gated no-op for live owners, so lost-claim semantics are
+   * unchanged for healthy peers.
    */
-  private async ensureOwned(issue: Issue): Promise<boolean> {
-    if (issue.ownerDaemonId === this.daemonId) return true;
-    const won = await this.store.claimIssue(issue.id, this.daemonId);
-    if (won) return true;
-    // The row is held by another daemon. If that owner went silent (crashed
-    // without releasing), failover must not wait for the next observer
-    // cycle: clear stale leases and retry the claim inline.
-    // releaseDeadOwners is a heartbeat-gated no-op for live owners, so the
-    // lost-claim semantics below are unchanged for healthy peers
-    // (e2e Phase 7 failover race, 2026-09-27).
-    await this.store.releaseDeadOwners(this.cfg.work.leaseTtlMs);
-    const reclaimed = await this.store.claimIssue(issue.id, this.daemonId);
-    if (!reclaimed) {
-      log.info(`engine: lost claim on issue ${issue.id} to another daemon (owner=${issue.ownerDaemonId})`);
-      return false;
+  async ensureOwned(issue: Issue): Promise<boolean> {
+    let target: Issue | undefined = await this.store.getIssue(issue.id);
+    if (!target) {
+      // Row was lost (DB wipe etc.): re-create it. Note findOrCreateIssue
+      // mints a fresh local uid, so all subsequent steps must use the
+      // returned row — claiming the stale uid would match zero rows. A
+      // freshly created row has no owner, so fall through to the claim
+      // instead of trusting the (stale) in-memory ownership.
+      target = await this.store.findOrCreateIssue(
+        { trackerType: issue.trackerType, scope: issue.trackerScope, issueId: issue.trackerIssueId },
+        issue.trackerScopeKey,
+        issue.title,
+      );
+    } else if (issue.ownerDaemonId === this.daemonId) {
+      return true;
     }
-    log.info(`engine: reclaimed issue ${issue.id} from stale owner (lease ttl ${Math.round(this.cfg.work.leaseTtlMs / 1000)}s)`);
-    return true;
+
+    try {
+      const won = await this.claimWithHeal(target.id);
+      if (won) return true;
+      // The row is held by another daemon. If that owner went silent
+      // (crashed without releasing), failover must not wait for the next
+      // observer cycle: clear stale leases and retry the claim inline.
+      await this.store.releaseDeadOwners(this.cfg.work.leaseTtlMs);
+      if (await this.claimWithHeal(target.id)) {
+        log.info(`engine: reclaimed issue ${target.id} from stale owner (lease ttl ${Math.round(this.cfg.work.leaseTtlMs / 1000)}s)`);
+        return true;
+      }
+      const current = await this.store.getIssue(target.id);
+      log.info(`engine: lost claim on issue ${target.id} to another daemon (owner=${current?.ownerDaemonId ?? "unknown"})`);
+      return false;
+    } catch (err) {
+      throw err;
+    }
+  }
+
+  /**
+   * claimIssue with FK-failure self-heal: when our daemons row vanished
+   * (DB wipe etc.) the UPDATE fails on the FK — re-register (absorbing any
+   * same-host duplicates) and retry the claim exactly once.
+   */
+  private async claimWithHeal(issueId: string): Promise<boolean> {
+    try {
+      return await this.store.claimIssue(issueId, this.daemonId);
+    } catch (err) {
+      if (!isForeignKeyError(err)) throw err;
+      log.warn(`engine: claim on issue ${issueId} hit FK violation — daemon row missing, re-registering`);
+      const healed = await this.healDaemonRow();
+      if (healed === null) return false;
+      const won = await this.store.claimIssue(issueId, this.daemonId);
+      if (!won) {
+        const current = await this.store.getIssue(issueId);
+        log.warn(`engine: retry claim on issue ${issueId} after heal still lost (owner=${current?.ownerDaemonId ?? "unknown"})`);
+        return false;
+      }
+      log.info(`engine: recovered ownership of issue ${issueId} after daemon row heal`);
+      return true;
+    }
+  }
+
+  /**
+   * Re-register this daemon after its identity row was lost (DB wipe etc.),
+   * absorbing same-host duplicate rows. Returns the new daemon id, or null
+   * when re-registration itself fails.
+   */
+  private async healDaemonRow(): Promise<number | null> {
+    try {
+      const displayName = hostname();
+      const endpoint = this.cfg.daemon.endpoint || `${this.cfg.daemon.host}:${this.cfg.daemon.port}`;
+      const id = await this.store.registerDaemon(displayName, endpoint, this.cfg.work.capacity, this.cfg.work.leaseTtlMs);
+      await this.store.absorbSameHostDaemons(id, displayName, endpoint);
+      if (id !== this.daemonId) {
+        log.warn(`engine: daemon identity changed ${this.daemonId} → ${id} (previous row was lost)`);
+        this.daemonId = id;
+      }
+      return id;
+    } catch (err) {
+      log.error("engine: daemon re-registration after FK failure failed:", (err as Error).message);
+      return null;
+    }
   }
 
   private get stuckThresholdMs(): number {
@@ -4415,6 +4492,8 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
   private async runObserverCycle() {
     try {
       await this.store.releaseDeadOwners(this.cfg.work.leaseTtlMs);
+      const dangling = await this.store.releaseDanglingOwners();
+      if (dangling > 0) log.info(`engine: released ${dangling} issue(s) owned by vanished daemon rows`);
     } catch (err) {
       log.error("engine: releaseDeadOwners failed:", (err as Error).message);
     }
@@ -4493,6 +4572,28 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
           void this.drainGlobalPending();
         }
       } catch { /* transient store error — next cycle retries */ }
+    }
+
+    // Web→daemon row reconciliation: backfill open issue rows lost from the
+    // engine DB (the 2026-09-17 test-wipe incident made that permanent).
+    // Runs when reachability was confirmed through an owned issue OR when
+    // there are no owned issues at all — the latter is exactly the state a
+    // wipe leaves behind, where ownership can never confirm reachability.
+    if ((webReachable || allOwned.length === 0) && Date.now() - this.lastWebReconcileAt >= Engine.WEB_RECONCILE_INTERVAL_MS) {
+      this.lastWebReconcileAt = Date.now();
+      try {
+        const active = await this.store.listActiveIssues();
+        const scopes = [...new Set([...active.map((i) => i.trackerScopeKey), ...this.cfg.work.reconcileScopes])];
+        const result = await reconcileWebIssues({
+          webUrl: this.cfg.gitea.url,
+          token: this.cfg.gitea.token,
+          scopes,
+          store: this.store,
+        });
+        if (result.restored > 0) log.info(`engine: web reconcile restored ${result.restored} missing open issue row(s) (${result.matched}/${result.checked} in scope)`);
+      } catch (err) {
+        log.warn("engine: web reconcile failed:", (err as Error).message);
+      }
     }
 
     // Badge reconcile: the badge is written by many racing paths (enqueue,
@@ -4719,6 +4820,8 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
     // reclaimable).
     try {
       await this.store.releaseDeadOwners(this.cfg.work.leaseTtlMs);
+      const dangling = await this.store.releaseDanglingOwners();
+      if (dangling > 0) log.info(`engine: released ${dangling} issue(s) owned by vanished daemon rows at boot`);
     } catch (err) {
       log.error("engine: releaseDeadOwners at boot failed:", (err as Error).message);
     }
