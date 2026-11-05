@@ -6,6 +6,7 @@ import type {
   TrackerEvent,
   TrackerComment,
   TrackerInstructions,
+  BadgeEntry,
 } from "./types";
 
 export class GiteaTracker implements IssueTracker {
@@ -69,6 +70,22 @@ export class GiteaTracker implements IssueTracker {
     await this.client.updateIssueStatus(
       this.owner(ref), this.repo(ref), Number(ref.issueId), status, detail
     );
+  }
+
+  async listBadges(status: string): Promise<BadgeEntry[]> {
+    try {
+      const res = await this.client.listAiStatusBadges(status);
+      return (res.badges ?? []).map((b) => ({
+        owner: b.owner,
+        repo: b.repo,
+        number: b.number,
+        aiStatus: b.aiStatus,
+        since: b.since ? Date.parse(b.since) : null,
+      })).filter((b) => b.since === null || !Number.isNaN(b.since));
+    } catch (e) {
+      console.warn(`[tracker] listBadges(${status}) failed:`, (e as Error).message);
+      return [];
+    }
   }
 
   async setCommentModel(ref: TrackerRef, commentId: string, model: string) {
