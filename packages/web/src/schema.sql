@@ -65,6 +65,8 @@ CREATE TABLE IF NOT EXISTS {{issues}} (
   closed_at  TEXT,
   -- AI processing status: '' (none) | 'processing' | 'halted' | 'completed' | 'failed'
   ai_status  TEXT NOT NULL DEFAULT '',
+  -- ISO timestamp of when ai_status last changed (TTL basis for badge liveness).
+  ai_status_since TEXT NOT NULL DEFAULT '',
   -- Resolved "provider/model" for this issue. Empty = inherit project/global default.
   model      TEXT NOT NULL DEFAULT '',
   -- Runtime backend pinned for this issue ('' = daemon default, 'opencode', 'pi').
