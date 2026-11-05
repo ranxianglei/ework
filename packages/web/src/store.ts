@@ -498,6 +498,21 @@ export async function createIssue(
     const taken = want
       ? await getDB().get<{ id: number }>("SELECT id FROM {{issues}} WHERE project_id = ? AND number = ?", [projectId, want])
       : undefined;
+    // Numbering-drift detector (e-work#44, 2026-11-05): local numbers are a
+    // project-local sequence while upstream (GitHub) has its own counter,
+    // and the two interleave — whenever the assigned delta
+    // (local − upstream) differs from the most recent previously-linked
+    // row's delta, the two ledgers have just shifted apart and any bare
+    // "#N" between them now names different threads. Divergence is rare
+    // (~2/month), so one journal line per event is exactly the alert.
+    let prevDelta: number | null = null;
+    if (opts.upstreamIssueNumber != null) {
+      const prev = await getDB().get<{ d: number | null }>(
+        "SELECT number - upstream_issue_number AS d FROM {{issues}} WHERE project_id = ? AND upstream_issue_number IS NOT NULL ORDER BY number DESC LIMIT 1",
+        [projectId]
+      );
+      prevDelta = prev?.d ?? null;
+    }
     const next = want && !taken
       ? { n: want }
       : (await getDB().get<{ n: number }>(
@@ -507,6 +522,15 @@ export async function createIssue(
       "INSERT INTO {{issues}} (project_id, number, title, body, state, author, created_at, updated_at, closed_at, model, runtime, upstream_issue_number, kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       [projectId, next.n, title, body, state, author, createdAt, updatedAt, closedAt, opts.model ?? "", opts.runtime ?? "", opts.upstreamIssueNumber ?? null, opts.kind ?? "issue"]
     );
+    if (opts.upstreamIssueNumber != null && prevDelta !== null && !isNaN(prevDelta)) {
+      const delta = next.n - opts.upstreamIssueNumber;
+      if (delta !== prevDelta) {
+        // Log-only on purpose (v1): pausing sync automatically would silently
+        // back up imports; the alert is for human/agent patrol to top up the
+        // lagging counter during a quiet window (e-work#44 procedure).
+        console.error(`[numbering-drift] project ${projectId}: new row local=${next.n} upstream=${opts.upstreamIssueNumber} delta=${delta}, previously-used delta=${prevDelta} — local/upstream number counters just shifted apart; every bare #N between them now names different threads (see e-work#44)`);
+      }
+    }
     await getDB().run("UPDATE {{projects}} SET updated_at = ? WHERE id = ?", [updatedAt, projectId]);
     return (await getIssueById(info.insertId))!;
   });

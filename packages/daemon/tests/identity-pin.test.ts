@@ -182,4 +182,17 @@ describe("global no-decision-issue rule in base prompts", () => {
     expect(prompt).toContain("add-label.sh");
     expect(prompt).toContain("owner policy 2026-11-01");
   });
+
+  test("buildInitialPrompt embeds the one-PR-per-thread + GitHub-number rule", () => {
+    const { Engine } = require("../src/opencode");
+    const self = engineSelf();
+    const prompt = Engine.prototype.buildInitialPrompt.call(
+      self, "ework-daemon", "t", "b", "ranxianglei", "/wd",
+      { clone: "git clone x .", issueRef: "acme/widgets#42" }, null,
+    );
+    expect(prompt).toContain("one fix PR per thread; GitHub numbers outside the mirror");
+    expect(prompt).toContain("per e-work#44 plan");
+    expect(prompt).toContain("ADD your commits to that existing branch/PR instead of opening a parallel second one");
+    expect(prompt).toContain("--jq .title and confirm its GitHub title actually matches");
+  });
 });

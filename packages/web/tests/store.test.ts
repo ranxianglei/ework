@@ -428,4 +428,40 @@ describe("createIssue: number preservation (upstream imports)", () => {
     const imported = await createIssue(p.id, "clash", "b", "dog", { number: 1, upstreamIssueNumber: 1 });
     expect(imported.number).toBe(3);
   });
+
+  // e-work#44 (2026-11-05): local vs upstream counters can shift apart
+  // silently (discussions consume local slots without a GitHub number);
+  // every import whose delta differs from the previously-used delta must
+  // be loud in the journal so patrol can top up the lagging side.
+  function captureDriftLogs(fn: () => Promise<unknown>): Promise<string> {
+    return new Promise((resolve) => {
+      let out = "";
+      const orig = console.error.bind(console);
+      console.error = (...args: unknown[]) => { out += args.join(" ") + "\n"; };
+      Promise.resolve()
+        .then(fn)
+        .catch(() => {/* drift alerting never throws */})
+        .finally(() => { console.error = orig; resolve(out); });
+    });
+  }
+
+  test("alerts when the local/upstream delta shifts vs previous rows", async () => {
+    const p = await createProject("np-c", "drift", "");
+    await createIssue(p.id, "stable era", "b", "dog", { number: 10, upstreamIssueNumber: 7 }); // delta +3
+    const log = await captureDriftLogs(async () => {
+      await createIssue(p.id, "shifted import", "b", "dog", { number: 14, upstreamIssueNumber: 12 }); // delta +2
+    });
+    expect(log).toContain("[numbering-drift]");
+    expect(log).toContain("delta=2");
+    expect(log).toContain("previously-used delta=3");
+  });
+
+  test("stays silent while the delta is constant", async () => {
+    const p = await createProject("np-d", "steady", "");
+    await createIssue(p.id, "a", "b", "dog", { number: 10, upstreamIssueNumber: 7 }); // delta +3
+    const log = await captureDriftLogs(async () => {
+      await createIssue(p.id, "b", "b", "dog", { number: 11, upstreamIssueNumber: 8 }); // delta +3 again
+    });
+    expect(log).not.toContain("[numbering-drift]");
+  });
 });
