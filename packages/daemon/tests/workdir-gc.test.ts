@@ -2,7 +2,7 @@ import { describe, expect, test, beforeAll, afterAll, afterEach } from "bun:test
 import { mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
-import { freeSpaceMb, purgeStaleNodeModules, purgeStaleWorkdirs, shouldBlockSpawn } from "../src/workdir-gc";
+import { freeSpaceMb, gcIntervalMs, purgeStaleNodeModules, purgeStaleWorkdirs, shouldBlockSpawn } from "../src/workdir-gc";
 
 const ROOT = join(tmpdir(), `ework-gc-test-${Date.now()}`);
 const DAY = 24 * 60 * 60 * 1000;
@@ -131,5 +131,25 @@ describe("spawn disk watermark helpers", () => {
     expect(shouldBlockSpawn(500, 1024)).toBe(true);
     expect(shouldBlockSpawn(2048, 1024)).toBe(false);
     expect(shouldBlockSpawn(0, 0)).toBe(false); // watermark disabled
+  });
+});
+
+// Literals on purpose: these pin the incident-approved policy values
+// (30G / 5min / 24h). If the constants in workdir-gc.ts drift, CI must fail.
+describe("pressure-aware GC cadence (gcIntervalMs)", () => {
+  test("tight disk (free < 30G) → 5-minute interval", () => {
+    expect(gcIntervalMs(30_719)).toBe(5 * 60 * 1000);
+    expect(gcIntervalMs(1000)).toBe(5 * 60 * 1000);
+    expect(gcIntervalMs(0)).toBe(5 * 60 * 1000);
+  });
+
+  test("healthy disk (free >= 30G) → 24-hour baseline", () => {
+    expect(gcIntervalMs(30_720)).toBe(24 * 60 * 60 * 1000); // boundary: strict <
+    expect(gcIntervalMs(30_721)).toBe(24 * 60 * 60 * 1000);
+    expect(gcIntervalMs(102_400)).toBe(24 * 60 * 60 * 1000);
+  });
+
+  test("unmeasurable free space (null) → 24-hour baseline, never tightens", () => {
+    expect(gcIntervalMs(null)).toBe(24 * 60 * 60 * 1000);
   });
 });

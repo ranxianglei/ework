@@ -212,8 +212,15 @@ describe("sweepStrandedInterrupted: restart-stranding repair", () => {
     const db = getDB();
     await db.exec(`UPDATE {{messages}} SET status = 'interrupted'`);
 
-    // A bot reply landed AFTER the stranded message was created.
-    fakeTracker.comments.push({ id: "bot-1", body: "[bot] done already", author: "ework-daemon", createdAt: new Date().toISOString() });
+    // A bot reply landed AFTER the stranded message was created. Pin its
+    // timestamp to the row's created_at + 50ms rather than a fresh now(): on
+    // fast runners both can share one millisecond, where hasRecoveryDelivery's
+    // strict > comparison (deliberately conservative — requeue when unsure)
+    // misreads the reply as pre-prompt and resurrects instead of marking done.
+    // That same-millisecond collision made this test flaky in CI.
+    const rowTs = (await db.get<{ created_at: string }>(`SELECT created_at FROM {{messages}} LIMIT 1`))?.created_at;
+    if (!rowTs) throw new Error("expected the stranded message row to exist");
+    fakeTracker.comments.push({ id: "bot-1", body: "[bot] done already", author: "ework-daemon", createdAt: new Date(new Date(rowTs).getTime() + 50).toISOString() });
 
     await engine.sweepStrandedInterrupted();
 
