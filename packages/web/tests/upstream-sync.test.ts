@@ -95,12 +95,19 @@ function mockFetch() {
       hookCalls.push({ url, body: JSON.parse(String(init?.body ?? "{}")) });
       return new Response("{}", { status: 200 });
     }
+    const slicePaged = <T,>(arr: T[]): T[] => {
+      const lm = url.match(/[?&](?:limit|per_page)=(\d+)/);
+      const limit = lm ? Number(lm[1]) : 100;
+      const pm = url.match(/[?&]page=(\d+)/);
+      const page = pm ? Number(pm[1]) : 1;
+      return arr.slice((page - 1) * limit, page * limit);
+    };
     if (url.startsWith(`${UPSTREAM}/api/v1/repos/acme/widget/issues/comments`)) {
-      return Response.json(repoComments);
+      return Response.json(slicePaged(repoComments));
     }
     const perIssue = url.match(/\/issues\/(\d+)\/comments/);
     if (perIssue) {
-      return Response.json(issueComments[Number(perIssue[1])] ?? []);
+      return Response.json(slicePaged(issueComments[Number(perIssue[1])] ?? []));
     }
     if (url.startsWith(`${UPSTREAM}/api/v1/repos/acme/widget/issues`)) {
       listUrls.push(url);
@@ -807,15 +814,57 @@ describe("announce sweep (dog/ework-aio#6)", () => {
     expect(row?.announced_at).toBeTruthy();
   });
 
-  test("leaves recently created rows alone (10min grace)", async () => {
+});
+
+describe("comment pagination regression (owner fix 2026-11-07, #5808 loss)", () => {
+  test("repo comment stream drains a backlog bigger than one full page", async () => {
     const { sync } = await setup();
-    issuePages = [[]];
-    issueComments = {};
+    // seed local row #7 + enter live mode via an empty backfill
+    issuePages = [[giteaIssue(7)]];
+    issueComments = { 7: [] };
+    repoComments = [];
     mockFetch();
     await makeSyncer(sync).pollOnce();
     await settle();
     hookCalls = [];
 
+    // 150 fresh comments on #7: spans pages of 100 — all must land
+    repoComments = Array.from({ length: 150 }, (_, i) =>
+      giteaComment(900 + i, 7, { created_at: freshTs(), updated_at: freshTs() })
+    );
+    issuePages = [[giteaIssue(7, { updated_at: "2020-01-01T00:00:00Z" })]];
+    const r = await makeSyncer((await getUpstreamSync(projectId))!).pollOnce();
+    await settle();
+
+    expect(r.commentsImported).toBe(150);
+    for (const id of [900, 949, 950, 1049]) expect(await getCommentByUpstreamId(id)).toBeTruthy();
+    const after = await getUpstreamSync(projectId);
+    expect(after?.comment_cursor).toBeTruthy();
+  });
+
+  test("backfill walks every per-thread comment page (thread > one page)", async () => {
+    const { sync } = await setup();
+    issuePages = [[giteaIssue(9)]];
+    issueComments = {
+      9: Array.from({ length: 120 }, (_, i) => giteaComment(700 + i, 9)),
+    };
+    repoComments = [];
+    mockFetch();
+
+    const r = await makeSyncer(sync).pollOnce();
+    await settle();
+
+    expect(r.commentsImported).toBeGreaterThanOrEqual(120);
+    for (const id of [700, 799, 800, 819]) expect(await getCommentByUpstreamId(id)).toBeTruthy();
+  });
+});
+
+describe("sweep-grace continuation", () => {
+  test("leaves recently created rows alone (10min grace)", async () => {
+    await setup();
+    issuePages = [[]];
+    repoComments = [];
+    mockFetch();
     await createIssue(projectId, "fresh orphan", "b", "alice", { upstreamIssueNumber: 9, number: 9, createdAt: freshTs(), updatedAt: freshTs() });
 
     await makeSyncer((await getUpstreamSync(projectId))!).pollOnce();
