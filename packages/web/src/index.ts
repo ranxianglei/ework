@@ -657,8 +657,8 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
       if (!owner || !repo || !number) return json({ error: "owner, repo, number required" }, 400);
       const project = await getProject(owner, repo);
       if (!project) return json({ error: "unknown project" }, 404);
-      let row = await getDB().get<{ upstream_checks: string | null }>(
-        "SELECT upstream_checks FROM {{issues}} WHERE project_id = ? AND upstream_issue_number = ? AND kind = 'issue' LIMIT 1",
+      let row = await getDB().get<{ upstream_checks: string | null; state?: string | null }>(
+        "SELECT upstream_checks, state FROM {{issues}} WHERE project_id = ? AND upstream_issue_number = ? AND kind = 'issue' LIMIT 1",
         [project.id, Number(number)],
       );
       if (!row) {
@@ -676,6 +676,10 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
         const checks = Array.isArray(snap.checks) ? snap.checks : [];
         return json({
           ...snap,
+          // PR liveness: a closed/merged upstream thread never refreshes its
+          // cache again, so a frozen 'running' snapshot must not keep any
+          // verify/retry cycle alive (2026-11-07, #5611 loop).
+          ...(typeof row.state === "string" ? { state: row.state } : {}),
           summary: {
             total: checks.length,
             failed: checks.filter((c: { conclusion?: string | null }) => c.conclusion === "failure").length,
