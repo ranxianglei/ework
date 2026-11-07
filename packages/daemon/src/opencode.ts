@@ -4299,7 +4299,7 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
       return;
     }
     type CheckSnap = { name?: unknown; conclusion?: unknown }[];
-    type CheckSnapData = { sha?: unknown; fetched_at?: unknown; summary?: { total?: number; failed?: number; pending?: number }; checks?: CheckSnap };
+    type CheckSnapData = { sha?: unknown; fetched_at?: unknown; state?: unknown; summary?: { total?: number; failed?: number; pending?: number }; checks?: CheckSnap };
     let data: CheckSnapData | null = null;
     try {
       const url = `${this.cfg.gitea.url}/api/v1/upstream-checks?owner=${encodeURIComponent(owner)}&repo=${encodeURIComponent(repo)}&number=${entry.pr}`;
@@ -4311,6 +4311,15 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
       data = (await resp.json()) as CheckSnapData;
     } catch (err) {
       this.bumpCiVerifyTransient(key, entry, (err as Error).message);
+      return;
+    }
+    // PR closed/merged upstream ⇒ its check cache never refreshes again; a
+    // frozen snapshot here is evidence of nothing, so drop the cycle instead
+    // of rescheduling until the transient counter (reset on every restart)
+    // exhausts. 2026-11-07: merged #5611 looped this path for 86h.
+    if (typeof data?.state === "string" && data.state !== "open") {
+      log.info(`engine: ci-verify ${key}: PR ${entry.pr} is ${data.state} — dropping stale verify cycle`);
+      this.ciVerifyQueue.delete(key);
       return;
     }
     // Head moved past what we're verifying ⇒ stale cycle; whatever fix landed

@@ -85,8 +85,9 @@ const RED_CHECKS: CheckRow[] = [{ name: "test", status: "completed", conclusion:
 type Snapshot = null | { sha?: string; fetched_at?: string; checks: CheckRow[] };
 
 /** Fake e-work-web serving GET /api/v1/upstream-checks from mutable state. */
-function startFakeWeb(initial: Snapshot): { port: number; state: { snap: Snapshot }; stop: () => void } {
-  const state: { snap: Snapshot } = { snap: initial };
+type SnapState = (Snapshot & { prState?: string }) | null
+function startFakeWeb(initial: SnapState): { port: number; state: { snap: SnapState }; stop: () => void } {
+  const state: { snap: SnapState } = { snap: initial };
   const server = Bun.serve({
     port: 0,
     async fetch(req) {
@@ -101,6 +102,7 @@ function startFakeWeb(initial: Snapshot): { port: number; state: { snap: Snapsho
           sha: s.sha ?? null,
           fetched_at: s.fetched_at ?? new Date().toISOString(),
           checks: s.checks,
+          ...(typeof s.prState === "string" ? { state: s.prState } : {}),
           summary: { total, failed, pending },
         });
       }
@@ -182,6 +184,32 @@ afterEach(async () => {
 });
 
 describe("CI-lane post-fix verification (audit RC3)", () => {
+  test("closed PR: frozen running snapshot drops the cycle instead of looping", async () => {
+    const web = startFakeWeb({
+      sha: SHA_A,
+      prState: "closed",
+      fetched_at: new Date(Date.now() - 90 * 60_000).toISOString(),
+      checks: [],
+    });
+    try {
+      const { engine, store } = await bootEngine({ web: `http://127.0.0.1:${web.port}` });
+      const msg = await seedLaneMsg(store, `ci-fail-700-${SHA_A}`);
+      await engine.scheduleCiVerify(msg);
+      expect(priv(engine).ciVerifyQueue.has(VERIFY_KEY)).toBe(true);
+
+      await Bun.sleep(60);
+      await engine.runCiVerifySweep();
+      expect(priv(engine).ciVerifyQueue.size).toBe(0);
+      // One more sweep: nothing came back to life.
+      await Bun.sleep(60);
+      await engine.runCiVerifySweep();
+      expect(priv(engine).ciVerifyQueue.size).toBe(0);
+      expect(tracker.comments.length).toBe(0);
+    } finally {
+      web.stop();
+    }
+  });
+
   test("green: posts exactly one verified-green comment and clears the entry", async () => {
     const web = startFakeWeb({ sha: SHA_A, checks: OK_CHECKS });
     try {
@@ -300,7 +328,7 @@ describe("CI-lane post-fix verification (audit RC3)", () => {
   });
 
   test("no evidence: repeated web failures drop the entry quietly (no comments)", async () => {
-    const web = startFakeWeb(null); // 404 forever — no cached checks
+    const web = startFakeWeb(null as unknown as SnapState); // 404 forever — no cached checks
     try {
       const { engine, store } = await bootEngine({ web: `http://127.0.0.1:${web.port}` });
       const msg = await seedLaneMsg(store, `ci-fail-700-${SHA_A}`);
