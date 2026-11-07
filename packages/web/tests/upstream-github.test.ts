@@ -110,7 +110,7 @@ describe("upstream-sync github adapter", () => {
     expect(calledUrls[0]).toBe(
       "https://api.github.com/repos/acme/widget/issues?state=all&per_page=50&page=1&sort=created&direction=asc"
     );
-    expect(calledUrls.some((u) => u.includes("?per_page=50"))).toBe(true);
+    expect(calledUrls.some((u) => u.includes("/comments?per_page=100"))).toBe(true);
     expect(calledUrls.every((u) => !u.includes("/api/v1"))).toBe(true);
   });
 
@@ -165,7 +165,7 @@ describe("upstream-sync github adapter", () => {
     const rows = await db.all(`SELECT upstream_comment_id FROM {{comments}}`);
     expect(rows.length).toBe(1);
     expect((rows[0] as any).upstream_comment_id).toBe(21);
-    expect(calledUrls.some((u) => u.includes("per_page=100&since="))).toBe(true);
+    expect(calledUrls.some((u) => u.includes("per_page=100&page=1&since="))).toBe(true);
   });
 
   test("non-github base keeps gitea paths", async () => {

@@ -1014,14 +1014,18 @@ export class UpstreamSync {
   }
 
   private async importIssueComments(gi: GiteaIssue, emit: boolean): Promise<number> {
-    const comments = await this.fetchJson<GiteaComment[]>(this.isGithub
-      ? `/issues/${gi.number}/comments?per_page=50`
-      : `/issues/${gi.number}/comments?limit=50&order=asc`);
-    if (!comments) return 0;
     const local = await getIssueByUpstreamNumber(this.project.id, gi.number);
     if (!local) return 0;
+    // Walk every page until a short one (owner fix 2026-11-07): a single fixed
+    // page truncated threads with more comments than one page FOREVER — newer
+    // comments sat beyond it, never imported, never woke any worker.
     let n = 0;
-    for (const gc of comments) {
+    for (let page = 1; page <= 50; page++) {
+      const comments = await this.fetchJson<GiteaComment[]>(this.isGithub
+        ? `/issues/${gi.number}/comments?per_page=100&page=${page}`
+        : `/issues/${gi.number}/comments?limit=100&page=${page}&order=asc`);
+      if (!comments || comments.length === 0) break;
+      for (const gc of comments) {
       if (await getCommentByUpstreamId(gc.id)) continue;
       // write-back comments carry this marker; importing them would duplicate locally
       if ((gc.body ?? "").includes("<!-- ework-mirror -->")) continue;
@@ -1038,6 +1042,8 @@ export class UpstreamSync {
       });
       if (emit) void emitCommentEvent(this.project.id, local.id, row.id, this.origin);
       n++;
+      }
+      if (comments.length < 100) break;
     }
     return n;
   }
@@ -1187,16 +1193,21 @@ export class UpstreamSync {
     }
     await this.probeMasterCi(result);
 
+    // Drain the whole since-window across pages (owner fix 2026-11-07):
+    // one single 100-item page used to advance the cursor PAST unprocessed
+    // backlog on busy days — those comments were skipped forever (#5808).
     let commentCursor = this.sync.comment_cursor;
-    const comments = await this.fetchJson<GiteaComment[]>(
-      this.isGithub
-      ? `/issues/comments?per_page=100${this.sync.comment_cursor ? `&since=${encodeURIComponent(this.sync.comment_cursor)}` : ""}`
-      : `/issues/comments?limit=50&sort=updated&order=asc${
-          this.sync.comment_cursor ? `&since=${encodeURIComponent(this.sync.comment_cursor)}` : ""
-        }`
-    );
-    if (comments) {
-      for (const gc of comments) {
+    let commentTruncated = false;
+    for (let page = 1; page <= 20; page++) {
+      const batch = await this.fetchJson<GiteaComment[]>(
+        this.isGithub
+        ? `/issues/comments?per_page=100&page=${page}${this.sync.comment_cursor ? `&since=${encodeURIComponent(this.sync.comment_cursor)}` : ""}`
+        : `/issues/comments?limit=100&page=${page}&sort=updated&order=asc${
+            this.sync.comment_cursor ? `&since=${encodeURIComponent(this.sync.comment_cursor)}` : ""
+          }`
+      );
+      if (!batch || batch.length === 0) break;
+      for (const gc of batch) {
         if (await getCommentByUpstreamId(gc.id)) continue;
         if ((gc.body ?? "").includes("<!-- ework-mirror -->")) continue;
         const upstreamNumber = upstreamIssueNumberFromComment(gc);
@@ -1216,8 +1227,14 @@ export class UpstreamSync {
         void emitCommentEvent(this.project.id, local.id, row.id, this.origin);
         result.commentsImported++;
       }
-      const last = comments[comments.length - 1];
-      if (last?.updated_at && (!commentCursor || last.updated_at > commentCursor)) commentCursor = last.updated_at;
+      const lastItem = batch[batch.length - 1];
+      if (lastItem?.updated_at && (!commentCursor || lastItem.updated_at > commentCursor)) commentCursor = lastItem.updated_at;
+      if (batch.length < 100) break;
+      if (page === 20) commentTruncated = true; // window bigger than 20 pages — resume next cycle
+    }
+    if (commentTruncated) {
+      log.warn("upstream-sync: comment backlog exceeds 20 pages this cycle — not advancing comment cursor, will re-drain next poll");
+      commentCursor = this.sync.comment_cursor;
     }
 
     await updateUpstreamSyncState(this.project.id, {
