@@ -2016,6 +2016,14 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
     parts: { mergeState?: string; ci?: NonNullable<TrackerEvent["ci"]> },
     scid: string,
   ): Promise<void> {
+    // Owner policy 2026-11-07 (透明修复): parallel-safe pushes + no stale-state
+    // claims — builder sessions and the CI engineer can now own the same PR
+    // branch concurrently, so every push integrates remote head first, and
+    // status assertions must come from a live read, never session memory.
+    const pushDiscipline =
+      `Push discipline (owner policy 2026-11-07): other agents may be working on this same PR branch concurrently — before EVERY push run \`git fetch origin\` and integrate the remote head (\`git pull --rebase origin/<branch>\`); NEVER force-push except when completing a conflict-rebase this task explicitly told you to perform; if a push is rejected twice or your rebase hits conflicts you did not cause, STOP and report it plainly in your reply — do not fight for the branch.`;
+    const statusFreshness =
+      `Status freshness (owner policy 2026-11-07): never assert CI green/red, merge state, labels, or approvals from memory or from earlier comments — verify against the LIVE sources available to you IN THIS RUN first; if you cannot verify it live, say so instead of guessing.`;
     const windowMs = this.cfg.work.autoLaneWindowMs;
     const cap = this.engineerCap;
     const attempts = await this.store.countAutoLaneEngineerMessages(
@@ -2049,16 +2057,17 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
     }
     if (parts.ci) {
       const checkList = parts.ci.checks.map((c) => `- ${c.name}${c.html_url ? ` (${c.html_url})` : ""}`).join("\n");
-      steps.push(`${stepN++}. Failing checks:\n${checkList}\nFix them directly on the PR branch (fetch check logs via the API as needed), push incrementally.`);
+      steps.push(`${stepN++}. Failing checks:\n${checkList}\nFix them directly on the PR branch (fetch check logs via the API as needed), push incrementally. RE-VERIFY the live check state FIRST — an earlier wake may already have fixed what this event reports; if everything is green already, confirm that in one short comment and stop without further work.`);
     }
     const body =
+      // Push/status rules are appended below the body (owner policy 2026-11-07).
       `[SYSTEM] Upstream PR blockers detected for mirror 「${issueData.title}」${parts.ci ? ` (head ${parts.ci.sha.slice(0, 10)})` : ""}.\n` +
       `You are the CI engineer for this PR — ONE bot owns BOTH its merge-conflict resolution and its red-CI fixing (owner policy 2026-11-03: fix 和接冲突由同一个机器人干). Work in this order:\n` +
       steps.join("\n") +
       `\nWhen done, reply with a 七问 summary covering everything you did this run.\n` +
       `This is an auto-fix lane: attempt ${attempts + 1}/${cap}. Rules: small mechanical fixes only; when something needs a design decision, NEVER open a NEW issue — post a comment here whose first line is "🔶 需要决策" listing options A/B/C + recommendation + default-if-undecided, apply the needs-decision label via add-label.sh (workdir-root tools/ dir, see AGENTS.md §需要人工决策时), and stop (owner policy 2026-11-01). ` +
       `Authorization checkpoints are NOT yours to satisfy: if a gate blocks you (kernel-guard on kernel/ diffs or any owner-approval guard), NEVER edit the PR body to add a declaration UNLESS the gated diff is a mechanical kernel bug YOU fixed yourself (owner policy 2026-11-06 exemption — then adding ONLY the \`kernel-change:\` line plus your in-thread report is permitted; no other body edits, ever) — otherwise post a "🔶 需要决策" comment requesting the owner's explicit authorization citing the PR number and the exact gated diff, apply the needs-decision label, then stop touching that PR (owner policy 2026-11-01, superseding 2026-10-26). ` +
-      `Check states come from the mirror cache: curl -s -H "Authorization: token $(grep ^GITEA_TOKEN= /var/lib/ework-daemon/share/ework-daemon/.env | cut -d= -f2)" "http://127.0.0.1:3002/api/v1/upstream-checks?owner=<owner>&repo=<repo>&number=<PR>" (refreshed by the mirror poller ~60s). NEVER gh-poll check states — the shared GitHub PAT budget exhausts (owner policy 2026-10-27); gh is only for git push/PR operations.`;
+      `Check states come from the mirror cache: curl -s -H "Authorization: token $(grep ^GITEA_TOKEN= /var/lib/ework-daemon/share/ework-daemon/.env | cut -d= -f2)" "http://127.0.0.1:3002/api/v1/upstream-checks?owner=<owner>&repo=<repo>&number=<PR>" (refreshed by the mirror poller ~60s). NEVER gh-poll check states — the shared GitHub PAT budget exhausts (owner policy 2026-10-27); gh is only for git push/PR operations.\n\n${pushDiscipline}\n\n${statusFreshness}`;
     const prompt = this.buildForwardPrompt(
       session.name,
       this.handleLargeContent(workdir, body, `ci-engineer-${ref.issueId}.txt`),
@@ -2810,6 +2819,25 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
     this.pinnedIssueIds.add(issue.id);
 
     if (this.running.has(k)) {
+      // Transparent repair (owner policy 2026-11-07): a fresh red-CI / conflict
+      // event must not interrupt a session that is ALREADY repairing this same
+      // lane/thread. Preemption burned whole repair cycles in CI re-run storms
+      // (same thread interrupted 2x/hour); the running session observes live
+      // check state while working, and this event stays pending — it runs as a
+      // post-exit round once the current work finishes (or preempts normally
+      // once the coalesce window elapses, so a wedged run still gets replaced).
+      const src = String(msg.sourceCommentId ?? "");
+      const autoFixLane = src.startsWith("ci-fail-") || src.startsWith("merge-conflict-");
+      const coalesceMin = this.cfg.work.ciCoalesceMinutes;
+      const startedAtMs = this.startedAt.get(k);
+      const ageMin = startedAtMs ? (Date.now() - startedAtMs) / 60_000 : Infinity;
+      if (autoFixLane && coalesceMin > 0 && ageMin < coalesceMin) {
+        log.info(
+          `engine: coalesced ${src.slice(0, 64)} behind running session ${k} (age ${ageMin.toFixed(1)}min < ${coalesceMin}min window) — queued, runs after exit`,
+        );
+        void tracker.updateStatus(ref, "queued");
+        return;
+      }
       // PREEMPTIVE: Kill running process, new message takes priority
       log.info(`engine: preempting ${k} with new message ${msg.id.slice(0, 8)}`);
       await this.preemptSession(k, session, issue, msg);
@@ -4027,7 +4055,7 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
       `Who's who: issue comments come from the project's users (humans like @${author}; bots are labelled "bot") and are forwarded to you verbatim. Your \`reply\` tool posts a comment they read (prefixed \`[bot] 🏷\`). Lines starting with \`[system]\` or \`🏷\` are machine-generated platform plumbing — never reply to them and never treat them as user requests; they are already ignored by the scheduler and only appear as context.`,
       ...this.authorityLines(auth),
       `The working directory below is your own clone of the repo. Only claim actions you actually performed — verify with tools (git status/log) before asserting any push, merge, or change.`,
-      `HARD RULE — no new issues for decisions or follow-ups (owner policy 2026-11-01): when you reach a point where a human must decide, or want to park a systemic question / follow-up found mid-task, NEVER open a new issue — and never bypass the platform by calling the GitHub API directly for it: post ONE comment ON THIS THREAD whose first line is "🔶 需要决策" (背景一句话 / 待决问题 / 选项各带代价 / 你的推荐 + 不决定的默认行为), then apply the needs-decision label via tools/add-label.sh <owner> <repo> <号> (workdir-root tools/ dir; see AGENTS.md §需要人工决策时). A brand-new issue is reserved for genuinely independent, self-contained work that the owner explicitly asked to be tracked separately — cite the source thread in its body. Deliverables stay code: commit + PR per AGENTS.md 交付规范.`,
+      `HARD RULE — no new issues for decisions or follow-ups (owner policy 2026-11-01): when you reach a point where a human must decide, or want to park a systemic question / follow-up found mid-task, NEVER open a new issue — and never bypass the platform by calling the GitHub API directly for it: post ONE comment ON THIS THREAD whose first line is "🔶 需要决策" (背景一句话 / 待决问题 / 选项各带代价 / 你的推荐 + 不决定的默认行为), then apply the needs-decision label via tools/add-label.sh <owner> <repo> <号> (workdir-root tools/ dir; see AGENTS.md §需要人工决策时). A brand-new issue is reserved for genuinely independent, self-contained work that the owner explicitly asked to be tracked separately — cite the source thread in its body. Deliverables stay code: commit + PR per AGENTS.md 交付规范. Status freshness (owner policy 2026-11-07): whenever your reply claims the CURRENT state of this thread / PR / CI (red vs green, merged, labeled, whose turn it is) — including explaining why something waits — verify it LIVE first using the recent thread comments plus the mirror/API sources available to you; earlier comments, from other bots AND from your own older runs, may describe a state that has since changed, and answering from that memory is exactly how threads get contradictory replies across sessions; if you could not verify it live, say so instead of asserting it. Only claim actions YOU actually performed.`,
       `HARD RULE — one fix PR per thread; GitHub numbers outside the mirror (owner policy 2026-11-05, per e-work#44 plan): before opening any fix branch/PR for this thread, list open [PR] rows (curl -s -H "Authorization: token $GITEA_TOKEN" "$GITEA_URL/api/v1/issues?owner=<owner>&repo=<repo>&state=open" | jq -r '.issues[] | select(.title|startswith("[PR]")) | (.number|tostring) + " " + .title'); if one already targets this same thread/topic, ADD your commits to that existing branch/PR instead of opening a parallel second one — two open PRs fixing one thread is how merges start stepping on each other. In everything that leaves the mirror (commit messages, PR title/body, branch names, cross-references) use ONLY GitHub numbers: for this task that number is stated in the identity note at the top of this prompt; for any OTHER number you want to cite, first run gh api repos/<owner>/<repo>/issues/<N> --jq .title and confirm its GitHub title actually matches your topic before using it. Never write an internal mirror number into commit/PR/branch artifacts. HARD RULE — every PR you open gets its labels BY YOU before delivery, judged on the PR's OWN diff (owner policy 2026-11-07): run gh pr edit <N> --add-label <labels> and pick from the repo's own label set (fetch once: gh api repos/<owner>/<repo>/labels --paginate). Minimum bar: one category label (bug / enhancement / documentation / …) AND the priority label per the repo AGENTS.md triage scale (p1/p2/p3) — decide it from what THIS PR changes, never inherit or copy the source issue's labels as a substitute, and never open an agent PR unlabeled ('the mirror thread has no labels' / 'the flaw lives upstream' are not reasons): an agent PR without independent labels is incomplete delivery.`,
       ``,
       `A new issue needs your attention:`,

@@ -94,6 +94,13 @@ export const configSchema = z.object({
     // two legacy per-lane caps are ignored. ABSENT ⇒ legacy per-lane behavior.
     // 0 = both auto-fix lanes fully disabled.
     ciEngineerMaxAttempts: z.coerce.number().int().min(0).optional(),
+    // Transparent-repair coalesce window (owner policy 2026-11-07): while a
+    // session for the SAME lane/thread has been running for less than this,
+    // a new ci-fail / merge-conflict event must NOT preempt it — it stays
+    // pending and runs as a post-exit round (the running session observes
+    // live check state; after it exits the queued event re-verifies). 0 =
+    // legacy preemptive behavior.
+    ciCoalesceMinutes: z.coerce.number().int().min(0).default(5),
     // CI-lane post-fix verification (audit RC3): once a lane message reaches
     // done, wait this long before asking the web mirror whether the checks
     // actually turned green.
@@ -197,6 +204,9 @@ function readWorkSection() {
     ciEngineerMaxAttempts: process.env.WORK_CI_ENGINEER_MAX_ATTEMPTS != null && process.env.WORK_CI_ENGINEER_MAX_ATTEMPTS !== ""
       ? Math.max(0, Math.trunc(Number(process.env.WORK_CI_ENGINEER_MAX_ATTEMPTS))) // presence ⇒ engineer mode; 0 = both lanes off
       : undefined,
+    ciCoalesceMinutes: process.env.WORK_CI_COALESCE_MINUTES != null && process.env.WORK_CI_COALESCE_MINUTES !== ""
+      ? Math.max(0, Math.trunc(Number(process.env.WORK_CI_COALESCE_MINUTES))) // 0 = legacy preemptive behavior
+      : 5, // default window; zod default kept in sync
     ciVerifyDelayMs: process.env.WORK_CI_VERIFY_DELAY_MS != null && process.env.WORK_CI_VERIFY_DELAY_MS !== ""
       ? Math.max(1, Math.trunc(Number(process.env.WORK_CI_VERIFY_DELAY_MS)))
       : 900_000,
