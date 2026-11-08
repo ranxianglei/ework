@@ -80,3 +80,45 @@ describe("transparent-repair coalesce window", () => {
     expect((self.preemptSession as ReturnType<typeof vi.fn>)).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("reply-language rule (owner policy 2026-11-08: 原语言优先, 8问保持中文)", () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const { Engine } = require("../src/opencode") as { Engine: any };
+
+  function makeSelf() {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const self: any = Object.create(Engine.prototype);
+    self.cfg = { daemon: {} };
+    return self;
+  }
+
+  test("initial task prompt carries the reply-language rule", () => {
+    const self = makeSelf();
+    const p = Engine.prototype.buildInitialPrompt.call(
+      self, "ework-daemon", "t", "b", "ranxianglei", "/w",
+      { clone: "", issueRef: "acme/widgets#42" }, null, undefined,
+    );
+    expect(p).toContain("Reply language (owner policy 2026-11-08)");
+    expect(p).toContain("fully-English question");
+    expect(p).toContain("8问");
+    expect(p).toContain("ALWAYS written in Chinese");
+  });
+
+  test("forward prompt carries the reply-language rule", () => {
+    const self = makeSelf();
+    const fwd = Engine.prototype.buildForwardPrompt.call(
+      self, "ework-daemon", "please fix this", "alice", "human", "[PR] fix widgets", "/w",
+      { issueRef: "acme/widgets#42" },
+    );
+    expect(fwd).toContain("Reply language (owner policy 2026-11-08)");
+    expect(fwd).toContain("8问");
+  });
+
+  test("nudge prompt carries the reply-language rule", () => {
+    const self = makeSelf();
+    const nudge = Engine.prototype.buildNudgePrompt.call(
+      self, { id: "w1", name: "worker" }, { id: 7, trackerScopeKey: "acme/widgets" }, { issueRef: "acme/widgets#42" },
+    );
+    expect(nudge).toContain("Reply language (owner policy 2026-11-08)");
+  });
+});

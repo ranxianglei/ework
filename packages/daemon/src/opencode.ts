@@ -748,6 +748,10 @@ export function spawnEnvFor(
   };
 }
 
+/** Reply-language policy (owner policy 2026-11-08): match the questioner's language; the 8-question review checklist stays Chinese. */
+const REPLY_LANGUAGE_RULE =
+  `Reply language (owner policy 2026-11-08): reply in the LANGUAGE THE PERSON WHO ASKED USED — a fully-English question or comment → your entire reply in English (any other non-Chinese language likewise); Chinese → 中文. Sole exception: the 8-question review checklist (8问) is ALWAYS written in Chinese — it is for human reviewers, not for the questioner.`;
+
 export class Engine {
   private cfg: Config;
   private store: Store;
@@ -1905,6 +1909,7 @@ Action: review this pull request end-to-end.
 4. SMALL FINDINGS GET FIXED ON THE SPOT, never filed (owner policy 2026-11-01): follow-up issues are a zombie pile — half-size problems lose their context once filed and make the issue queue explode. For every NON-BLOCKING finding whose fix is clear and mechanical (typo, stale/wrong comment, wrong predicate, small edge miss, missing obvious test), FIX IT directly on this PR's own branch — commit \`fix: <what>\`, push the same branch — then post ONE line in this thread: "已顺手修：<描述> + commit <短hash>". Fixing does NOT downgrade your verdict: still APPROVE if nothing else blocks. Anything touching semantics, design, or cross-file behavior is NOT "small" — leave the code untouched and route it through the 🔶 需要决策 flow (on-thread comment + needs-decision label via add-label.sh, workdir-root tools/ dir). EXCEPTION (owner policy 2026-11-06): obvious MECHANICAL bugs INSIDE kernel/ DO count as small findings: fix them like any other small finding; additionally ensure the PR body carries a \`kernel-change:\` line (adding ONLY that one line is your sole permitted PR-body edit), and your in-thread report must say what changed / why it is mechanically safe / which regression test pins it — the human-only review tier still gates the merge, and THAT approval is the required report. NO OPEN ENDS (owner policy 2026-11-06): a NON-BLOCKING finding may not survive your review as parked debt — a 'P2/P3 follow-up' bullet list, a TODO comment, or a filed issue are all banned residues. Every non-blocking finding ends in exactly ONE state: FIXED (your \`fix:\` commit + the receipt line above), or CONVERTED TO A DECISION (on-thread \`🔶 需要决策\` + label) when it genuinely needs the owner's call — if neither applies it was a nit below the fix-effort bar: drop it, do not mention it.
 5. HARD RULE — authorization boundaries: if the PR touches kernel/ or carries a kernel-change declaration, do NOT approve (including a fix commit you yourself added under the mechanical-bug exemption above — that merge waits on the same human tier); post the review as findings-only and post a follow-up comment on this PR whose first line is "🔶 需要决策" requesting owner authorization (cite the PR and the gated diff), apply the needs-decision label via add-label.sh (workdir-root tools/ dir, see AGENTS.md §需要人工决策时) and open NO new issue. Never self-declare on the author's behalf.
 6. Report one line on the coordination issue when done.
+7. ${this.replyLanguageRule}
 
 Check states: read the mirror cache (see AGENTS.md), do not poll gh for check status.${this.identityNote(issueData) ? `\n\n${this.identityNote(issueData)}` : ""}`;
     await tracker.createComment(ref, `[system] 📝 review: PR 绿灯待审 — 已派专职 reviewer 处理。`).catch(() => {});
@@ -4055,7 +4060,7 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
       `Who's who: issue comments come from the project's users (humans like @${author}; bots are labelled "bot") and are forwarded to you verbatim. Your \`reply\` tool posts a comment they read (prefixed \`[bot] 🏷\`). Lines starting with \`[system]\` or \`🏷\` are machine-generated platform plumbing — never reply to them and never treat them as user requests; they are already ignored by the scheduler and only appear as context.`,
       ...this.authorityLines(auth),
       `The working directory below is your own clone of the repo. Only claim actions you actually performed — verify with tools (git status/log) before asserting any push, merge, or change.`,
-      `HARD RULE — no new issues for decisions or follow-ups (owner policy 2026-11-01): when you reach a point where a human must decide, or want to park a systemic question / follow-up found mid-task, NEVER open a new issue — and never bypass the platform by calling the GitHub API directly for it: post ONE comment ON THIS THREAD whose first line is "🔶 需要决策" (背景一句话 / 待决问题 / 选项各带代价 / 你的推荐 + 不决定的默认行为), then apply the needs-decision label via tools/add-label.sh <owner> <repo> <号> (workdir-root tools/ dir; see AGENTS.md §需要人工决策时). A brand-new issue is reserved for genuinely independent, self-contained work that the owner explicitly asked to be tracked separately — cite the source thread in its body. Deliverables stay code: commit + PR per AGENTS.md 交付规范. Status freshness (owner policy 2026-11-07): whenever your reply claims the CURRENT state of this thread / PR / CI (red vs green, merged, labeled, whose turn it is) — including explaining why something waits — verify it LIVE first using the recent thread comments plus the mirror/API sources available to you; earlier comments, from other bots AND from your own older runs, may describe a state that has since changed, and answering from that memory is exactly how threads get contradictory replies across sessions; if you could not verify it live, say so instead of asserting it. Only claim actions YOU actually performed.`,
+      `HARD RULE — no new issues for decisions or follow-ups (owner policy 2026-11-01): when you reach a point where a human must decide, or want to park a systemic question / follow-up found mid-task, NEVER open a new issue — and never bypass the platform by calling the GitHub API directly for it: post ONE comment ON THIS THREAD whose first line is "🔶 需要决策" (背景一句话 / 待决问题 / 选项各带代价 / 你的推荐 + 不决定的默认行为), then apply the needs-decision label via tools/add-label.sh <owner> <repo> <号> (workdir-root tools/ dir; see AGENTS.md §需要人工决策时). A brand-new issue is reserved for genuinely independent, self-contained work that the owner explicitly asked to be tracked separately — cite the source thread in its body. Deliverables stay code: commit + PR per AGENTS.md 交付规范. Status freshness (owner policy 2026-11-07): whenever your reply claims the CURRENT state of this thread / PR / CI (red vs green, merged, labeled, whose turn it is) — including explaining why something waits — verify it LIVE first using the recent thread comments plus the mirror/API sources available to you; earlier comments, from other bots AND from your own older runs, may describe a state that has since changed, and answering from that memory is exactly how threads get contradictory replies across sessions; if you could not verify it live, say so instead of asserting it. Only claim actions YOU actually performed. ${this.replyLanguageRule}`,
       `HARD RULE — one fix PR per thread; GitHub numbers outside the mirror (owner policy 2026-11-05, per e-work#44 plan): before opening any fix branch/PR for this thread, list open [PR] rows (curl -s -H "Authorization: token $GITEA_TOKEN" "$GITEA_URL/api/v1/issues?owner=<owner>&repo=<repo>&state=open" | jq -r '.issues[] | select(.title|startswith("[PR]")) | (.number|tostring) + " " + .title'); if one already targets this same thread/topic, ADD your commits to that existing branch/PR instead of opening a parallel second one — two open PRs fixing one thread is how merges start stepping on each other. In everything that leaves the mirror (commit messages, PR title/body, branch names, cross-references) use ONLY GitHub numbers: for this task that number is stated in the identity note at the top of this prompt; for any OTHER number you want to cite, first run gh api repos/<owner>/<repo>/issues/<N> --jq .title and confirm its GitHub title actually matches your topic before using it. Never write an internal mirror number into commit/PR/branch artifacts. HARD RULE — every PR you open gets its labels BY YOU before delivery, judged on the PR's OWN diff (owner policy 2026-11-07): run gh pr edit <N> --add-label <labels> and pick from the repo's own label set (fetch once: gh api repos/<owner>/<repo>/labels --paginate). Minimum bar: one category label (bug / enhancement / documentation / …) AND the priority label per the repo AGENTS.md triage scale (p1/p2/p3) — decide it from what THIS PR changes, never inherit or copy the source issue's labels as a substitute, and never open an agent PR unlabeled ('the mirror thread has no labels' / 'the flaw lives upstream' are not reasons): an agent PR without independent labels is incomplete delivery.`,
       ``,
       `A new issue needs your attention:`,
@@ -4115,6 +4120,11 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
     return [];
   }
 
+  /** Reply-language policy (owner policy 2026-11-08): match the questioner's language; the 8-question review checklist stays Chinese. */
+  private get replyLanguageRule(): string {
+    return REPLY_LANGUAGE_RULE;
+  }
+
   private buildForwardPrompt(
     opName: string,
     commentBody: string,
@@ -4156,6 +4166,7 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
       `Working directory: ${workdir}`,
       ``,
       `Reply using the \`reply\` tool.`,
+      this.replyLanguageRule,
     ].filter(Boolean).join("\n");
   }
 
@@ -4169,6 +4180,7 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
       ``,
       `Post a reply now using the \`reply\` tool. Summarize what you did and the outcome.`,
       `Every reply MUST start with \`[bot] 🏷\` prefix.`,
+      this.replyLanguageRule,
     ].join("\n");
   }
 
