@@ -16,7 +16,7 @@ import {
   type UpstreamSyncRow,
 } from "../src/store";
 import { createWebhook, waitForWebhookQueueIdle } from "../src/webhooks";
-import { UpstreamSync, syncOrigin } from "../src/upstream-sync";
+import { UpstreamSync, syncOrigin, masterHeadByRepo } from "../src/upstream-sync";
 import { parseUpstreamSyncForm } from "../src/views/projectUpstreams";
 import type { Config } from "../src/config";
 
@@ -421,8 +421,8 @@ test("master head movement clears merge-probe bookkeeping (owner incident 2026-1
   const mod: any = await import("../src/upstream-sync");
   const us = Object.create(mod.UpstreamSync.prototype);
   Object.defineProperty(us, "isGithub", { value: true }); // private getter — shadow it per-instance
-  us.project = { id: pid };
-  us.lastMasterHead = "aaa111222333";
+  us.project = { id: pid, owner: "mvhead-owner", name: "billion-context" };
+  mod.masterHeadByRepo.set("mvhead-owner/billion-context", "aaa111222333");
   us.mergeReprobeQueue = [];
   const fetchedUrls: string[] = [];
   us.fetchJson = async (url: string) => {
@@ -439,10 +439,10 @@ test("master head movement clears merge-probe bookkeeping (owner incident 2026-1
   expect(row.c).toBe(null);
   expect(closed.c ?? "untouched").toBe("2026-10-26T08:00:00Z");
   expect(issue.c ?? "untouched").toBe("untouched");
-  expect(us.lastMasterHead).toBe("bbb999888777");
+  expect(mod.masterHeadByRepo.get("mvhead-owner/billion-context")).toBe("bbb999888777");
   // second run with the same head must NOT re-clear (no churn)
   await mod.UpstreamSync.prototype.clearMergeProbesIfMasterMoved.call(us);
-  expect(us.lastMasterHead).toBe("bbb999888777");
+  expect(mod.masterHeadByRepo.get("mvhead-owner/billion-context")).toBe("bbb999888777");
 
   // drain: the queued quiet PR reads dirty → row flips + conflict bookkeeping set
   us.fetchJson = async (url: string) =>
@@ -871,5 +871,33 @@ describe("sweep-grace continuation", () => {
     await settle();
 
     expect(hookCalls.length).toBe(0);
+  });
+
+});
+
+describe("master head movement across poll instances (2026-11-10 conflict-backlog fix)", () => {
+  async function probe(sync: UpstreamSync, sha: string, pulls: unknown[]) {
+    (sync as any).fetchJson = async (path: string) =>
+      String(path).startsWith("/commits/master") ? { sha } : pulls;
+    await (sync as any).clearMergeProbesIfMasterMoved();
+  }
+
+  test("a FRESH instance (next poll) detects master movement and queues open PRs for re-probe", async () => {
+    const { sync } = await setup();
+    masterHeadByRepo.set("acme/widget", "aaaa1111bbbb2222cccc3333dddd4444"); // previous poll's head
+    await probe(makeSyncer(sync), "aaaa1111bbbb2222cccc3333dddd4444", []); // same head: no-op
+    const s2 = makeSyncer(sync); // fresh instance, like the next poll
+    await probe(s2, "eeee5555ffff6666aaaa7777bbbb8888", [{ number: 11 }, { number: 12 }]);
+    expect((s2 as any).mergeReprobeQueue).toEqual([11, 12]);
+    expect(masterHeadByRepo.get("acme/widget")).toBe("eeee5555ffff6666aaaa7777bbbb8888");
+  });
+
+  test("same head on a fresh instance is a no-op (no false reset)", async () => {
+    const { sync } = await setup();
+    masterHeadByRepo.set("acme/widget", "11112222333344445555666677778888");
+    await probe(makeSyncer(sync), "11112222333344445555666677778888", []);
+    const s2 = makeSyncer(sync);
+    await probe(s2, "11112222333344445555666677778888", [{ number: 99 }]);
+    expect((s2 as any).mergeReprobeQueue).toEqual([]);
   });
 });

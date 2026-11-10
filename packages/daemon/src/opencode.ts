@@ -1837,6 +1837,18 @@ export class Engine {
     model?: string,
   ) {
     if (issueData.state !== "open") return;
+    // 2026-11-10 (owner fix, conflict-backlog incident): the web merge-guard
+    // poller emits pr_unmergeable for dirty (conflicting) PRs on state
+    // transitions, but this lane has been kill-switched (cap=0 since
+    // 2026-10-31), so conflict wakes sat unhandled for hours while the
+    // unified ci-engineer lane (owner policy 2026-11-03: ONE bot owns CI
+    // fixes + conflict fixes) waited for merge_conflict events the dead
+    // master-moved reset never re-emitted. Route DIRTY into the engineer
+    // lane; behind/blocked/review-pending keep the guard-lane semantics
+    // below (and the owner's kill switch).
+    if (mergeState === "dirty" && this.engineerMode) {
+      return this.handleMergeConflict(ref, scopeKey, issueData, tracker, mergeState, model);
+    }
     // Owner kill-switch (2026-10-31): cap 0 = the whole guard lane is off —
     // no issue rows created, no messages queued, just log and drop.
     if (this.cfg.work.mergeGuardMaxAttempts === 0) {
@@ -4179,6 +4191,9 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
       `[SYSTEM NUDGE] You completed a task on ${instructions.issueRef} but did not post a reply.`,
       ``,
       `Post a reply now using the \`reply\` tool. Summarize what you did and the outcome.`,
+      ``,
+      `If the work is not fully verified yet, do NOT keep re-running the same checks in a loop and do NOT end without a reply: post your conclusion NOW with the evidence you already have — what is done, what is verified, what remains and the risk. A partial, honest verdict in the thread beats silence: the owner only reads the thread (owner policy 2026-11-10, dead-thread incident #6033).`,
+      ``,
       `Every reply MUST start with \`[bot] 🏷\` prefix.`,
       this.replyLanguageRule,
     ].join("\n");
@@ -4193,6 +4208,7 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
       `[SYSTEM] 检测到你的进程已经退出，可能意味着您已经完成了阶段性工作或者因为某些原因中断。`,
       ``,
       `- 如果您确认完成了阶段性工作，您应该向用户报告结果。因为用户只能在 issue 上查看结果或者听取汇报。`,
+      `- 如果您已经有阶段性成果（哪怕未完全验证），请立刻先用 \`reply\` 发出当前结论（已完成什么、验证到什么程度、剩余风险），再继续工作——不要在没有回复的情况下反复循环（owner policy 2026-11-10）。`,
       `- 如果您是因为某些原因中断而不需要向用户汇报中间结果，请继续您未完成的工作。`,
       `- 如果您因为某些不确定，必须向用户请教，请务必向用户汇报后再继续。`,
       ``,

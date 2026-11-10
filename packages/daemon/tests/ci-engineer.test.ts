@@ -98,6 +98,34 @@ describe("unified CI-engineer routing", () => {
     expect(prompt).not.toContain("ONE bot owns BOTH");
     expect(scid).toBe("ci-fail-42-deadbeef");
   });
+  test("pr_unmergeable dirty routes to the ci-engineer lane in engineer mode (2026-11-10 conflict-backlog fix)", async () => {
+    const { self, enqueueOrRun, tracker } = makeSelf(3);
+    await Engine.prototype.handlePrUnmergeable.call(self, ref, "acme/widgets", issueData, tracker, "dirty", "conflict");
+    expect(self.workerSession).toHaveBeenCalledWith(7, "ci-engineer");
+    expect(enqueueOrRun).toHaveBeenCalledTimes(1);
+    const [prompt, scid] = enqueueArgs(enqueueOrRun);
+    expect(scid).toMatch(/^merge-conflict-42-\d+$/);
+    expect(prompt).toContain("ONE bot owns BOTH");
+  });
+
+  test("pr_unmergeable behind/blocked stays on the legacy guard lane even in engineer mode", async () => {
+    const { self, enqueueOrRun, tracker } = makeSelf(3);
+    // behind keeps the guard-lane path (its own cap / kill switch)
+    const guardStore = {
+      findIssue: vi.fn(async () => ({ id: 7, state: "active" })),
+      getSessionsForIssue: vi.fn(async () => []),
+      countActiveMergeGuardMessages: vi.fn(async () => 0),
+      createSession: vi.fn(async () => ({ id: "w1", name: "merge-guard" })),
+    };
+    (self as Record<string, unknown>).store = guardStore;
+    (self as Record<string, unknown>).cfg = { bot: { username: "ework-daemon" }, daemon: { wakeLogins: ["ranxianglei"], noWakeLogins: [], nonWakingAuthors: [] }, work: { ciEngineerMaxAttempts: 3, autoLaneWindowMs: 86_400_000 } };
+    await Engine.prototype.handlePrUnmergeable.call(self, ref, "acme/widgets", issueData, tracker, "behind", "behind");
+    expect(enqueueOrRun).toHaveBeenCalledTimes(1);
+    const [prompt, scid] = enqueueArgs(enqueueOrRun);
+    expect(scid).toMatch(/^merge-guard-42-\d+$/);
+    expect(prompt).toContain("update-branch");
+  });
+
 });
 
 describe("execProcess engineer kill-switch", () => {
@@ -142,4 +170,6 @@ describe("execProcess engineer kill-switch", () => {
     await run();
     expect(updateMessageStatus).toHaveBeenCalledWith("m0000000", "superseded", "lane disabled by owner config (cap=0)");
   });
+
+
 });
