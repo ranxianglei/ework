@@ -205,6 +205,14 @@ const mergeGuardCooldownUntil = new Map<number, number>();
 // 2026-10-26). Same budget: any 403 from GitHub opens a 5-minute global
 // circuit so every project's optional probes stop colliding in the dark.
 const reprobeDrainThrottle = { lastAt: 0 };
+// 2026-11-10 (owner fix, conflict-backlog incident): the "master head moved"
+// reset previously kept its bookkeeping in an UpstreamSync INSTANCE field —
+// but the poll loop constructs a fresh instance every poll, so the previous
+// head was always null, the reset branch was mathematically unreachable, and
+// quiet PRs that went dirty after a master merge were never re-probed (14 PRs
+// sat conflicting for days). Module-level map keyed by owner/name: survives
+// across polls, stays independent per project.
+export const masterHeadByRepo = new Map<string, string>();
 const githubCircuit = { until: 0 };
 
 // ─── Merge-guard wake-once fingerprints (audit RC1(a)/(c)) ──────────────────
@@ -568,7 +576,7 @@ export class UpstreamSync {
   // dirty after a master merge was never re-probed (checked>=updated skip
   // held forever). Track the master head; on movement, clear merge-probe
   // bookkeeping so every open PR re-probes over the next polls.
-  private lastMasterHead: string | null = null;
+
   // Quiet PRs never re-enter the changed-item stream, so bookkeeping alone
   // cannot reach them: master movement also enqueues every open PR for a
   // direct merge-state re-probe, drained a few per poll.
@@ -810,7 +818,9 @@ export class UpstreamSync {
         ? (headCommit[0] as { sha?: string })?.sha
         : headCommit?.sha;
       if (!headSha) return;
-      if (this.lastMasterHead !== null && headSha !== this.lastMasterHead) {
+      const key = `${this.project.owner}/${this.project.name}`;
+      const prev = masterHeadByRepo.get(key) ?? null;
+      if (prev !== null && headSha !== prev) {
         await getDB().run(
           "UPDATE issues SET upstream_merge_checked_at = NULL WHERE project_id = ? AND state = 'open'",
           [this.project.id],
@@ -821,16 +831,40 @@ export class UpstreamSync {
           .filter((n) => Number.isInteger(n) && n > 0 && !this.mergeReprobeQueue.includes(n));
         this.mergeReprobeQueue.push(...queued);
         log.info(
-          `upstream-sync: master head moved ${this.lastMasterHead.slice(0, 8)}→${headSha.slice(0, 8)} — merge-probe bookkeeping cleared, ${queued.length} open PR(s) queued for re-probe`,
+          `upstream-sync: master head moved ${prev.slice(0, 8)}→${headSha.slice(0, 8)} — merge-probe bookkeeping cleared, ${queued.length} open PR(s) queued for re-probe`,
         );
       }
-      this.lastMasterHead = headSha;
-    } catch {
+      masterHeadByRepo.set(key, headSha);
+    } catch (err) {
       // head probe is an optimization; a failure must never wedge the poll
+      log.warn(`upstream-sync: master head probe failed: ${String(err)}`);
     }
   }
 
   private async drainMergeReprobe(result: UpstreamSyncPollResult): Promise<void> {
+    // 2026-11-10 (owner fix, conflict-backlog incident): the in-memory queue
+    // dies with the process — a web restart (or a master-moved reset that
+    // happened before this process started) leaves rows with
+    // upstream_merge_checked_at = NULL that no queue will ever carry. Seed
+    // from the DB so stale bookkeeping self-heals across restarts. Only rows
+    // that were merge-probed before (state non-NULL) — probing non-PR numbers
+    // would burn API budget on 404s. Budgeted by MERGE_PROBE_PER_POLL below.
+    if (this.mergeReprobeQueue.length === 0) {
+      const stale = await getDB().all<{ n: number }>(
+        `SELECT upstream_issue_number AS n FROM issues
+           WHERE project_id = ? AND state = 'open' AND upstream_issue_number IS NOT NULL
+             AND upstream_mergeable_state IS NOT NULL
+             AND (upstream_merge_checked_at IS NULL
+                  OR upstream_merge_checked_at < strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-6 hours'))
+           ORDER BY upstream_issue_number DESC
+           LIMIT 50`,
+        [this.project.id],
+      );
+      for (const r of stale) {
+        const n = Number(r.n);
+        if (Number.isInteger(n) && n > 0 && !this.mergeReprobeQueue.includes(n)) this.mergeReprobeQueue.push(n);
+      }
+    }
     let budget = MERGE_PROBE_PER_POLL;
     while (budget > 0 && this.mergeReprobeQueue.length > 0) {
       const number = this.mergeReprobeQueue.shift() as number;
@@ -1170,7 +1204,11 @@ export class UpstreamSync {
        }
       }
     }
-    if (this.isGithub && prCandidates.length > 0) {
+    // 2026-11-10 (owner fix): previously gated on prCandidates.length > 0 —
+    // a quiet poll (no PR activity in the item stream) skipped the master
+    // check entirely, which is exactly when base-movement conflicts go
+    // unnoticed. One /commits/master call per poll is negligible.
+    if (this.isGithub) {
       await this.clearMergeProbesIfMasterMoved();
     }
     if (this.isGithub) {
