@@ -204,7 +204,10 @@ const mergeGuardCooldownUntil = new Map<number, number>();
 // burning ~2400 req/h against a 5000/h PAT budget (rate exhausted hourly,
 // 2026-10-26). Same budget: any 403 from GitHub opens a 5-minute global
 // circuit so every project's optional probes stop colliding in the dark.
-const reprobeDrainThrottle = { lastAt: 0 };
+// Per-project drain throttle: a single shared throttle starves slow pollers
+// (the biggest repo finishes last every round and never gets a turn —
+// incident 2026-11-10: billion-context's drain never ran for hours).
+const reprobeDrainThrottle = new Map<number, number>();
 // 2026-11-10 (owner fix, conflict-backlog incident): the "master head moved"
 // reset previously kept its bookkeeping in an UpstreamSync INSTANCE field —
 // but the poll loop constructs a fresh instance every poll, so the previous
@@ -864,6 +867,11 @@ export class UpstreamSync {
         const n = Number(r.n);
         if (Number.isInteger(n) && n > 0 && !this.mergeReprobeQueue.includes(n)) this.mergeReprobeQueue.push(n);
       }
+      if (this.mergeReprobeQueue.length > 0) {
+        log.info(
+          `upstream-sync: stale merge-state seed: ${this.mergeReprobeQueue.length} PR(s) queued for re-probe (${this.project.owner}/${this.project.name})`,
+        );
+      }
     }
     let budget = MERGE_PROBE_PER_POLL;
     while (budget > 0 && this.mergeReprobeQueue.length > 0) {
@@ -1214,8 +1222,9 @@ export class UpstreamSync {
     if (this.isGithub) {
       await this.pollMergeGuard();
     }
-    if (Date.now() - reprobeDrainThrottle.lastAt >= 60_000) {
-      reprobeDrainThrottle.lastAt = Date.now();
+    const lastDrain = reprobeDrainThrottle.get(this.project.id) ?? 0;
+    if (Date.now() - lastDrain >= 60_000) {
+      reprobeDrainThrottle.set(this.project.id, Date.now());
       await this.drainMergeReprobe(result);
       await this.drainCiReprobe(result);
     }
