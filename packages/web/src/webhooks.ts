@@ -334,7 +334,7 @@ interface PayloadComment {
 
 interface IssueEventPayload {
   event_id?: string;
-  action: IssueAction | "merge_conflict" | "ci_failed" | "master_ci_failed" | "pr_unmergeable" | "pr_review_pending";
+  action: IssueAction | "merge_conflict" | "ci_failed" | "master_ci_failed" | "pr_unmergeable" | "pr_review_pending" | "classifier_tick";
   issue: PayloadIssue;
   repository: PayloadRepository;
   sender: PayloadUser;
@@ -347,6 +347,9 @@ interface IssueEventPayload {
   review?: boolean;
   merge_reason?: string;
   ci?: { sha: string; checks: { name: string; html_url?: string; conclusion: string }[]; branch?: string };
+  // Present on classifier_tick events (owner policy 2026-11-11): the batch
+  // of MIRROR issue numbers the classifier-worker should analyze this round.
+  classifier?: { batch: number[]; firstRound?: boolean };
 }
 
 interface CommentEventPayload {
@@ -715,6 +718,42 @@ export async function emitMasterCiFailedEvent(
     await fanOut(projectId, "issues", rawBody);
   } catch (e) {
     log.error("webhook: emitMasterCiFailedEvent failed", { err: e as Error, projectId, issueId });
+  }
+}
+
+/** Issue root-cause classifier (owner policy 2026-11-11): wake the
+ * classifier-worker lane on the project's anchor issue (kv
+ * classifierAnchor:<owner>/<repo>). The batch carries MIRROR issue numbers —
+ * the lane resolves them against the mirror API, never GitHub. */
+export async function emitClassifierTickEvent(
+  projectId: number,
+  anchorIssueId: number,
+  origin: string,
+  batch: number[],
+  firstRound: boolean,
+): Promise<void> {
+  try {
+    const project = await getProjectById(projectId);
+    if (!project) return;
+    const issue = await getIssueById(anchorIssueId);
+    if (!issue) return;
+    const cfg = await getConfigAll();
+    const scopeKey = `${project.owner}/${project.name}`;
+    const globalOff = cfg["dispatchEnabled"] === "false";
+    const projectOff = cfg[`dispatchOff:${scopeKey}`] === "1";
+    const issueOff = issue.ai_status === "dispatch_off" || issue.ai_status === "halted";
+    if (globalOff || projectOff || issueOff) return;
+    const commentCount = await countCommentsSafe(anchorIssueId);
+    const globalDefault = (await loadConfig()).defaultModel;
+    const model = resolveModel(project.model, globalDefault, issue.model);
+    const payload = buildIssuePayload(issue, project, commentCount, "opened", origin, model);
+    (payload as IssueEventPayload).action = "classifier_tick";
+    (payload as IssueEventPayload).classifier = { batch, firstRound };
+    (payload as IssueEventPayload).event_id = randomUUID();
+    const rawBody = JSON.stringify(payload);
+    await fanOut(projectId, "issues", rawBody);
+  } catch (e) {
+    log.error("webhook: emitClassifierTickEvent failed", { err: e as Error, projectId, anchorIssueId });
   }
 }
 

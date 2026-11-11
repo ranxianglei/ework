@@ -319,6 +319,32 @@ export class GiteaTracker implements IssueTracker {
       };
     }
 
+    if (action === "classifier_tick") {
+      const cl = (payload as Record<string, unknown>).classifier as { batch?: unknown; firstRound?: unknown } | undefined;
+      const rawBatch = Array.isArray(cl?.batch) ? (cl!.batch as unknown[]) : [];
+      return {
+        type: "classifier_tick",
+        ref,
+        dispatch_off: dispatchOff,
+        issue: {
+          title: issue.title as string,
+          body: (issue.body as string) ?? "",
+          state: (issue.state as string) ?? "open",
+          author: issueUser?.login ?? "",
+          ai_status: aiStatus,
+          kind, upstreamIssueNumber,
+        },
+        classifier: {
+          batch: rawBatch.map((n) => Number(n)).filter(Number.isInteger),
+          firstRound: cl?.firstRound === true,
+        },
+        model,
+        runtime,
+        cloneUrl,
+        sender,
+      };
+    }
+
     if (action === "pr_unmergeable") {
       const mergeState = typeof (payload as Record<string, unknown>).merge_state === "string"
         ? (payload as Record<string, unknown>).merge_state as string

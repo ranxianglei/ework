@@ -14,7 +14,7 @@ export interface TrackerRef {
 
 /** Parsed, tracker-agnostic webhook event */
 export type TrackerEventType = "issue_opened" | "comment_created" | "issue_closed" | "status_changed" | "merge_conflict" | "ci_failed" | "master_ci_failed" | "issue_boosted" | "ci_coord_comment" | "pr_unmergeable"
-  | "pr_review_pending";
+  | "pr_review_pending" | "classifier_tick";
 
 export interface TrackerEvent {
   type: TrackerEventType;
@@ -51,6 +51,9 @@ export interface TrackerEvent {
   // checks. branch (master_ci_failed): which sentinel-watched branch is red
   // ("master" or the persistent "ci-fixes" convergence branch).
   ci?: { sha: string; checks: { name: string; html_url?: string; conclusion: string }[]; branch?: string };
+  // Present on classifier_tick events (owner policy 2026-11-11): the batch of
+  // MIRROR issue numbers to analyze this round + firstRound flag (full sweep).
+  classifier?: { batch: number[]; firstRound?: boolean };
   // Resolved "provider/model" string from ework-web (project override or
   // global default). Empty/undefined = no override; engine omits --model
   // and lets opencode pick per its own opencode.json + env.
