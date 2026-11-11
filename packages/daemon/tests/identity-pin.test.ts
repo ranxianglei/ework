@@ -199,4 +199,15 @@ describe("global no-decision-issue rule in base prompts", () => {
     expect(prompt).toContain("(.number|tostring)");
     expect(prompt).not.toContain("/api/<owner>/<repo>/issues");
   });
+
+  test("buildInitialPrompt embeds the no-source-issue-rename rule", () => {
+    const { Engine } = require("../src/opencode");
+    const self = engineSelf();
+    const prompt = Engine.prototype.buildInitialPrompt.call(
+      self, "ework-daemon", "t", "b", "ranxianglei", "/wd",
+      { clone: "git clone x .", issueRef: "acme/widgets#42" }, null,
+    );
+    expect(prompt).toContain("no source-issue rename");
+    expect(prompt).toContain("NEVER rename, relabel, close, edit");
+  });
 });
