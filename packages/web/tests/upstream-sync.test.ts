@@ -901,3 +901,92 @@ describe("master head movement across poll instances (2026-11-10 conflict-backlo
     expect((s2 as any).mergeReprobeQueue).toEqual([]);
   });
 });
+
+describe("classifier tick (owner policy 2026-11-11, issue 根因归类)", () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function clearClassifierTimers(mod: any) {
+    for (const t of Array.from(mod.classifierTimers.values()) as ReturnType<typeof setTimeout>[]) clearTimeout(t);
+    mod.classifierTimers.clear();
+  }
+
+  test("kv anchor arms an immediate full-sweep tick, then incremental batches (≤100, [根因] rows excluded)", async () => {
+    const db = getDB();
+    const { setConfig } = await import("../src/db");
+    const proj = await createProject("cls-owner", "cls-repo", "");
+    const anchor = await createIssue(proj.id, "classifier anchor", "", "dog", { upstreamIssueNumber: 1, state: "open" });
+    for (let i = 10; i < 130; i++) {
+      await createIssue(proj.id, `issue ${i}`, "", "dog", { upstreamIssueNumber: i, state: "open" });
+    }
+    const agg = await createIssue(proj.id, "[根因] 调度死锁", "", "dog", { upstreamIssueNumber: 200, state: "open" });
+
+    const mod: any = await import("../src/upstream-sync");
+    mockFetch();
+    clearClassifierTimers(mod);
+    await setConfig("classifierAnchor:cls-owner/cls-repo", "1");
+
+    const us: any = Object.create(mod.UpstreamSync.prototype);
+    us.project = { id: proj.id, owner: "cls-owner", name: "cls-repo" };
+    us.origin = "http://origin";
+
+    await createWebhook({ project_id: proj.id, url: HOOK, secret: "s3cret" });
+    hookCalls.length = 0;
+
+    try {
+      // first sighting: arms + fires immediately (first round = full sweep)
+      await mod.UpstreamSync.prototype.maybeClassifierTick.call(us);
+      await Bun.sleep(80);
+      await waitForWebhookQueueIdle(4_000).catch(() => {});
+      const first = hookCalls.map((c) => c.body).find((b) => b?.action === "classifier_tick");
+      expect(first).toBeDefined();
+      expect(first.classifier.firstRound).toBe(true);
+      // 120 open issues; anchor + [根因] rows excluded
+      expect(first.classifier.batch.length).toBe(120);
+      expect(first.classifier.batch).not.toContain(anchor.number);
+      expect(first.classifier.batch).not.toContain(agg.number);
+      // first-round cap 300 respected even with more rows present
+      expect(first.classifier.batch.length).toBeLessThanOrEqual(300);
+
+      // second tick = incremental: only rows touched after classifierLastTick
+      hookCalls.length = 0;
+      const future = new Date(Date.now() + 60_000).toISOString();
+      await db.run("UPDATE issues SET updated_at = ? WHERE upstream_issue_number = 50", [future]);
+      await mod.UpstreamSync.prototype.classifierTick.call(us, "cls-owner/cls-repo", 1);
+      await Bun.sleep(80);
+      await waitForWebhookQueueIdle(4_000).catch(() => {});
+      const second = hookCalls.map((c) => c.body).find((b) => b?.action === "classifier_tick");
+      expect(second).toBeDefined();
+      expect(second.classifier.firstRound).toBe(false);
+      expect(second.classifier.batch).toHaveLength(1);
+      const row50 = await getIssueByUpstreamNumber(proj.id, 50);
+      expect(second.classifier.batch[0]).toBe(row50?.number);
+    } finally {
+      clearClassifierTimers(mod);
+    }
+  });
+
+  test("no kv anchor → zero cost, nothing emitted, no timer armed", async () => {
+    const proj = await createProject("cls-off", "off-repo", "");
+    await createIssue(proj.id, "some open issue", "", "dog", { upstreamIssueNumber: 7, state: "open" });
+
+    const mod: any = await import("../src/upstream-sync");
+    mockFetch();
+    clearClassifierTimers(mod);
+
+    const us: any = Object.create(mod.UpstreamSync.prototype);
+    us.project = { id: proj.id, owner: "cls-off", name: "off-repo" };
+    us.origin = "http://origin";
+
+    await createWebhook({ project_id: proj.id, url: HOOK, secret: "s3cret" });
+    hookCalls.length = 0;
+
+    try {
+      await mod.UpstreamSync.prototype.maybeClassifierTick.call(us);
+      await Bun.sleep(80);
+      await waitForWebhookQueueIdle(2_000).catch(() => {});
+      expect(hookCalls.length).toBe(0);
+      expect(mod.classifierTimers.has(proj.id)).toBe(false);
+    } finally {
+      clearClassifierTimers(mod);
+    }
+  });
+});

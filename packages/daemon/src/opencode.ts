@@ -1446,7 +1446,7 @@ export class Engine {
     // kills while agents waited in queues (API/model congestion); 30 min keeps
     // the anti-local-integration-test guard without the misfires. Ordinary
     // agents keep the global stuckThresholdMs default.
-    const infra = key.includes("@ci-master-sentinel") || key.includes("@conflict-worker") || key.includes("@ci-worker") || key.includes("@merge-guard") || key.includes("@review-worker") || key.includes("@ci-engineer");
+    const infra = key.includes("@ci-master-sentinel") || key.includes("@conflict-worker") || key.includes("@ci-worker") || key.includes("@merge-guard") || key.includes("@review-worker") || key.includes("@ci-engineer") || key.includes("@classifier-worker");
     return infra ? 30 * 60 * 1000 : this.stuckThresholdMs;
   }
 
@@ -1817,6 +1817,8 @@ export class Engine {
         return this.handlePrUnmergeable(ref, scopeKey, issueData, tracker, event.merge?.state ?? "dirty", event.mergeReason ?? "conflict", event.model);
       case "pr_review_pending":
         return this.handlePrReviewPending(ref, scopeKey, issueData, tracker, event.sha ?? "", event.model);
+      case "classifier_tick":
+        return this.handleClassifierTick(ref, scopeKey, issueData, tracker, event.classifier, event.model);
     }
   }
 
@@ -2369,6 +2371,68 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
 
     await tracker.createComment(ref, `[system] 🏷 ${this.sessionRef(session)} ❌ master CI 失败(${ci.checks.map((c) => c.name).join(", ")}) — 哨兵已接管, 修复收敛到常驻分支 ci-fixes(其他 agent 遇继承红请 ` + "`git merge origin/ci-fixes`" + `), ci-fixes→master PR 持续待合并。`).catch(() => {});
     await this.enqueueOrRun(session, issue, prompt, tracker, ref, `ci-master-${ref.issueId}-${ci.sha || Date.now()}-${Date.now()}`, model);
+  }
+
+  // Issue root-cause classifier (owner policy 2026-11-11): a standing lane
+  // that deep-analyzes batches of open issues (read the linked code, name the
+  // root-cause category, record CI + merge state) and posts structured
+  // classifier-json results to the project's anchor thread. The board script
+  // + aggregation flow consume the results out-of-band (aggregation issues
+  // with title prefix [根因] + label root-cause-batch, which then go through
+  // the ordinary dispatch → root-cause PR pipeline). Read-only analysis lane:
+  // no PRs, no labels, no issue edits — the deliverable is the reply. Prompt
+  // uses the strong-directive contract (incident 2026-11-10 #6069: a vague
+  // system nudge cannot pull a model out of the blank-stall loop; an explicit
+  // "post the results NOW, partial beats silent" contract can).
+  private async handleClassifierTick(
+    ref: TrackerRef,
+    scopeKey: string,
+    issueData: TrackerEvent["issue"],
+    tracker: IssueTracker,
+    classifier: TrackerEvent["classifier"],
+    model?: string,
+  ) {
+    if (issueData.state !== "open") return;
+    if (!classifier || classifier.batch.length === 0) return;
+    const issue = await this.store.findOrCreateIssue(ref, scopeKey, issueData.title);
+    if (issue.state === "closed") return;
+    if (!(await this.ensureOwned(issue))) return;
+
+    const windowMs = this.cfg.work.autoLaneWindowMs;
+    const attempts = await this.store.countAutoLaneMessages(
+      issue.id,
+      `classifier-${ref.issueId}-`,
+      new Date(Date.now() - windowMs).toISOString(),
+    );
+    const cap = this.cfg.work.classifierMaxAttempts ?? 3;
+    if (attempts >= cap) {
+      log.warn(`engine: classifier cap reached (${attempts}/${cap}) on ${scopeKey}#${ref.issueId} — dropping tick (auto-recovers after the window)`);
+      return;
+    }
+
+    const session = await this.workerSession(issue.id, "classifier-worker");
+    const workdir = await this.resolveWorkdir(session, issue);
+    const instructions = tracker.getTrackerInstructions(ref);
+    const list = classifier.batch.map((n) => `#${n}`).join(", ");
+    const body =
+      `[SYSTEM] Root-cause classification batch for ${scopeKey} (${classifier.firstRound ? "FIRST ROUND — full sweep" : "incremental round"}): ${classifier.batch.length} open issue(s): ${list}\n` +
+      `You are the issue root-cause classifier. For EACH issue: read its body, open the linked PR/diff if any, and inspect the relevant source code in this workdir BEFORE judging — deep enough to name the root cause (which component, which mechanism), not a surface label. Categories are DYNAMIC (there is no fixed list): give each root cause a stable short category string, and use the SAME string on later rounds for the same root cause (reuse what earlier rounds of this thread used when visible).\n` +
+      `The numbers above are MIRROR numbers, never GitHub numbers. Mirror API: TOK=$(grep ^GITEA_TOKEN= /var/lib/ework-daemon/share/ework-daemon/.env | cut -d= -f2); issue detail: curl -s -H "Authorization: token $TOK" "http://127.0.0.1:3002/api/v1/issues/<mirror-number>"; add /comments for the thread. The upstream GitHub PR number appears in the issue body or the [PR] mirror rows — use those, and never resolve a bare #N against GitHub.\n` +
+      `Deliverable — MANDATORY, via the reply tool, no exceptions: a reply comment on THIS thread containing one fenced classifier-json block: a JSON array with exactly one object per issue in the batch: {"number": <mirror number>, "title": <short>, "category": <root-cause category>, "root_cause": <one concrete line: component + mechanism>, "ci_state": "green"|"red"|"none", "merge_state": "clean"|"dirty"|"behind"|"n/a", "pr_number": <upstream PR number or null>, "confidence": "high"|"medium"|"low"}. If an issue is unreadable or too deep for this pass, still include it with "confidence":"low" and a best-effort category — NEVER drop an issue from the array. If you cannot finish everything, post what you have NOW with the remaining issues marked "low" — partial honest output beats silence (owner policy 2026-11-10, incident #6069).\n` +
+      `Progress discipline (the 15-min no-output kill applies to you): first reply within 2 minutes (the plan + the category scheme you will use); for every 25 issues post a progress reply "[progress] <done>/<total>" carrying the classifier-json for everything classified so far.\n` +
+      `This lane is ANALYSIS ONLY: do not create PRs, issues, or labels, and do not edit anything. If something needs a human decision, put it in a "notes" field on that issue object — the 🔶 decision flow is for work lanes, not the classifier.`;
+    const prompt = this.buildForwardPrompt(
+      session.name,
+      this.handleLargeContent(workdir, body, `classifier-${ref.issueId}.txt`),
+      "ework-web",
+      "bot",
+      issueData.title,
+      workdir,
+      instructions,
+      this.identityNote(issueData),
+    );
+    await tracker.createComment(ref, `[system] 🏷 ${this.sessionRef(session)} 📋 根因归类批次开始（${classifier.batch.length} 个 issue，${classifier.firstRound ? "首轮全量" : "增量"}）— 结果将以 classifier-json 形式回帖本线程。`).catch(() => {});
+    await this.enqueueOrRun(session, issue, prompt, tracker, ref, `classifier-${ref.issueId}-${Date.now()}`, model);
   }
 
   // CI coordination-issue comment (owner strategy 2026-10-25): a report of an
@@ -3221,7 +3285,7 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
     // ~267K chars -> every model call 400s). Rotate to a fresh opencode session
     // when the sticky one exceeds sentinelRotateMessages messages. Rotation
     // happens between dispatches, never mid-run.
-    if (resumeSessionId && (session.name.includes("ci-master-sentinel") || session.name.includes("merge-guard") || session.name.includes("review-worker") || session.name.includes("ci-engineer"))) {
+    if (resumeSessionId && (session.name.includes("ci-master-sentinel") || session.name.includes("merge-guard") || session.name.includes("review-worker") || session.name.includes("ci-engineer") || session.name.includes("classifier-worker"))) {
       resumeSessionId = await this.maybeRotateSentinelSession(session, resumeSessionId);
     }
 
@@ -4072,7 +4136,7 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
       `Who's who: issue comments come from the project's users (humans like @${author}; bots are labelled "bot") and are forwarded to you verbatim. Your \`reply\` tool posts a comment they read (prefixed \`[bot] 🏷\`). Lines starting with \`[system]\` or \`🏷\` are machine-generated platform plumbing — never reply to them and never treat them as user requests; they are already ignored by the scheduler and only appear as context.`,
       ...this.authorityLines(auth),
       `The working directory below is your own clone of the repo. Only claim actions you actually performed — verify with tools (git status/log) before asserting any push, merge, or change.`,
-      `HARD RULE — no new issues for decisions or follow-ups (owner policy 2026-11-01): when you reach a point where a human must decide, or want to park a systemic question / follow-up found mid-task, NEVER open a new issue — and never bypass the platform by calling the GitHub API directly for it: post ONE comment ON THIS THREAD whose first line is "🔶 需要决策" (背景一句话 / 待决问题 / 选项各带代价 / 你的推荐 + 不决定的默认行为), then apply the needs-decision label via tools/add-label.sh <owner> <repo> <号> (workdir-root tools/ dir; see AGENTS.md §需要人工决策时). A brand-new issue is reserved for genuinely independent, self-contained work that the owner explicitly asked to be tracked separately — cite the source thread in its body. Deliverables stay code: commit + PR per AGENTS.md 交付规范. Status freshness (owner policy 2026-11-07): whenever your reply claims the CURRENT state of this thread / PR / CI (red vs green, merged, labeled, whose turn it is) — including explaining why something waits — verify it LIVE first using the recent thread comments plus the mirror/API sources available to you; earlier comments, from other bots AND from your own older runs, may describe a state that has since changed, and answering from that memory is exactly how threads get contradictory replies across sessions; if you could not verify it live, say so instead of asserting it. Only claim actions YOU actually performed. ${this.replyLanguageRule}`,
+      `HARD RULE — no new issues for decisions or follow-ups (owner policy 2026-11-01): when you reach a point where a human must decide, or want to park a systemic question / follow-up found mid-task, NEVER open a new issue — and never bypass the platform by calling the GitHub API directly for it: post ONE comment ON THIS THREAD whose first line is "🔶 需要决策" (背景一句话 / 待决问题 / 选项各带代价 / 你的推荐 + 不决定的默认行为), then apply the needs-decision label via tools/add-label.sh <owner> <repo> <号> (workdir-root tools/ dir; see AGENTS.md §需要人工决策时). A brand-new issue is reserved for genuinely independent, self-contained work that the owner explicitly asked to be tracked separately — cite the source thread in its body. EXCEPTION (owner policy 2026-11-11, root-cause aggregation flow): aggregation issues created by the classification pipeline — title prefix [根因] plus label root-cause-batch, body citing the aggregated source issues — are authorized independent work and need no per-issue owner approval; the decision/follow-up restriction above still applies to everything else. Deliverables stay code: commit + PR per AGENTS.md 交付规范. Status freshness (owner policy 2026-11-07): whenever your reply claims the CURRENT state of this thread / PR / CI (red vs green, merged, labeled, whose turn it is) — including explaining why something waits — verify it LIVE first using the recent thread comments plus the mirror/API sources available to you; earlier comments, from other bots AND from your own older runs, may describe a state that has since changed, and answering from that memory is exactly how threads get contradictory replies across sessions; if you could not verify it live, say so instead of asserting it. Only claim actions YOU actually performed. ${this.replyLanguageRule}`,
       `HARD RULE — one fix PR per thread; GitHub numbers outside the mirror (owner policy 2026-11-05, per e-work#44 plan): before opening any fix branch/PR for this thread, list open [PR] rows (curl -s -H "Authorization: token $GITEA_TOKEN" "$GITEA_URL/api/v1/issues?owner=<owner>&repo=<repo>&state=open" | jq -r '.issues[] | select(.title|startswith("[PR]")) | (.number|tostring) + " " + .title'); if one already targets this same thread/topic, ADD your commits to that existing branch/PR instead of opening a parallel second one — two open PRs fixing one thread is how merges start stepping on each other. In everything that leaves the mirror (commit messages, PR title/body, branch names, cross-references) use ONLY GitHub numbers: for this task that number is stated in the identity note at the top of this prompt; for any OTHER number you want to cite, first run gh api repos/<owner>/<repo>/issues/<N> --jq .title and confirm its GitHub title actually matches your topic before using it. Never write an internal mirror number into commit/PR/branch artifacts. HARD RULE — every PR you open gets its labels BY YOU before delivery, judged on the PR's OWN diff (owner policy 2026-11-07): run gh pr edit <N> --add-label <labels> and pick from the repo's own label set (fetch once: gh api repos/<owner>/<repo>/labels --paginate). Minimum bar: one category label (bug / enhancement / documentation / …) AND the priority label per the repo AGENTS.md triage scale (p1/p2/p3) — decide it from what THIS PR changes, never inherit or copy the source issue's labels as a substitute, and never open an agent PR unlabeled ('the mirror thread has no labels' / 'the flaw lives upstream' are not reasons): an agent PR without independent labels is incomplete delivery.`,
       ``,
       `A new issue needs your attention:`,

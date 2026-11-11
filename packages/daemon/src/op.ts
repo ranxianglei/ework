@@ -350,7 +350,7 @@ export class Store {
     // The caller's family list is authoritative (it sizes infra demand);
     // an empty list falls back to the legacy worker families.
     const likes = (
-      names.length > 0 ? names : ["conflict-worker", "ci-worker", "ci-master", "release-worker", "ci-engineer"]
+      names.length > 0 ? names : ["conflict-worker", "ci-worker", "ci-master", "release-worker", "ci-engineer", "classifier-worker"]
     ).map((n) => `${n}%`);
     const where = likes.map(() => "s.name LIKE ?").join(" OR ");
     const rows = await getDB().all<{ n?: number }>(

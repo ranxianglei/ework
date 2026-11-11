@@ -94,6 +94,10 @@ export const configSchema = z.object({
     // two legacy per-lane caps are ignored. ABSENT ⇒ legacy per-lane behavior.
     // 0 = both auto-fix lanes fully disabled.
     ciEngineerMaxAttempts: z.coerce.number().int().min(0).optional(),
+    // Issue root-cause classifier lane (owner policy 2026-11-11): the standing
+    // analysis lane gets at most N dispatches per anchor thread per window.
+    // 0 = lane disabled (ticks dropped); env default 3 kept in sync below.
+    classifierMaxAttempts: z.coerce.number().int().min(0).optional(),
     // Transparent-repair coalesce window (owner policy 2026-11-07): while a
     // session for the SAME lane/thread has been running for less than this,
     // a new ci-fail / merge-conflict event must NOT preempt it — it stays
@@ -207,6 +211,9 @@ function readWorkSection() {
     ciCoalesceMinutes: process.env.WORK_CI_COALESCE_MINUTES != null && process.env.WORK_CI_COALESCE_MINUTES !== ""
       ? Math.max(0, Math.trunc(Number(process.env.WORK_CI_COALESCE_MINUTES))) // 0 = legacy preemptive behavior
       : 5, // default window; zod default kept in sync
+    classifierMaxAttempts: process.env.WORK_CLASSIFIER_MAX_ATTEMPTS != null && process.env.WORK_CLASSIFIER_MAX_ATTEMPTS !== ""
+      ? Math.max(0, Math.trunc(Number(process.env.WORK_CLASSIFIER_MAX_ATTEMPTS)))
+      : 3, // one attempt per 4h tick with slack; 0 = lane off
     ciVerifyDelayMs: process.env.WORK_CI_VERIFY_DELAY_MS != null && process.env.WORK_CI_VERIFY_DELAY_MS !== ""
       ? Math.max(1, Math.trunc(Number(process.env.WORK_CI_VERIFY_DELAY_MS)))
       : 900_000,

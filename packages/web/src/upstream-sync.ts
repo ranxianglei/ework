@@ -23,8 +23,8 @@ import {
   markIssueAnnounced,
   getUnannouncedIssues,
 } from "./store";
-import { emitIssueEvent, emitCommentEvent, emitMergeConflictEvent, emitCiFailedEvent, emitMasterCiFailedEvent } from "./webhooks";
-import { getDB, getConfigAll } from "./db";
+import { emitIssueEvent, emitCommentEvent, emitMergeConflictEvent, emitCiFailedEvent, emitMasterCiFailedEvent, emitClassifierTickEvent } from "./webhooks";
+import { getDB, getConfigAll, setConfig } from "./db";
 import { log } from "./logger";
 import type { Config } from "./config";
 
@@ -208,6 +208,16 @@ const mergeGuardCooldownUntil = new Map<number, number>();
 // (the biggest repo finishes last every round and never gets a turn —
 // incident 2026-11-10: billion-context's drain never ran for hours).
 const reprobeDrainThrottle = new Map<number, number>();
+
+// 2026-11-11 (owner policy: issue 根因归类): per-project one-shot timers for
+// the classifier tick. A fresh UpstreamSync instance is built every poll, so
+// the timer lives at module level (same reason as reprobeDrainThrottle /
+// masterHeadByRepo). First sighting of the kv anchor fires IMMEDIATELY
+// (first round = full sweep, minutes not days), then re-arms every 4h.
+const CLASSIFIER_TICK_MS = 4 * 60 * 60 * 1000;
+const CLASSIFIER_FIRST_ROUND_CAP = 300; // full sweep safety cap
+const CLASSIFIER_BATCH_CAP = 100; // per owner: 一次 100 个
+export const classifierTimers = new Map<number, ReturnType<typeof setTimeout>>();
 // 2026-11-10 (owner fix, conflict-backlog incident): the "master head moved"
 // reset previously kept its bookkeeping in an UpstreamSync INSTANCE field —
 // but the poll loop constructs a fresh instance every poll, so the previous
@@ -1290,6 +1300,7 @@ export class UpstreamSync {
       lastError: null,
     });
     await this.sweepUnannounced();
+    await this.maybeClassifierTick();
     return result;
   }
 
@@ -1308,6 +1319,70 @@ export class UpstreamSync {
     } catch (err) {
       log.warn(`upstream-sync: announce sweep failed: ${String(err)}`);
     }
+  }
+
+  // Issue root-cause classifier (owner policy 2026-11-11): a standing lane
+  // that deep-analyzes batches of open issues (read code, name the root-cause
+  // category, record CI + merge state) and posts structured results to the
+  // project's anchor issue; the board script + aggregation flow consume them
+  // out-of-band. Enabled per project via kv classifierAnchor:<owner>/<repo>
+  // = anchor GitHub issue number; no kv key = feature off, zero cost.
+  private async maybeClassifierTick(): Promise<void> {
+    try {
+      if (classifierTimers.has(this.project.id)) return;
+      const scopeKey = `${this.project.owner}/${this.project.name}`;
+      const cfg = await getConfigAll();
+      const anchorNumber = Number(cfg[`classifierAnchor:${scopeKey}`] ?? "");
+      if (!Number.isInteger(anchorNumber) || anchorNumber <= 0) return;
+      classifierTimers.set(
+        this.project.id,
+        setTimeout(() => {
+          classifierTimers.delete(this.project.id);
+          void this.classifierTick(scopeKey, anchorNumber).catch((err) => {
+            log.warn(`classifier: tick failed for ${scopeKey}: ${String(err)}`);
+          });
+        }, 0), // first sighting fires immediately (first round = full sweep)
+      );
+    } catch (err) {
+      log.warn(`classifier: tick arming failed: ${String(err)}`);
+    }
+  }
+
+  private async classifierTick(scopeKey: string, anchorNumber: number): Promise<void> {
+    const anchor = await getIssueByUpstreamNumber(this.project.id, anchorNumber);
+    if (!anchor) {
+      // mirror hasn't synced the anchor yet — the next poll re-arms
+      log.warn(`classifier: anchor GH#${anchorNumber} not in mirror yet for ${scopeKey} — retry next poll`);
+      return;
+    }
+    const cfg = await getConfigAll();
+    const sinceKey = `classifierLastTick:${scopeKey}`;
+    const lastTick = cfg[sinceKey];
+    const rows = lastTick
+      ? await getDB().all<{ number: number }>(
+          "SELECT number FROM issues WHERE project_id = ? AND state = 'open' AND number != ? AND title NOT LIKE '[根因]%' AND (updated_at > ? OR created_at > ?) ORDER BY updated_at DESC, number DESC LIMIT ?",
+          [this.project.id, anchor.number, lastTick, lastTick, CLASSIFIER_BATCH_CAP],
+        )
+      : await getDB().all<{ number: number }>(
+          "SELECT number FROM issues WHERE project_id = ? AND state = 'open' AND number != ? AND title NOT LIKE '[根因]%' ORDER BY number DESC LIMIT ?",
+          [this.project.id, anchor.number, CLASSIFIER_FIRST_ROUND_CAP],
+        );
+    // re-arm the 4h cycle regardless of outcome
+    classifierTimers.set(
+      this.project.id,
+      setTimeout(() => {
+        classifierTimers.delete(this.project.id);
+        void this.maybeClassifierTick().catch(() => {});
+      }, CLASSIFIER_TICK_MS),
+    );
+    if (rows.length === 0) {
+      await setConfig(sinceKey, new Date().toISOString());
+      return;
+    }
+    const batch = rows.map((r) => Number(r.number));
+    await setConfig(sinceKey, new Date().toISOString());
+    await emitClassifierTickEvent(this.project.id, anchor.id, this.origin ?? "", batch, !lastTick);
+    log.info(`classifier: tick emitted for ${scopeKey} — ${batch.length} issue(s) → anchor GH#${anchorNumber} (${lastTick ? "incremental" : "FIRST ROUND full sweep"})`);
   }
 
   private async importDiscussion(d: GithubDiscussion, emit: boolean): Promise<void> {
