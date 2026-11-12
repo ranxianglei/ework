@@ -499,6 +499,27 @@ export class Store {
     );
   }
 
+  /**
+   * Warm-session fast path (owner policy 2026-11-12): once a session picks
+   * up work it is not sent back to the cold FIFO — pending messages whose
+   * session kept traffic within the warm window jump the global queue so the
+   * context (prompt cache / KV) stays hot. A session silent longer than the
+   * window is cold again and queues normally. `{{...}}` tables + rowToMessage
+   * mirror getPendingForIssue (raw rows carry snake_case + INTEGER id).
+   */
+  async getWarmPendingMessages(warmCutoffIso: string, limit: number): Promise<Message[]> {
+    const rows = await getDB().all<MessageRow>(
+      `SELECT m.* FROM {{messages}} m
+       JOIN {{op_sessions}} s ON s.uid = m.session_id
+       WHERE m.status = 'pending' AND (m.retry_after IS NULL OR m.retry_after <= ?)
+         AND s.last_output_at IS NOT NULL AND s.last_output_at >= ?
+       ORDER BY s.last_output_at DESC, m.created_at ASC
+       LIMIT ?`,
+      [new Date().toISOString(), warmCutoffIso, limit],
+    );
+    return rows.map(rowToMessage);
+  }
+
   async getPendingForIssue(issueId: string): Promise<Message[]> {
     const nowIso = new Date().toISOString();
     // Must map through rowToMessage like getGlobalPendingMessages: raw rows
