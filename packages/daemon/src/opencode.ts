@@ -3954,6 +3954,39 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
         if (remaining.length === 0) this.pinnedIssueIds.delete(issueId);
       }
     }
+    // Warm-session fast path (owner policy 2026-11-12): once a session picks
+    // up work it is not sent back to the cold FIFO — only a session silent
+    // past the warm window (default 10 min) queues normally. Gated by the
+    // ordinary cap like fresh pins (总模型负载 ≤ maxConcurrent). Lane messages
+    // (sentinel/guard/review) keep their own dispatch paths — excluded here.
+    if (this.cfg.work.warmSessionMs > 0 && this.slotAvailable()) {
+      const warmCutoff = new Date(Date.now() - this.cfg.work.warmSessionMs).toISOString();
+      let warm: Awaited<ReturnType<Store["getWarmPendingMessages"]>>;
+      try {
+        warm = await this.store.getWarmPendingMessages(warmCutoff, 16);
+      } catch {
+        warm = [];
+      }
+      for (const msg of warm) {
+        if (!this.slotAvailable()) break;
+        if (this.isSentinelSource(msg.sourceCommentId)) continue;
+        if (this.isMergeGuardSource(msg.sourceCommentId)) continue;
+        if (this.isReviewSource(msg.sourceCommentId)) continue;
+        const session = await this.store.getSession(msg.sessionId);
+        if (!session || session.state === "running") continue;
+        const issue = await this.store.getIssue(session.issueId);
+        if (!issue || issue.state === "closed") continue;
+        const k = this.sessionKey(session, issue);
+        if (this.running.has(k)) continue;
+        const projKey = this.projectKeyFor(k);
+        const projCap = this.projectConcurrencyCache.get(projKey)?.v;
+        if (projCap != null && this.projectRunningCount(projKey) >= projCap) continue;
+        const won = await this.store.claimMessage(msg.id);
+        if (!won) continue;
+        log.info(`engine: warm-session fast path dispatched msg ${msg.id.slice(0, 8)} for ${k}`);
+        await this.dequeueOrIdle(k, session, issue, msg);
+      }
+    }
     const slotsAvailable = Math.min(
       this.maxConcurrent - this.activeRunningCount(),
       this.maxConcurrent * 2 - this.running.size,

@@ -62,6 +62,12 @@ export const configSchema = z.object({
     // than this grace no longer occupies an API slot (long tool run); slots track
     // real model concurrency, not process count.
     apiIdleGraceMs: z.coerce.number().int().positive().default(180_000),
+    // Warm-session fast path (owner policy 2026-11-12): a session that picked
+    // up work is not sent back to the FIFO queue — its pending messages jump
+    // the global drain while the session stayed within this traffic window.
+    // Only a session silent longer than this counts as cold. 0 disables the
+    // fast path (pure FIFO). Default 10 min (owner: "5到10分钟").
+    warmSessionMs: z.coerce.number().int().min(0).default(600_000),
     heartbeatMs: z.coerce.number().int().positive().default(10_000),
     leaseTtlMs: z.coerce.number().int().positive().default(60_000),
     // Infra-failure auto-retry budget (web unreachable / ENOSPC / signal-kill).
@@ -182,6 +188,9 @@ function readWorkSection() {
     maxConcurrent: maxConcurrentExplicit ? Number(process.env.WORK_MAX_CONCURRENT) : capacity,
     maxConcurrentExplicit,
     apiIdleGraceMs,
+    warmSessionMs: process.env.WORK_WARM_SESSION_MS != null && process.env.WORK_WARM_SESSION_MS !== ""
+      ? Math.max(0, Math.trunc(Number(process.env.WORK_WARM_SESSION_MS)))
+      : 600_000,
     heartbeatMs: process.env.WORK_DAEMON_HEARTBEAT_MS ? Number(process.env.WORK_DAEMON_HEARTBEAT_MS) : 10_000,
     leaseTtlMs: process.env.WORK_DAEMON_LEASE_TTL_MS ? Number(process.env.WORK_DAEMON_LEASE_TTL_MS) : 60_000,
     infraRetryMax: process.env.WORK_INFRA_RETRY_MAX != null && process.env.WORK_INFRA_RETRY_MAX !== ""
