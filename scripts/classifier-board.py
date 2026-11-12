@@ -7,10 +7,12 @@ blocks) posted on the project's ANCHOR thread (GH issue, body contains
 enriches every row with live CI / merge state straight from the mirror DB
 (zero REST fan-out — the REST budget stays <=10 req/min, same discipline as
 ework-status-board.py), renders a discussion board, and — when one root-cause
-category covers >=2 open issues — creates (or updates) a [根因] aggregation
+category covers >=2 open issues — creates (or updates) a [Root Cause] aggregation
 issue tagged root-cause-batch. The aggregation issue then flows through the
 NORMAL dispatch pipeline (no special lane) and produces one root-cause PR with
-a "Fixes #..." list; merging it closes the batch at once.
+a "Fixes #..." list; merging it closes the batch at once. Exception
+(owner policy 2026-11-12): the tinyfix category gets NO aggregation issue —
+its members are only suppressed (bot stopped), no ticket.
 
 REST usage per run: anchor comments (1 page, newest first) + discussion
 create/update (GQL, 2) + aggregation issues list/create/update (<= few).
@@ -34,8 +36,121 @@ DB = "/var/lib/ework-web/share/ework-web/ework.db"
 BOARD_TITLE = "Issue 根因归类板（自动维护，勿手编）"
 AGG_LABEL = "root-cause-batch"
 # owner policy 2026-11-11: >=2 open issues of the same root cause get a
-# [根因] aggregation issue that goes through the normal pipeline.
+# [Root Cause] aggregation issue that goes through the normal pipeline.
 AGG_THRESHOLD = 2
+# owner policy 2026-11-12 (dedup rework): aggregation issues are identified by a
+# STABLE TOKEN, never by title/regex matching. token == the category name
+# (owner decision), embedded as an HTML comment in the issue body AND recorded
+# in a sqlite DB (authoritative). Titles are English-only and purely cosmetic.
+RCAGG_DB = "/var/lib/ework-web/share/rc-agg.db"
+ABSORBED_LABEL = "已被收"
+ABSORBED_COMMENT = (
+    "（已收）本单已归入根因聚合 issue（token 见该单 body），机器人已停止在本单上的工作，"
+    "修复走聚合 issue 统一出 PR；本单保留不关，修复验证后统一关闭。"
+)
+
+def rcagg_token(cat):
+    return f"rcagg:{(cat or '').strip()}"
+
+def rcagg_marker(cat):
+    return f"<!-- {rcagg_token(cat)} -->"
+
+def rcdb():
+    c = sqlite3.connect(RCAGG_DB)
+    c.execute("CREATE TABLE IF NOT EXISTS rc_agg ("
+              "category TEXT PRIMARY KEY, token TEXT UNIQUE NOT NULL, "
+              "issue_number INTEGER NOT NULL, updated_at TEXT)")
+    return c
+
+def rc_lookup(cat):
+    """Resolve the live aggregation issue for a category (else None). Chain:
+    rc-agg.db number -> gh_rest verify -> body-marker scan of open labelled
+    issues. Invariants:
+    - confirmed CLOSED upstream -> record deleted, None returned, so a fully
+      closed set gets a FRESH issue (owner policy: never reuse/reopen);
+    - transient API failure (rate limit / network) -> DB number returned as an
+      unverified dict so update_agg PATCHes it (repairing body/marker) instead
+      of CREATE-duplicating while GitHub is down; the 2026-11-12 incident was
+      exactly "dedup check blind -> duplicate batch", never repeat it via outage;
+    - open but marker stripped from body -> same unverified repair path."""
+    try:
+        c = rcdb()
+        row = c.execute("SELECT issue_number FROM rc_agg WHERE category=?", (cat,)).fetchone()
+        c.close()
+        if not row:
+            return None
+        number = row[0]
+        try:
+            it = gh_rest(f"issues/{number}")
+        except Exception as e:
+            print(f"classifier-board: agg verify failed for {cat!r} (#{number}): {e} -> trusting DB record (no duplicate create)")
+            return {"number": number, "title": "", "body": "", "state": "open", "_unverified": True}
+        if (it.get("state") or "") == "open" and rcagg_marker(cat) in (it.get("body") or ""):
+            return it
+        if (it.get("state") or "") == "open":
+            # open but marker lost (body edited) — PATCH will restore it
+            print(f"classifier-board: agg #{number} for {cat!r} lost its rcagg marker -> will repair via PATCH")
+            return dict(it, _unverified=True)
+        # closed upstream -> replace, never reopen
+        c = rcdb()
+        c.execute("DELETE FROM rc_agg WHERE category=?", (cat,))
+        c.commit(); c.close()
+        print(f"classifier-board: agg #{number} for {cat!r} closed upstream -> record dropped, fresh issue will be created")
+        return None
+    except Exception as e:
+        print(f"classifier-board: rc_lookup failed for {cat!r}: {e}")
+        return None
+
+def rc_remember(cat, number):
+    try:
+        c = rcdb()
+        c.execute("INSERT INTO rc_agg(category, token, issue_number, updated_at) VALUES(?,?,?,?) "
+                  "ON CONFLICT(category) DO UPDATE SET token=excluded.token, "
+                  "issue_number=excluded.issue_number, updated_at=excluded.updated_at",
+                  (cat, rcagg_token(cat), number, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())))
+        c.commit(); c.close()
+    except Exception as e:
+        print(f"classifier-board: rc_remember failed for {cat!r}: {e}")
+
+def rc_dr_recover(open_labeled):
+    """Disaster recovery: if the DB table is empty but labelled aggregation
+    issues carry rcagg markers in their bodies, re-import them. Markers are
+    authoritative; the scan only happens when the DB has nothing."""
+    try:
+        c = rcdb()
+        n = c.execute("SELECT COUNT(*) FROM rc_agg").fetchone()[0]
+        c.close()
+        if n:
+            return
+    except Exception:
+        pass
+    for it in open_labeled:
+        m = re.search(r"<!-- (rcagg:[^>]+?) -->", it.get("body") or "")
+        if not m:
+            continue
+        cat = m.group(1)[len("rcagg:"):]
+        try:
+            rc_remember(cat, it.get("number"))
+            print(f"classifier-board: DR-recovered {cat!r} -> #{it.get('number')} from body marker")
+        except Exception:
+            pass
+
+def ensure_label(name, color="b4b4b4"):
+    try:
+        gh_rest(f"labels/{urllib.request.quote(name)}")
+        return
+    except Exception:
+        pass
+    try:
+        gh_rest("labels", {"name": name, "color": color}, method="POST")
+    except Exception as e:
+        print(f"classifier-board: label create failed for {name!r} (continuing): {e}")
+
+def issue_has_label(it, name):
+    labels = it.get("labels")
+    if isinstance(labels, list):
+        return any((l.get("name") if isinstance(l, dict) else l) == name for l in labels)
+    return name in (labels or "")
 
 opener = urllib.request.build_opener(urllib.request.ProxyHandler({"https": PROXY}))
 
@@ -134,7 +249,7 @@ def open_numbers():
     rows = c.execute("""SELECT number FROM issues
         WHERE project_id=(SELECT id FROM projects WHERE name='billion-context')
         AND state='open' AND title NOT LIKE '[PR]%' AND title NOT LIKE '[根因]%'
-        AND title NOT LIKE '[分类]%'""").fetchall()
+        AND title NOT LIKE '[分类]%' AND title NOT LIKE '[Root Cause]%'""").fetchall()
     c.close()
     return {n for (n,) in rows}
 
@@ -168,17 +283,21 @@ def write_suppression(merged, open_set):
     with open(tmp, "w") as f:
         json.dump(payload, f, ensure_ascii=False)
     os.replace(tmp, SUPPRESSION_PATH)
-    try:
-        req = urllib.request.Request(
-            DAEMON_STOP_URL,
-            data=json.dumps({"issue_ids": list(nums)}).encode(),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=60) as r:
-            print(f"classifier-board: stop-work -> {r.read().decode()[:200]}")
-    except Exception as e:
-        print(f"classifier-board: stop-work POST failed (non-fatal): {e}")
+    for attempt in range(3):
+        try:
+            req = urllib.request.Request(
+                DAEMON_STOP_URL,
+                data=json.dumps({"issue_ids": list(nums)}).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=60) as r:
+                print(f"classifier-board: stop-work -> {r.read().decode()[:200]}")
+            break
+        except Exception as e:
+            print(f"classifier-board: stop-work POST failed (attempt {attempt+1}/3): {e}")
+            if attempt < 2:
+                time.sleep(5 * (attempt + 1))
     print(f"classifier-board: suppression set = {len(nums)} issue(s) -> {SUPPRESSION_PATH}")
 
 def mirror_row(n):
@@ -245,118 +364,166 @@ def short(t, n=34):
     return t[:n - 1] + "…" if len(t) > n else t
 
 def ci_safe_title(cat):
-    """The daemon's dispatch gate skips titles matching /\bci\b/i — keep the
-    word CI out of standalone aggregation-issue titles (table cells are fine)."""
-    return re.sub(r"\bCI\b", "持续集成", cat or "")
+    """The daemon dispatch gate skips titles matching /\bci\b/i. Standalone
+    'ci' inside a category name would silently no-dispatch the aggregation
+    issue (owner wants it dispatched), so defang it in the TITLE only; the
+    token (body marker) always keeps the raw category name."""
+    return re.sub(r"(?<![A-Za-z0-9_])ci(?![A-Za-z0-9_])", "c-i", cat or "", flags=re.I)
 
-def ensure_label():
-    try:
-        gh_rest(f"labels/{AGG_LABEL}")
-        return
-    except Exception:
-        pass
-    try:
-        gh_rest(f"labels", {"name": AGG_LABEL, "color": "b4b4b4"}, method="POST")
-    except Exception as e:
-        print(f"classifier-board: label create failed (continuing): {e}")
+def agg_title(cat, n):
+    # English-only titles (owner policy 2026-11-12); purely cosmetic.
+    return f"[Root Cause] {ci_safe_title(cat)} ({n} items)"
 
-def find_agg_issue(cat):
-    want = f"[根因] {ci_safe_title(cat)}"
-    try:
-        items = gh_rest(f"issues?state=open&per_page=100&labels={AGG_LABEL}")
-    except Exception as e:
-        print(f"classifier-board: agg list failed: {e}")
-        return None
-    for it in items if isinstance(items, list) else []:
-        t = (it.get("title") or "").split("：", 1)[0].split("(", 1)[0].strip()
-        if t == want or (it.get("title") or "").startswith(want):
-            return it
-    return None
+def open_labeled_issues():
+    """All open issues carrying the agg label (paged; >100 would silently
+    drop tickets out of DR/fallback scans)."""
+    items = []
+    for page in range(1, 6):
+        try:
+            batch = gh_rest(f"issues?state=open&per_page=100&page={page}&labels={AGG_LABEL}")
+        except Exception as e:
+            print(f"classifier-board: labelled issue list page {page} failed: {e}")
+            return items
+        if not isinstance(batch, list) or not batch:
+            break
+        items.extend(batch)
+        if len(batch) < 100:
+            break
+    return items
 
 def up_num_of(n):
     row = mirror_row(n)
     return row[2] if row else None
 
 def update_agg(merged, open_set):
-    """Group open classified issues by category; ensure one [根因] issue per
-    category with >=2 open members. Idempotent by title."""
+    """Group open classified issues by category; ensure one aggregation issue
+    per qualifying category. Dedup is by the rcagg token (DB -> body marker ->
+    labelled scan), never by title."""
     groups = {}
     for n, obj in merged.items():
         if n not in open_set:
             continue
         cat = (obj.get("category") or "").strip() or "(未分类)"
         groups.setdefault(cat, []).append(n)
-    ensured = []
-    for cat, nums in sorted(groups.items()):
-        if len(nums) < AGG_THRESHOLD:
+    labeled = open_labeled_issues()
+    rc_dr_recover(labeled)
+    ensured = {}
+    for cat in sorted(groups):
+        nums = sorted(groups[cat])
+        if cat == "tinyfix":
+            # 碎小修: no aggregation issue (owner policy 2026-11-12) — members are
+            # already suppressed (bot stopped) by write_suppression; no ticket,
+            # no label, no comment. Board still shows the tinyfix section.
             continue
-        nums = sorted(nums)
-        want = f"[根因] {ci_safe_title(cat)}"
-        st = load_state()
-        known = (st.get("aggs") or {}).get(cat)
-        it = None
-        if known:
-            try:
-                it = gh_rest(f"issues/{known}")
-                if (it.get("state") != "open") or not (it.get("title") or "").startswith("[根因]"):
-                    it = None
-            except Exception:
-                it = None
-        if it is None:
-            it = find_agg_issue(cat)
+        title = agg_title(cat, len(nums))
+        it = rc_lookup(cat)
         member_lines = []
         for n in nums:
             row = mirror_row(n)
-            title = short(row[0] if row else obj_title(merged[n]), 40)
+            title_m = short(row[0] if row else obj_title(merged[n]), 40)
             up = up_num_of(n)
             rc = short(merged[n].get("root_cause", ""), 80)
-            member_lines.append(f"- 镜像 #{n}" + (f"（GitHub #{up}）" if up else "") + f" — {title}\n  根因: {rc}")
-        if it is None:
-            body = (
-                f"同一根本原因（**{cat}**）的 open issue 汇聚，由根因归类板自动维护（10min 刷新，勿手编）。\n\n"
-                f"## 本批 issue\n" + "\n".join(member_lines) +
-                "\n\n## 任务\n对本批 issue 做**一个**根本性修复 PR：\n"
-                "- PR 描述里用 `Fixes #...` 逐个列出上面每一个 GitHub issue 号（没有 GitHub 号的写镜像号）\n"
-                "- 若某个 issue 已有自己的 PR 且方向一致，cherry-pick 其 commit 并保留原作者署名（`-x`）；由你判断是否值得\n"
-                "- 标签按本 PR 的 diff 独立判断（类别 + 优先级），不要抄任何来源 issue\n"
-                "- 修完后回帖本线程：改了什么、为什么一次修了整批\n"
+            member_lines.append(f"- 镜像 #{n}" + (f"（GitHub #{up}）" if up else "") + f" — {title_m}\n  根因: {rc}")
+        body = (
+            rcagg_marker(cat) + "\n"
+            + f"同一根本原因（**{cat}**）的 open issue 汇聚，由根因归类板自动维护（10min 刷新，勿手编）。\n\n"
+            + f"## Members ({len(nums)})\n" + "\n".join(member_lines) +
+            "\n\n## Task\n"
+            + "对本批 issue 做**一个**根本性修复 PR：\n"
+            + "- PR 描述里用 `Fixes #...` 逐个列出上面每一个 GitHub issue 号（没有 GitHub 号的写镜像号）\n"
+              + "- 若某个 issue 已有自己的 PR 且方向一致，cherry-pick 其 commit 并保留原作者署名（`-x`）；由你判断是否值得\n"
+              + "- 标签按本 PR 的 diff 独立判断（类别 + 优先级），不要抄任何来源 issue\n"
+              + "- 修完后回帖本线程：改了什么、为什么这样修\n"
             )
+        if len(nums) < AGG_THRESHOLD:
+            # below threshold: never create; but keep an existing ticket's body
+            # fresh so a dispatched worker sees the true (shrunk) member list
+            if it is not None:
+                try:
+                    gh_rest(f"issues/{it['number']}", {"title": title, "body": body}, method="PATCH")
+                    print(f"classifier-board: refreshed (shrunken) agg #{it['number']} for {cat!r} ({len(nums)} items)")
+                except Exception as e:
+                    print(f"classifier-board: agg refresh failed #{it.get('number')}: {e}")
+            continue
+        if it is None:
+            # fallback: scan labelled open issues for the body marker
+            for cand in labeled:
+                if rcagg_marker(cat) in (cand.get("body") or ""):
+                    it = cand
+                    break
+        if it is None:
             try:
-                it = gh_rest("issues", {
-                    "title": want + "（自动维护，勿手动关闭）",
-                    "body": body,
-                    "labels": [AGG_LABEL],
-                }, method="POST")
-                print(f"classifier-board: created agg issue #{it.get('number')} for category {cat!r} ({len(nums)} issues)")
+                ensure_label(AGG_LABEL)
+                it = gh_rest("issues", {"title": title, "body": body, "labels": [AGG_LABEL]}, method="POST")
+                print(f"classifier-board: created agg issue #{it.get('number')} for {cat!r} ({len(nums)} issues, token={rcagg_token(cat)})")
             except Exception as e:
                 print(f"classifier-board: agg create failed for {cat!r}: {e}")
                 continue
-            ensured.append(it.get("number"))
+            rc_remember(cat, it.get("number"))
         else:
-            body = (
-                f"同一根本原因（**{cat}**）的 open issue 汇聚，由根因归类板自动维护（10min 刷新，勿手编）。\n\n"
-                f"## 本批 issue\n" + "\n".join(member_lines) +
-                "\n\n## 任务\n对本批 issue 做**一个**根本性修复 PR：\n"
-                "- PR 描述里用 `Fixes #...` 逐个列出上面每一个 GitHub issue 号（没有 GitHub 号的写镜像号）\n"
-                "- 若某个 issue 已有自己的 PR 且方向一致，cherry-pick 其 commit 并保留原作者署名（`-x`）；由你判断是否值得\n"
-                "- 标签按本 PR 的 diff 独立判断（类别 + 优先级），不要抄任何来源 issue\n"
-                "- 修完后回帖本线程：改了什么、为什么一次修了整批\n"
-            )
-            if (it.get("title") or "").split("（", 1)[0].strip() != want:
-                it = dict(it, title=want + "（自动维护，勿手动关闭）")
+            if (it.get("title") or "") != title:
+                it = dict(it, title=title)
             try:
                 gh_rest(f"issues/{it['number']}", {"title": it.get("title"), "body": body}, method="PATCH")
-                print(f"classifier-board: updated agg issue #{it['number']} for category {cat!r} ({len(nums)} issues)")
+                print(f"classifier-board: updated agg issue #{it['number']} for {cat!r} ({len(nums)} issues)")
             except Exception as e:
                 print(f"classifier-board: agg update failed #{it.get('number')}: {e}")
-            ensured.append(it.get("number"))
-    # prune state for closed/aggregated-away issues
+            rc_remember(cat, it.get("number"))
+        ensured[cat] = {"number": it.get("number"), "title": title}
+    return ensured
+
+def mark_members(agg_by_cat, merged, open_set):
+    """Member issues of aggregated categories get the 已被收 label + ONE short
+    comment (idempotent via state). MUST run after write_suppression: the
+    daemon drop-gate has to be in place before the comment lands, or the
+    comment would wake a worker on the member issue.
+    agg_by_cat: {cat: {"number": <gh issue number>, "title": <str>}} from
+    update_agg (avoids a second rc_lookup/REST round-trip per category)."""
     st = load_state()
-    aggs = {}
-    for cat, num in (st.get("aggs") or {}).items():
-        if num in ensured:
-            aggs[cat] = num
-    save_state(dict(st, aggs=aggs))
+    marked = dict(st.get("absorbed_marks") or {})
+    newly = 0
+    for cat, info in sorted(agg_by_cat.items()):
+        num = info["number"]
+        agg_title_txt = info.get("title") or f"#{num}"
+        for n, obj in merged.items():
+            if n not in open_set:
+                continue
+            if (obj.get("category") or "").strip() != cat:
+                continue
+            key = str(n)
+            if key in marked:
+                continue
+            try:
+                up = up_num_of(n)
+                gh_issue = gh_rest(f"issues/{up}") if up else None
+            except Exception as e:
+                print(f"classifier-board: member fetch failed for mirror #{n}: {e}")
+                continue
+            if gh_issue is None:
+                # member has no GitHub mirror number yet — defer to a later
+                # round instead of crashing (mirror number may appear later)
+                print(f"classifier-board: mirror #{n} has no GitHub number yet -> 已被收 mark deferred")
+                continue
+            if gh_issue.get("state") != "open":
+                marked[key] = num
+                continue
+            gnum = gh_issue["number"]
+            if not issue_has_label(gh_issue, ABSORBED_LABEL):
+                try:
+                    ensure_label(ABSORBED_LABEL, "d9d9d9")
+                    gh_rest(f"issues/{gnum}/labels", {"labels": [ABSORBED_LABEL]}, method="POST")
+                except Exception as e:
+                    print(f"classifier-board: absorbed-label failed for GH #{gnum}: {e}")
+            try:
+                gh_rest(f"issues/{gnum}/comments", {"body": f"{ABSORBED_COMMENT}（聚合单：{agg_title_txt}，GitHub #{num}）"}, method="POST")
+            except Exception as e:
+                print(f"classifier-board: absorbed comment failed for GH #{gnum}: {e}")
+            marked[key] = num
+            newly += 1
+            time.sleep(0.4)
+    if newly:
+        save_state(dict(st, absorbed_marks=marked))
+        print(f"classifier-board: marked {newly} member(s) as 已被收 (label + comment)")
 
 def obj_title(obj):
     return obj.get("title") or ""
@@ -430,7 +597,10 @@ def render(merged, open_set):
             lines.append(f"| #{n} | {title} | {rc} | {cell or '—'} | {CONF.get(obj.get('confidence',''), '—')} |")
         if len(nums) >= AGG_THRESHOLD:
             lines.append("")
-            lines.append(f"≥{AGG_THRESHOLD} 个同根因 → 已有/将有 **[根因] {ci_safe_title(cat)}** 汇聚 issue 走正常流程出根本 PR（一个 PR 关一批）。")
+            if cat == "tinyfix":
+                lines.append("碎小修（tinyfix）：各单机器人已停，无聚合单。")
+            else:
+                lines.append(f"≥{AGG_THRESHOLD} 个同根因 → 已有/将有 **[Root Cause] {ci_safe_title(cat)}** 汇聚 issue 走正常流程出根本 PR（一个 PR 关一批）。")
         lines.append("")
     return "\n".join(lines)
 
@@ -440,21 +610,34 @@ def main():
         print("classifier-board: no anchor issue found in mirror — skipping")
         return
     st = load_state()
-    merged = {}
+    # M2 guard: carry last round's classifications forward so a short/partial
+    # anchor-thread scan (page cap, transient 403) can never silently drop an
+    # issue out of the suppression gate (drop = bot wakes on absorbed member).
+    # The cache is seeded INTO st before fetch_batch, because fetch_batch may
+    # call save_state(st) for the cursor — a stale `st` without the cache would
+    # clobber it.
+    st = dict(st, merged_cache=dict(st.get("merged_cache") or {}))
+    merged = dict(st["merged_cache"])
     fetch_batch(merged, anchor, st)
+    save_state(dict(st, merged_cache=merged))
     if not merged:
-        print("classifier-board: no classifier-json found on anchor thread yet")
-        # still (re)create the empty board so the owner can see it exists
+        print("classifier-board: no classifier-json found on anchor thread yet — keeping previous suppression gate intact")
+        return
     open_set = open_numbers()
+    # ORDER MATTERS (owner policy 2026-11-12): stop the bots on absorbed
+    # members FIRST (drop-gate + stop-work), only then (re)create aggregation
+    # issues and post member marks — so no member comment can wake a worker.
+    write_suppression(merged, open_set)
+    agg_by_cat = {}
     if merged:
-        update_agg(merged, open_set)
-    ensure_label()
+        agg_by_cat = update_agg(merged, open_set)
+        mark_members(agg_by_cat, merged, open_set)
+    ensure_label(AGG_LABEL)
     num = board_discussion_number(st)
     if num is None:
         num = create_board()
         save_state(dict(st, discussion=num))
     update_board(num, render(merged, open_set))
-    write_suppression(merged, open_set)
     print(f"classifier-board: board #{num} updated ({len(merged)} classified, {len(open_set)} open)")
 
 if __name__ == "__main__":
