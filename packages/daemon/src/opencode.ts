@@ -4325,6 +4325,19 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
     return { issues, killed, superseded };
   }
 
+  /** Mark mirror issues top-of-queue for the global drain (owner policy
+   *  2026-11-12: root-cause aggregation issues run ahead of the FIFO
+   *  backlog). Idempotent stamp — the classifier board re-applies the
+   *  current set every round; a stale flag is harmless (a closed issue
+   *  holds no pending messages). */
+  async boostIssueWork(mirrorIssueIds: string[]): Promise<{ issues: number }> {
+    const set = await this.store.setIssueDispatchPriority(mirrorIssueIds, 1);
+    if (set > 0) {
+      log.info(`engine: boost — ${set} issue(s) marked top-of-queue`);
+    }
+    return { issues: set };
+  }
+
   private buildForwardPrompt(
     opName: string,
     commentBody: string,
