@@ -43,6 +43,11 @@ AGG_THRESHOLD = 2
 # (owner decision), embedded as an HTML comment in the issue body AND recorded
 # in a sqlite DB (authoritative). Titles are English-only and purely cosmetic.
 RCAGG_DB = "/var/lib/ework-web/share/rc-agg.db"
+# Owner policy 2026-11-12: the [Root Cause] aggregations themselves run at the
+# FRONT of the daemon's FIFO drain (their members are suppressed, so a RC
+# issue waiting behind hours of backlog wastes the whole batch). The board
+# re-stamps the live set from rc-agg.db every round via this endpoint.
+DAEMON_BOOST_URL = "http://127.0.0.1:3101/api/admin/boost"
 ABSORBED_LABEL = "已被收"
 ABSORBED_COMMENT = (
     "（已收）本单已归入根因聚合 issue（token 见聚合单 body），机器人已停止在本单上的工作，"
@@ -285,6 +290,7 @@ def open_numbers():
 # and stop-work stops any live/queued work on each render (idempotent, silent).
 SUPPRESSION_PATH = "/var/lib/ework-daemon/share/classifier/suppressed.json"
 DAEMON_STOP_URL = "http://127.0.0.1:3101/api/admin/stop-work"
+DAEMON_BOOST_URL = "http://127.0.0.1:3101/api/admin/boost"
 
 def incorporated_numbers(merged, open_set):
     """{mirror number: reason} for every open issue absorbed into a root-cause
@@ -329,6 +335,68 @@ def write_suppression(merged, open_set):
             if attempt < 2:
                 time.sleep(5 * (attempt + 1))
     print(f"classifier-board: suppression set = {len(nums)} issue(s) -> {SUPPRESSION_PATH}")
+
+def boost_rc():
+    """Stamp the live [Root Cause] aggregation issues top-of-queue in the
+    daemon drain (idempotent; re-applied every round, also covers issues
+    created earlier in the same round)."""
+    try:
+        c = sqlite3.connect(f"file:{RCAGG_DB}?mode=ro", uri=True)
+        rows = c.execute("SELECT issue_number FROM rc_agg").fetchall()
+        c.close()
+    except sqlite3.OperationalError:
+        return  # no rc-agg.db yet (nothing aggregated) — nothing to boost
+    ids = [n for (n,) in rows if n]
+    if not ids:
+        return
+    for attempt in range(3):
+        try:
+            req = urllib.request.Request(
+                DAEMON_BOOST_URL,
+                data=json.dumps({"issue_ids": ids}).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=30) as r:
+                print(f"classifier-board: boost -> {r.read().decode()[:200]}")
+            break
+        except Exception as e:
+            print(f"classifier-board: boost POST failed (attempt {attempt+1}/3): {e}")
+            if attempt < 2:
+                time.sleep(5 * (attempt + 1))
+
+def boost_rc():
+    """Top-of-queue for the root-cause aggregations themselves (owner policy
+    2026-11-12): the daemon drains their pending work ahead of the normal
+    FIFO backlog. Re-stamped every round from rc-agg.db (the live set), so a
+    freshly created aggregation jumps the queue in the same round it appears;
+    a stale stamp is harmless once an aggregation closes (closed issues hold
+    no pending messages)."""
+    try:
+        c = rcdb()
+        rows = c.execute("SELECT issue_number FROM rc_agg").fetchall()
+        c.close()
+    except Exception as e:
+        print(f"classifier-board: boost read failed: {e}")
+        return
+    ids = [n for (n,) in rows if n]
+    if not ids:
+        return
+    for attempt in range(3):
+        try:
+            req = urllib.request.Request(
+                DAEMON_BOOST_URL,
+                data=json.dumps({"issue_ids": ids}).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=30) as r:
+                print(f"classifier-board: boost -> {r.read().decode()[:200]}")
+            break
+        except Exception as e:
+            print(f"classifier-board: boost POST failed (attempt {attempt+1}/3): {e}")
+            if attempt < 2:
+                time.sleep(5 * (attempt + 1))
 
 def mirror_row(n):
     c = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
@@ -673,6 +741,8 @@ def main():
     # issues and post member marks — so no member comment can wake a worker.
     write_suppression(merged, open_set)
     agg_by_cat = update_agg(merged, open_set)
+    boost_rc()
+    boost_rc()
     ensure_label(ABSORBED_LABEL, "d9d9d9")
     mark_members(agg_by_cat, merged, open_set)
     ensure_label(AGG_LABEL)
