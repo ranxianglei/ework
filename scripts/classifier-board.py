@@ -138,6 +138,49 @@ def open_numbers():
     c.close()
     return {n for (n,) in rows}
 
+# Incorporated-issue auto-stop (owner policy 2026-11-12): absorbed issues run no
+# bot work of their own. The daemon reads SUPPRESSION_PATH (per-event drop gate)
+# and stop-work stops any live/queued work on each render (idempotent, silent).
+SUPPRESSION_PATH = "/var/lib/ework-daemon/share/classifier/suppressed.json"
+DAEMON_STOP_URL = "http://127.0.0.1:3101/api/admin/stop-work"
+
+def incorporated_numbers(merged, open_set):
+    """{mirror number: reason} for every open issue absorbed into a root-cause
+    aggregation (category with >= AGG_THRESHOLD members) or classified tinyfix."""
+    by_cat = {}
+    for n, o in merged.items():
+        if n not in open_set:
+            continue
+        cat = str(o.get("category") or "").strip()
+        by_cat.setdefault(cat or "?", []).append(n)
+    out = {}
+    for cat, nums in by_cat.items():
+        if cat == "tinyfix" or len(nums) >= AGG_THRESHOLD:
+            for n in nums:
+                out[str(n)] = "tinyfix" if cat == "tinyfix" else f"incorporated:{cat}"
+    return out
+
+def write_suppression(merged, open_set):
+    nums = incorporated_numbers(merged, open_set)
+    payload = {"updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "issues": nums}
+    os.makedirs(os.path.dirname(SUPPRESSION_PATH), exist_ok=True)
+    tmp = SUPPRESSION_PATH + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(payload, f, ensure_ascii=False)
+    os.replace(tmp, SUPPRESSION_PATH)
+    try:
+        req = urllib.request.Request(
+            DAEMON_STOP_URL,
+            data=json.dumps({"issue_ids": list(nums)}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=60) as r:
+            print(f"classifier-board: stop-work -> {r.read().decode()[:200]}")
+    except Exception as e:
+        print(f"classifier-board: stop-work POST failed (non-fatal): {e}")
+    print(f"classifier-board: suppression set = {len(nums)} issue(s) -> {SUPPRESSION_PATH}")
+
 def mirror_row(n):
     c = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
     row = c.execute("""SELECT title, state, upstream_issue_number, upstream_ci_state,
@@ -411,6 +454,7 @@ def main():
         num = create_board()
         save_state(dict(st, discussion=num))
     update_board(num, render(merged, open_set))
+    write_suppression(merged, open_set)
     print(f"classifier-board: board #{num} updated ({len(merged)} classified, {len(open_set)} open)")
 
 if __name__ == "__main__":

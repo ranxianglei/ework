@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { mkdirSync, writeFileSync, unlinkSync, rmdirSync, readdirSync, existsSync, readFileSync } from "fs";
+import { mkdirSync, writeFileSync, unlinkSync, rmdirSync, readdirSync, existsSync, readFileSync, statSync } from "fs";
 import { join, dirname, resolve, isAbsolute } from "path";
 import { homedir, hostname } from "os";
 import { log } from "./logger";
@@ -751,6 +751,10 @@ export function spawnEnvFor(
 /** Reply-language policy (owner policy 2026-11-08): match the questioner's language; the 8-question review checklist stays Chinese. */
 const REPLY_LANGUAGE_RULE =
   `Reply language (owner policy 2026-11-08): reply in the LANGUAGE THE PERSON WHO ASKED USED — a fully-English question or comment → your entire reply in English (any other non-Chinese language likewise); Chinese → 中文. Sole exception: the 8-question review checklist (8问) is ALWAYS written in Chinese — it is for human reviewers, not for the questioner.`;
+
+/** Root-cause thread contract (owner policy 2026-11-12): [根因] threads previously answered without the 8-question checklist — the owner requires it back. */
+const RC_EIGHT_QUESTION_RULE =
+  `Root-cause thread contract (owner policy 2026-11-12): this is a [根因]/[Root Cause] thread — its deliverable is a VERDICT, not activity. Your FINAL reply on this thread MUST end with the 8-question checklist (8问) IN CHINESE, one numbered line each: 1. 这是啥问题（大白话+触发条件） 2. 根本原因是啥（组件+机制，知道就给 file:line） 3. 如何修复（已做的修复或建议修法） 4. 能否合并/关闭（结论+依据：测试/CI/回归分析） 5. URL（相关线程/PR 链接） 6. 影响面（哪些代码路径/用户） 7. 测试（什么钉住它） 8. 风险（还可能坏在哪）。A line you cannot answer honestly gets 「待验证：原因」 — never omit a line, never pad it.`;
 
 export class Engine {
   private cfg: Config;
@@ -1791,6 +1795,20 @@ export class Engine {
       this.senders.set(issueMapKey, event.sender);
     }
 
+    // Incorporated-issue auto-stop (owner policy 2026-11-12): issues absorbed
+    // into a [根因] root-cause aggregation (or classified 碎小修/tinyfix) run
+    // NO bot work of their own — the aggregation thread owns the fix. The
+    // classifier board writes the suppression set; ordinary task events for
+    // suppressed issues are dropped silently (lane events like CI/conflict
+    // still flow, so a red PR on a suppressed issue is still handled).
+    if (event.type === "issue_opened" || event.type === "comment_created" || event.type === "issue_boosted") {
+      const reason = this.suppressionReason(ref.issueId);
+      if (reason) {
+        log.info(`engine: suppressed ${event.type} on ${scopeKey}#${ref.issueId} — ${reason} (classifier incorporation; no bot work on absorbed issues)`);
+        return;
+      }
+    }
+
     switch (event.type) {
       case "issue_opened":
         return this.handleOpened(ref, scopeKey, issueData, tracker, event.model);
@@ -2416,7 +2434,7 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
     const list = classifier.batch.map((n) => `#${n}`).join(", ");
     const body =
       `[SYSTEM] Root-cause classification batch for ${scopeKey} (${classifier.firstRound ? "FIRST ROUND — full sweep" : "incremental round"}): ${classifier.batch.length} open issue(s): ${list}\n` +
-      `You are the issue root-cause classifier. For EACH issue: read its body, open the linked PR/diff if any, and inspect the relevant source code in this workdir BEFORE judging — deep enough to name the root cause (which component, which mechanism), not a surface label. Categories are DYNAMIC (there is no fixed list): give each root cause a stable short category string, and use the SAME string on later rounds for the same root cause (reuse what earlier rounds of this thread used when visible).\n` +
+      `You are the issue root-cause classifier. For EACH issue: read its body, open the linked PR/diff if any, and inspect the relevant source code in this workdir BEFORE judging — deep enough to name the root cause (which component, which mechanism), not a surface label. Categories are DYNAMIC (there is no fixed list): give each root cause a stable short category string, and use the SAME string on later rounds for the same root cause (reuse what earlier rounds of this thread used when visible). RESERVED CATEGORY (owner policy 2026-11-12): an issue that is NOT part of any systemic root cause — a single small fix, no shared mechanism, one issue ≈ one fix — gets the exact category string "tinyfix"（碎小修）; do not invent tinyfix subcategories, the string is exactly tinyfix. Everything else uses dynamic root-cause categories as above.\n` +
       `The numbers above are MIRROR numbers, never GitHub numbers. Mirror API: TOK=$(grep ^GITEA_TOKEN= /var/lib/ework-daemon/share/ework-daemon/.env | cut -d= -f2); issue detail: curl -s -H "Authorization: token $TOK" "http://127.0.0.1:3002/api/v1/issues/<mirror-number>"; add /comments for the thread. The upstream GitHub PR number appears in the issue body or the [PR] mirror rows — use those, and never resolve a bare #N against GitHub.\n` +
       `Deliverable — MANDATORY, via the reply tool, no exceptions: a reply comment on THIS thread containing one fenced classifier-json block: a JSON array with exactly one object per issue in the batch: {"number": <mirror number>, "title": <short>, "category": <root-cause category>, "root_cause": <one concrete line: component + mechanism>, "ci_state": "green"|"red"|"none", "merge_state": "clean"|"dirty"|"behind"|"n/a", "pr_number": <upstream PR number or null>, "confidence": "high"|"medium"|"low"}. If an issue is unreadable or too deep for this pass, still include it with "confidence":"low" and a best-effort category — NEVER drop an issue from the array. If you cannot finish everything, post what you have NOW with the remaining issues marked "low" — partial honest output beats silence (owner policy 2026-11-10, incident #6069).\n` +
       `Progress discipline (the 15-min no-output kill applies to you): first reply within 2 minutes (the plan + the category scheme you will use); for every 25 issues post a progress reply "[progress] <done>/<total>" carrying the classifier-json for everything classified so far.\n` +
@@ -4234,6 +4252,79 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
     return REPLY_LANGUAGE_RULE;
   }
 
+  /** 8-question contract, active only on [根因]/[Root Cause] threads (owner policy 2026-11-12). */
+  private rcEightQuestionRule(issueTitle?: string): string {
+    return /^\[(根因|Root Cause)\]/i.test(issueTitle ?? "") ? RC_EIGHT_QUESTION_RULE : "";
+  }
+
+  // Suppression set (owner policy 2026-11-12, "被纳入的机器人自动停止"): the
+  // classifier board script writes {issues: {<mirror number>: reason}} once it
+  // renders; the engine caches it by mtime so the per-event check is free.
+  private suppressionCache: { mtimeMs: number; ids: Map<string, string> } = { mtimeMs: -1, ids: new Map() };
+
+  private suppressionFile(): string {
+    return this.cfg.work.suppressionFile ?? join(this.cfg.opencode.baseWorkdir, "..", "classifier", "suppressed.json");
+  }
+
+  private suppressionReason(mirrorIssueId: string): string | null {
+    try {
+      if (!this.suppressionCache) this.suppressionCache = { mtimeMs: -1, ids: new Map() };
+      const path = this.suppressionFile();
+      const mtimeMs = existsSync(path) ? statSync(path).mtimeMs : -1;
+      if (mtimeMs !== this.suppressionCache.mtimeMs) {
+        const ids = new Map<string, string>();
+        if (mtimeMs >= 0) {
+          const raw: unknown = JSON.parse(readFileSync(path, "utf8"));
+          const issues = (raw as { issues?: Record<string, unknown> })?.issues;
+          if (issues && typeof issues === "object") {
+            for (const [k, v] of Object.entries(issues)) ids.set(String(k), typeof v === "string" ? v : "incorporated");
+          }
+        }
+        this.suppressionCache = { mtimeMs, ids };
+      }
+      return this.suppressionCache.ids.get(mirrorIssueId) ?? null;
+    } catch {
+      return null; // unreadable/invalid file = not suppressed
+    }
+  }
+
+  /** Stop all bot work on the given mirror issues: kill live sessions, park queued
+   * messages as superseded, idle the sessions. Silent on purpose — no thread
+   * comments (owner policy 2026-11-12: the bulk-comment incident). */
+  async stopIssueWork(mirrorIssueIds: string[]): Promise<{ issues: number; killed: number; superseded: number }> {
+    let killed = 0;
+    let superseded = 0;
+    let issues = 0;
+    for (const id of [...new Set(mirrorIssueIds.map((s) => String(s)))]) {
+      for (const issue of await this.store.findIssuesByTrackerIssueId(id)) {
+        issues++;
+        const sessions = await this.store.getSessionsForIssue(issue.id);
+        for (const session of sessions) {
+          if (session.state !== "running") {
+            await this.store.updateSession(session.id, { state: "idle", opencodePid: undefined });
+            continue;
+          }
+          const k = this.sessionKey(session, issue);
+          const wasKilled = await this.killSessionProcess(session, k);
+          if (wasKilled) killed++;
+          this.clearRuntimeState(k);
+          const msgs = await this.store.getMessagesForSession(session.id);
+          for (const msg of msgs) {
+            if (msg.status === "pending" || msg.status === "running" || msg.status === "interrupted") {
+              await this.store.updateMessageStatus(msg.id, "superseded", "superseded by root-cause aggregation (stop-work)");
+              superseded++;
+            }
+          }
+          await this.store.updateSession(session.id, { state: "idle", opencodePid: undefined });
+        }
+      }
+    }
+    if (issues > 0) {
+      log.info(`engine: stop-work — ${issues} issue(s), ${killed} session(s) killed, ${superseded} message(s) superseded`);
+    }
+    return { issues, killed, superseded };
+  }
+
   private buildForwardPrompt(
     opName: string,
     commentBody: string,
@@ -4276,6 +4367,7 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
       ``,
       `Reply using the \`reply\` tool.`,
       this.replyLanguageRule,
+      this.rcEightQuestionRule(issueTitle),
     ].filter(Boolean).join("\n");
   }
 
@@ -4293,7 +4385,8 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
       ``,
       `Every reply MUST start with \`[bot] 🏷\` prefix.`,
       this.replyLanguageRule,
-    ].join("\n");
+      this.rcEightQuestionRule(issue.title),
+    ].filter(Boolean).join("\n");
   }
 
   private buildProcessExitNudgePrompt(

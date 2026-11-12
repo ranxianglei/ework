@@ -236,6 +236,15 @@ export function createServer(
       engine.setMaxConcurrent(Math.floor(value));
       return json({ ok: true, maxConcurrent: engine.getMaxConcurrent() });
     }
+    if (pathname === "/api/admin/stop-work" && req.method === "POST") {
+      const body = await req.json().catch(() => ({} as unknown));
+      const ids = (body as { issue_ids?: unknown })?.issue_ids;
+      if (!Array.isArray(ids) || ids.some((x) => typeof x !== "string" && typeof x !== "number")) {
+        return json({ error: "issue_ids must be an array of mirror issue ids" }, 400);
+      }
+      const report = await engine.stopIssueWork(ids.map(String));
+      return json({ ok: true, ...report });
+    }
 
     return json({ error: "not found" }, 404);
   }

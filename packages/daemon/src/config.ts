@@ -104,6 +104,10 @@ export const configSchema = z.object({
     // analysis lane gets at most N dispatches per anchor thread per window.
     // 0 = lane disabled (ticks dropped); env default 3 kept in sync below.
     classifierMaxAttempts: z.coerce.number().int().min(0).optional(),
+    // Incorporated-issue suppression file (owner policy 2026-11-12): JSON written
+    // by the classifier board script; {issues: {<mirror id>: reason}}. Issues in
+    // the set run no bot work (their fix lives in the aggregation thread).
+    suppressionFile: z.string().optional(),
     // Transparent-repair coalesce window (owner policy 2026-11-07): while a
     // session for the SAME lane/thread has been running for less than this,
     // a new ci-fail / merge-conflict event must NOT preempt it — it stays
@@ -223,6 +227,7 @@ function readWorkSection() {
     classifierMaxAttempts: process.env.WORK_CLASSIFIER_MAX_ATTEMPTS != null && process.env.WORK_CLASSIFIER_MAX_ATTEMPTS !== ""
       ? Math.max(0, Math.trunc(Number(process.env.WORK_CLASSIFIER_MAX_ATTEMPTS)))
       : 3, // one attempt per 4h tick with slack; 0 = lane off
+    suppressionFile: process.env.WORK_SUPPRESSION_FILE || undefined,
     ciVerifyDelayMs: process.env.WORK_CI_VERIFY_DELAY_MS != null && process.env.WORK_CI_VERIFY_DELAY_MS !== ""
       ? Math.max(1, Math.trunc(Number(process.env.WORK_CI_VERIFY_DELAY_MS)))
       : 900_000,

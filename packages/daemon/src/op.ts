@@ -154,6 +154,16 @@ export class Store {
     return row ? rowToIssue(row) : undefined;
   }
 
+  /** All issues across trackers/scopes sharing a mirror (tracker) issue id —
+   * used by the admin stop-work endpoint, which is told mirror numbers only. */
+  async findIssuesByTrackerIssueId(issueId: string): Promise<Issue[]> {
+    const rows = await getDB().all<IssueRow>(
+      "SELECT * FROM {{issues}} WHERE tracker_issue_id = ?",
+      [issueId]
+    );
+    return rows.map(rowToIssue);
+  }
+
   async findOrCreateIssue(ref: TrackerRef, scopeKey: string, title: string): Promise<Issue> {
     const existing = await this.findIssue(ref.trackerType, scopeKey, ref.issueId);
     if (existing) {
