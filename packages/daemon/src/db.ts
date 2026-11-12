@@ -551,6 +551,18 @@ async function runMigrations(db: AsyncDatabase): Promise<void> {
     sqlite ? "reset_at INTEGER NOT NULL DEFAULT 0" : "reset_at BIGINT NOT NULL DEFAULT 0"
   );
 
+  // issues.dispatch_priority — boost lane (owner 2026-11-12, e-work#63). 0 =
+  // normal FIFO; >0 = boosted (root-cause aggregations). The global drain
+  // orders by dispatch_priority DESC before created_at, so a boosted issue
+  // jumps ahead of both older normal messages and higher project-priority
+  // messages; within the same dispatch_priority bucket FIFO is preserved
+  // (owner 2026-10-30 anti-starvation policy unchanged).
+  await ensureColumn(
+    tIssues,
+    "dispatch_priority",
+    sqlite ? "dispatch_priority INTEGER NOT NULL DEFAULT 0" : "dispatch_priority INT NOT NULL DEFAULT 0"
+  );
+
   // op_sessions runtime-state columns (previously in-memory Maps; now persisted
   // so a restarted daemon can recover the nudge/generation state).
   await ensureColumn(tSessions, "last_output_at", "last_output_at VARCHAR(40)");

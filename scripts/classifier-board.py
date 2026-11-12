@@ -285,6 +285,7 @@ def open_numbers():
 # and stop-work stops any live/queued work on each render (idempotent, silent).
 SUPPRESSION_PATH = "/var/lib/ework-daemon/share/classifier/suppressed.json"
 DAEMON_STOP_URL = "http://127.0.0.1:3101/api/admin/stop-work"
+DAEMON_BOOST_URL = "http://127.0.0.1:3101/api/admin/boost"
 
 def incorporated_numbers(merged, open_set):
     """{mirror number: reason} for every open issue absorbed into a root-cause
@@ -329,6 +330,61 @@ def write_suppression(merged, open_set):
             if attempt < 2:
                 time.sleep(5 * (attempt + 1))
     print(f"classifier-board: suppression set = {len(nums)} issue(s) -> {SUPPRESSION_PATH}")
+
+def gh_to_mirror(gh_num):
+    """GitHub issue number -> e-work mirror number (None if not synced yet).
+    rc-agg.db stores the GitHub number (issues are created/verified via the
+    GitHub API), but the daemon's boost endpoint is told mirror numbers (the
+    gitea tracker_issue_id) — same convention as stop-work."""
+    if not gh_num:
+        return None
+    c = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
+    row = c.execute("""SELECT number FROM issues
+        WHERE project_id=(SELECT id FROM projects WHERE name='billion-context')
+        AND upstream_issue_number=?""", (gh_num,)).fetchone()
+    c.close()
+    return row[0] if row else None
+
+def boost_rc_aggs():
+    """Boost lane (e-work#63): every round, read the live RC aggregation numbers
+    from rc-agg.db, convert to mirror numbers, and POST them to the daemon's
+    boost endpoint so their pending messages jump ahead of older normal work in
+    the global drain (dispatch_priority DESC, then FIFO). Idempotent re-stamp —
+    the daemon skips the write when the value is already correct. A not-yet-
+    synced (newly created this round) aggregation is skipped here and picked up
+    next round once it lands in the mirror; a leftover mark on a closed issue
+    is harmless (a closed issue has no pending messages)."""
+    try:
+        c = rcdb()
+        gh_nums = [r[0] for r in c.execute("SELECT issue_number FROM rc_agg").fetchall()]
+        c.close()
+    except Exception as e:
+        print(f"classifier-board: boost read failed: {e}")
+        return
+    nums = []
+    for gh_num in gh_nums:
+        m = gh_to_mirror(gh_num)
+        if m is not None:
+            nums.append(str(m))
+    if not nums:
+        print("classifier-board: boost set empty (no synced RC aggregations) — skipping")
+        return
+    for attempt in range(3):
+        try:
+            req = urllib.request.Request(
+                DAEMON_BOOST_URL,
+                data=json.dumps({"issue_ids": nums}).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=60) as r:
+                print(f"classifier-board: boost -> {r.read().decode()[:200]}")
+            break
+        except Exception as e:
+            print(f"classifier-board: boost POST failed (attempt {attempt+1}/3): {e}")
+            if attempt < 2:
+                time.sleep(5 * (attempt + 1))
+    print(f"classifier-board: boost set = {len(nums)} issue(s)")
 
 def mirror_row(n):
     c = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
@@ -673,6 +729,10 @@ def main():
     # issues and post member marks — so no member comment can wake a worker.
     write_suppression(merged, open_set)
     agg_by_cat = update_agg(merged, open_set)
+    # Boost the RC aggregation issues so their pending work jumps the FIFO tail
+    # (e-work#63). Runs after update_agg so same-round new aggregations are in
+    # rc-agg.db; idempotent re-stamp, silent on the daemon side.
+    boost_rc_aggs()
     ensure_label(ABSORBED_LABEL, "d9d9d9")
     mark_members(agg_by_cat, merged, open_set)
     ensure_label(AGG_LABEL)

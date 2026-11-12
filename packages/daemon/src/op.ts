@@ -12,6 +12,7 @@ interface IssueRow {
   tracker_issue_id: string;
   state: string;
   title: string;
+  dispatch_priority: number;
   created_at: string;
   updated_at: string;
   owner_daemon_id: number | null;
@@ -67,6 +68,7 @@ function rowToIssue(row: IssueRow): Issue {
     trackerIssueId: row.tracker_issue_id,
     state: row.state as IssueState,
     title: row.title,
+    dispatchPriority: row.dispatch_priority ?? 0,
     createdAt: new Date(row.created_at),
     updatedAt: new Date(row.updated_at),
     ownerDaemonId: row.owner_daemon_id ?? null,
@@ -200,6 +202,18 @@ export class Store {
     await getDB().run("UPDATE {{issues}} SET state = ?, updated_at = ? WHERE uid = ?", [
       state,
       new Date().toISOString(),
+      id,
+    ]);
+  }
+
+  /** Boost lane (e-work#63): set an issue's dispatch_priority. 0 = normal FIFO,
+   *  >0 = boosted (root-cause aggregations). Idempotent — the classifier board
+   *  re-stamps the current RC aggregation set every round. Does not touch
+   *  updated_at: this is a dispatch concern, not a content change, so re-stamps
+   *  must not churn the web-side sync clock. */
+  async setIssueDispatchPriority(id: string, priority: number): Promise<void> {
+    await getDB().run("UPDATE {{issues}} SET dispatch_priority = ? WHERE uid = ?", [
+      priority,
       id,
     ]);
   }
@@ -399,7 +413,12 @@ export class Store {
     const rows = this.projectPriorities.length > 0
       ? await this.priorityOrderedPending(now, limit)
       : await getDB().all<MessageRow>(
-          `SELECT * FROM {{messages}} WHERE status = 'pending' AND ${Store.RETRY_HOLD_SQL} ORDER BY created_at ASC LIMIT ?`,
+          `SELECT m.* FROM {{messages}} m
+           JOIN {{op_sessions}} s ON s.uid = m.session_id
+           JOIN {{issues}} i ON i.uid = s.issue_id
+           WHERE m.status = 'pending' AND (m.retry_after IS NULL OR m.retry_after <= ?)
+           ORDER BY i.dispatch_priority DESC, m.created_at ASC
+           LIMIT ?`,
           [now, limit]
         );
     return rows.map(rowToMessage);
@@ -423,12 +442,12 @@ export class Store {
     }
     return getDB().all<MessageRow>(
       `SELECT m.* FROM {{messages}} m
-       JOIN {{op_sessions}} s ON s.uid = m.session_id
-       JOIN {{issues}} i ON i.uid = s.issue_id
-       WHERE m.status = 'pending' AND (m.retry_after IS NULL OR m.retry_after <= ?)
-       ORDER BY m.created_at ASC,
-         CASE ${whens.join(" ")} ELSE 0 END DESC
-       LIMIT ?`,
+        JOIN {{op_sessions}} s ON s.uid = m.session_id
+        JOIN {{issues}} i ON i.uid = s.issue_id
+        WHERE m.status = 'pending' AND (m.retry_after IS NULL OR m.retry_after <= ?)
+        ORDER BY i.dispatch_priority DESC, m.created_at ASC,
+          CASE ${whens.join(" ")} ELSE 0 END DESC
+        LIMIT ?`,
       [nowIso, ...caseParams, limit]
     );
   }

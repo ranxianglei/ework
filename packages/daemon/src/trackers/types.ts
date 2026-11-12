@@ -99,6 +99,10 @@ export interface Issue {
   trackerIssueId: string;
   state: IssueState;
   title: string;
+  /** Boost lane (e-work#63): 0 = normal FIFO, >0 = boosted (root-cause
+   *  aggregations). The global drain orders by dispatch_priority DESC before
+   *  created_at, so a boosted issue jumps ahead of older normal work. */
+  dispatchPriority?: number;
   createdAt: Date;
   updatedAt: Date;
   /** Daemon id currently leasing this issue (null/undefined = unclaimed). */
