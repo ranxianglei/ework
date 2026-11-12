@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS {{issues}} (
   tracker_issue_id    VARCHAR(64)  NOT NULL,
   state               VARCHAR(16)  NOT NULL DEFAULT 'created',
   title               VARCHAR(512) NOT NULL DEFAULT '',
+  dispatch_priority   INT          NOT NULL DEFAULT 0,
   created_at          VARCHAR(40)  NOT NULL,
   updated_at          VARCHAR(40)  NOT NULL,
   UNIQUE (tracker_type, tracker_scope_key, tracker_issue_id)
