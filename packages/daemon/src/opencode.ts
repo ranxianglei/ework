@@ -4204,6 +4204,11 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
       `If it's empty, clone the repo: \`${instructions.clone}\``,
       ``,
       `Read the issue, work on it, and reply via the \`reply\` tool — every reply starts with \`[bot] 🏷\`. Post the reply as soon as possible, then continue working if needed.`,
+      // 8-question contract must be in the INITIAL prompt too (owner 2026-11-13):
+      // [根因]/[Root Cause] aggregation tickets are dispatched by issue_opened —
+      // the forward/nudge-only injection meant the worker's main run never saw
+      // the verdict format (2026-11-12: RC threads answered with a bare 结论).
+      this.rcEightQuestionRule(title),
     ].filter(Boolean).join("\n");
   }
 
