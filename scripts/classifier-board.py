@@ -35,6 +35,10 @@ STATE = "/var/lib/ework-web/share/status-board-classifier.json"
 DB = "/var/lib/ework-web/share/ework-web/ework.db"
 BOARD_TITLE = "Issue 根因归类板（自动维护，勿手编）"
 AGG_LABEL = "root-cause-batch"
+# Label for PRs delivered from a [Root Cause] aggregation ticket (owner policy
+# 2026-11-13): the board re-checks it every round and boosts the PR so RC work
+# always jumps the queue. Distinct from root-cause-batch (umbrella issues only).
+RC_PR_LABEL = "root-cause"
 # owner policy 2026-11-11: >=2 open issues of the same root cause get a
 # [Root Cause] aggregation issue that goes through the normal pipeline.
 AGG_THRESHOLD = 2
@@ -530,8 +534,8 @@ def update_agg(merged, open_set):
             + "对本批 issue 做**一个**根本性修复 PR：\n"
             + "- PR 描述里用 `Fixes #...` 逐个列出上面每一个 GitHub issue 号（没有 GitHub 号的写镜像号）\n"
               + "- 若某个 issue 已有自己的 PR 且方向一致，cherry-pick 其 commit 并保留原作者署名（`-x`）；由你判断是否值得\n"
-              + "- 标签按本 PR 的 diff 独立判断（类别 + 优先级），不要抄任何来源 issue\n"
-              + "- 修完后回帖本线程：改了什么、为什么这样修\n"
+              + "- PR 必须打标签：`root-cause`（固定，来自根因汇聚单）+ 按本 PR 的 diff 独立判断的类别和优先级标签（最高优先用 p1），不要抄任何来源 issue\n"
+              + "- 回帖本线程必须是**最终裁决**，结尾固定用中文 8问 清单逐行回答：1 这是啥问题（大白话+触发条件）2 根本原因是啥（组件+机制）3 如何修复（已做的修复或建议修法）4 能否合并/关闭（结论+依据：测试/CI/回归分析）5 URL（相关线程/PR 链接）6 影响面（哪些代码路径/用户）7 测试（什么钉住它）8 风险（还可能坏在哪）。答不实的行写「待验证：原因」，不许漏行\n"
             )
         if len(nums) < AGG_THRESHOLD:
             # below threshold: never create; but keep an existing ticket's body
@@ -576,6 +580,98 @@ def update_agg(merged, open_set):
             rc_remember(cat, it.get("number"))
         ensured[cat] = {"number": it.get("number"), "title": title}
     return ensured
+
+BOOST_ENDPOINT_GONE = False
+
+def boost_issues(numbers, why):
+    """Mark mirrored issues/PRs top-of-queue (daemon dispatch_priority, PR#63).
+    Numbers are MIRROR numbers (daemon ids), not GitHub numbers. Tolerates the
+    endpoint 404-ing until PR#63 deploys (then stops retrying for this process
+    — no point burning 15s of the 500s budget every round). Never crashes a
+    board round."""
+    global BOOST_ENDPOINT_GONE
+    if BOOST_ENDPOINT_GONE:
+        return
+    nums = sorted({int(n) for n in numbers if str(n).isdigit()})
+    if not nums:
+        return
+    for attempt in range(3):
+        try:
+            req = urllib.request.Request(
+                "http://127.0.0.1:3101/api/admin/boost",
+                data=json.dumps({"issue_ids": [str(n) for n in nums]}).encode(),
+                method="POST",
+                headers={"Content-Type": "application/json"})
+            resp = json.load(urllib.request.urlopen(req, timeout=30))
+            print(f"classifier-board: boost {why} -> {resp}")
+            return
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                BOOST_ENDPOINT_GONE = True
+                print(f"classifier-board: boost endpoint not deployed yet (404) — skipping until daemon updates")
+                return
+            print(f"classifier-board: boost {why} attempt {attempt+1} failed: {e}")
+            time.sleep(5 if attempt else 10)
+        except Exception as e:
+            print(f"classifier-board: boost {why} attempt {attempt+1} failed: {e}")
+            time.sleep(5 if attempt else 10)
+
+def ensure_rc_pr_labels(merged, open_set):
+    """PRs that close an RC umbrella or a current member must carry the
+    root-cause label + be boosted (owner policy 2026-11-13: 最高优先级). The
+    worker is instructed to label its own PR; this is the safety net for the
+    ones that forget (the label is the merge-priority handle for the owner).
+    Matching: umbrella GH numbers from rc-agg.db + current members' GitHub
+    numbers, word-boundary matched in PR body/title."""
+    gh_nums = set()
+    try:
+        c = rcdb()
+        for (num,) in c.execute("SELECT issue_number FROM rc_agg"):
+            gh_nums.add(int(num))
+        c.close()
+    except Exception:
+        pass
+    for n in open_set:
+        cat = ((merged.get(n) or {}).get("category") or "").strip()
+        if not cat or cat == "tinyfix":
+            continue
+        up = up_num_of(n)
+        if up:
+            gh_nums.add(int(up))
+    if not gh_nums:
+        return
+    rx = re.compile(r"(?<!\d)(" + "|".join(sorted((str(x) for x in gh_nums), key=len, reverse=True)) + r")(?!\d)")
+    added = 0
+    boosted = []
+    for page in range(1, 4):
+        try:
+            prs = gh_rest(f"pulls?state=open&per_page=100&page={page}")
+        except Exception as e:
+            print(f"classifier-board: PR list page {page} failed: {e}")
+            return
+        if not isinstance(prs, list) or not prs:
+            break
+        for pr in prs:
+            num = pr.get("number")
+            if num is None:
+                continue
+            if not rx.search((pr.get("body") or "") + "\n" + (pr.get("title") or "")):
+                continue
+            boosted.append(num)  # mirror number == GH number (1:1 sync)
+            if issue_has_label(pr, RC_PR_LABEL):
+                continue
+            existing = [(l.get("name") if isinstance(l, dict) else l) for l in (pr.get("labels") or [])]
+            try:
+                gh_rest(f"issues/{num}", {"labels": existing + [RC_PR_LABEL]}, method="PATCH")
+                added += 1
+                print(f"classifier-board: added {RC_PR_LABEL!r} to PR #{num}")
+            except Exception as e:
+                print(f"classifier-board: label PR #{num} failed (retry next round): {e}")
+            time.sleep(0.4)
+        if len(prs) < 100:
+            break
+    if boosted:
+        boost_issues(boosted, "root-cause PRs " + ",".join(f"#{n}" for n in boosted))
 
 def mark_members(agg_by_cat, merged, open_set):
     """Member issues of aggregated categories get the 已被收 label + ONE short
@@ -746,6 +842,8 @@ def main():
     ensure_label(ABSORBED_LABEL, "d9d9d9")
     mark_members(agg_by_cat, merged, open_set)
     ensure_label(AGG_LABEL)
+    ensure_label(RC_PR_LABEL, "fc2929")
+    ensure_rc_pr_labels(merged, open_set)
     num = board_discussion_number(st)
     if num is None:
         num = create_board()

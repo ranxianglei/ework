@@ -142,4 +142,27 @@ describe("incorporated-issue auto-stop (owner policy 2026-11-12)", () => {
     expect(Engine.prototype.rcEightQuestionRule.call(self, "普通 issue 标题")).toBe("");
     expect(Engine.prototype.rcEightQuestionRule.call(self, undefined)).toBe("");
   });
+
+  test("initial prompt carries the 8问 contract for [Root Cause] tickets (issue_opened path)", () => {
+    // RC aggregations are dispatched by issue_opened — the worker's first run
+    // only ever saw the forward/nudge rules, which is why 2026-11-13 RC threads
+    // answered with a bare 结论 and no 8-question verdict (owner: 「我发现root的8问没有了」).
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const self = Object.create(Engine.prototype) as Record<string, any>;
+    self.cfg = { daemon: { wakeLogins: [], noWakeLogins: [], nonWakingAuthors: [] } };
+    const args = ["body", "ranxianglei", "/w", { clone: "git clone x .", issueRef: "o/r#6453" }] as const;
+    const rcPrompt = Engine.prototype.buildInitialPrompt.call(
+      self, "bot", "[Root Cause] compression cache eviction (6 items)", ...args,
+    ) as string;
+    expect(rcPrompt).toContain("8-question checklist");
+    expect(rcPrompt).toContain("待验证");
+    const zhPrompt = Engine.prototype.buildInitialPrompt.call(
+      self, "bot", "[根因] 压缩链路三连断（6090/6091/6092）", ...args,
+    ) as string;
+    expect(zhPrompt).toContain("8-question checklist");
+    const plainPrompt = Engine.prototype.buildInitialPrompt.call(
+      self, "bot", "普通 issue 标题", ...args,
+    ) as string;
+    expect(plainPrompt).not.toContain("8-question checklist");
+  });
 });
