@@ -505,6 +505,7 @@ def update_agg(merged, open_set):
             + "- PR 描述里用 `Fixes #...` 逐个列出上面每一个 GitHub issue 号（没有 GitHub 号的写镜像号）\n"
               + "- 若某个 issue 已有自己的 PR 且方向一致，cherry-pick 其 commit 并保留原作者署名（`-x`）；由你判断是否值得\n"
               + "- PR 必须打标签：`root-cause`（固定，来自根因汇聚单）+ 按本 PR 的 diff 独立判断的类别和优先级标签（最高优先用 p1），不要抄任何来源 issue\n"
+              + "- PR 描述末尾必须加标记行 `<!-- rcagg:" + cat + " -->`（汇聚板靠它自动识别根因 PR 补标签/插队；即使修复拆成多个子单各自提 PR，每个 PR 都要带这行）\n"
               + "- 回帖本线程必须是**最终裁决**，结尾固定用中文 8问 清单逐行回答：1 这是啥问题（大白话+触发条件）2 根本原因是啥（组件+机制）3 如何修复（已做的修复或建议修法）4 能否合并/关闭（结论+依据：测试/CI/回归分析）5 URL（相关线程/PR 链接）6 影响面（哪些代码路径/用户）7 测试（什么钉住它）8 风险（还可能坏在哪）。答不实的行写「待验证：原因」，不许漏行\n"
             )
         if len(nums) < AGG_THRESHOLD:
@@ -608,9 +609,14 @@ def ensure_rc_pr_labels(merged, open_set):
         up = up_num_of(n)
         if up:
             gh_nums.add(int(up))
-    if not gh_nums:
-        return
-    rx = re.compile(r"(?<!\d)(" + "|".join(sorted((str(x) for x in gh_nums), key=len, reverse=True)) + r")(?!\d)")
+    rx = None
+    if gh_nums:
+        rx = re.compile(r"(?<!\d)(" + "|".join(sorted((str(x) for x in gh_nums), key=len, reverse=True)) + r")(?!\d)")
+    # Owner policy 2026-11-13: spin-off PRs close newly filed sub-issues (which
+    # are not members yet), so number matching misses them. The task text makes
+    # every root-cause PR carry an rcagg:<category> marker — that is the
+    # authoritative signal (category name is the authority, per the token design).
+    rc_marker = re.compile(r"rcagg:[a-z0-9][a-z0-9-]*")
     added = 0
     boosted = []
     for page in range(1, 4):
@@ -625,7 +631,8 @@ def ensure_rc_pr_labels(merged, open_set):
             num = pr.get("number")
             if num is None:
                 continue
-            if not rx.search((pr.get("body") or "") + "\n" + (pr.get("title") or "")):
+            text = (pr.get("body") or "") + "\n" + (pr.get("title") or "")
+            if not ((rx and rx.search(text)) or rc_marker.search(pr.get("body") or "")):
                 continue
             boosted.append(num)  # mirror number == GH number (1:1 sync)
             if issue_has_label(pr, RC_PR_LABEL):
