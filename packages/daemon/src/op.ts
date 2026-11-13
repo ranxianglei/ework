@@ -399,7 +399,11 @@ export class Store {
     const rows = this.projectPriorities.length > 0
       ? await this.priorityOrderedPending(now, limit)
       : await getDB().all<MessageRow>(
-          `SELECT * FROM {{messages}} WHERE status = 'pending' AND ${Store.RETRY_HOLD_SQL} ORDER BY created_at ASC LIMIT ?`,
+          `SELECT m.* FROM {{messages}} m
+           JOIN {{op_sessions}} s ON s.uid = m.session_id
+           JOIN {{issues}} i ON i.uid = s.issue_id
+           WHERE m.status = 'pending' AND (m.retry_after IS NULL OR m.retry_after <= ?)
+           ORDER BY COALESCE(i.dispatch_priority, 0) DESC, m.created_at ASC LIMIT ?`,
           [now, limit]
         );
     return rows.map(rowToMessage);
@@ -426,11 +430,25 @@ export class Store {
        JOIN {{op_sessions}} s ON s.uid = m.session_id
        JOIN {{issues}} i ON i.uid = s.issue_id
        WHERE m.status = 'pending' AND (m.retry_after IS NULL OR m.retry_after <= ?)
-       ORDER BY m.created_at ASC,
+       ORDER BY COALESCE(i.dispatch_priority, 0) DESC, m.created_at ASC,
          CASE ${whens.join(" ")} ELSE 0 END DESC
        LIMIT ?`,
       [nowIso, ...caseParams, limit]
     );
+  }
+
+  /** Set the drain-dispatch priority of mirror issues (admin boost endpoint;
+   *  the classifier board re-stamps the root-cause aggregation set every
+   *  round). Tracker ids only, like stop-work. Returns rows updated. */
+  async setIssueDispatchPriority(trackerIssueIds: string[], priority: number): Promise<number> {
+    const ids = [...new Set(trackerIssueIds)];
+    if (ids.length === 0) return 0;
+    const ph = ids.map(() => "?").join(",");
+    const res = await getDB().run(
+      `UPDATE {{issues}} SET dispatch_priority = ?, updated_at = ? WHERE tracker_issue_id IN (${ph})`,
+      [priority, new Date().toISOString(), ...ids]
+    );
+    return res.changes;
   }
 
   async bumpMessageAttempts(id: string): Promise<void> {
