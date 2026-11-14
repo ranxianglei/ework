@@ -937,6 +937,12 @@ export class Engine {
   // on a corrupted image part the model 500s on; every replay re-sent it).
   // Healthy completion resets it; ≥3 arms the fresh-session reset at spawn.
   private stuckKillCount = new Map<string, number>();
+  // Stuck-backoff holds keyed by MESSAGE id (2026-11-14): msg id → retry_after
+  // ISO. The sweep reads this in addition to the row's retry_after because the
+  // execProcess park ('interrupted') lands a tick after our setRetryAfter and
+  // its status flip CLEARS retry_after (op.ts updateMessageStatus) — the
+  // in-memory hold bridges that gap. Entries are pruned lazily (6h ceiling).
+  private stuckBackoffHolds = new Map<string, string>();
   /** Degrade-notice throttling for capped auto lanes (owner directive
    * 2026-10-24): `${issue.id}:${lane}` → last notify timestamp. In-memory
    * only — a restart may re-notify once, which is acceptable. */
@@ -1009,6 +1015,16 @@ export class Engine {
   private static MAX_PENDING_AGE_MS = 128 * 60 * 60_000;
   private static MAX_STUCK_NUDGE_ROUNDS = 1;
   private static MAX_RUNTIME_MS = 3 * 60 * 60 * 1000;
+  // Congestion backoff for stuck-kills (2026-11-14, owner): under high load a
+  // stalled session was force-killed and re-dispatched in seconds — stall →
+  // kill → immediate nudge → stall again, an infinite loop burning a full
+  // 30-40min model cycle per pass. The parked message now rides the
+  // messages.retry_after hold instead: 30min after the first stuck-kill,
+  // doubling per consecutive kill, capped at 6h; giving up after the nudge
+  // budget waits a flat 2h.
+  static readonly STUCK_BACKOFF_BASE_MS = 30 * 60 * 1000;
+  static readonly STUCK_BACKOFF_MAX_MS = 6 * 60 * 60 * 1000;
+  static readonly STUCK_GIVEUP_HOLD_MS = 2 * 60 * 60 * 1000;
   private static OBSERVER_INTERVAL_MS = 5 * 60 * 1000;
   private static WEB_RECONCILE_INTERVAL_MS = 60 * 60_000;
   // CI-lane post-fix verification (audit RC3).
@@ -4424,25 +4440,6 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
     ].join("\n");
   }
 
-  private buildStuckNudgePrompt(
-    session: OpSession,
-    issue: Issue,
-    instructions: { issueRef: string },
-    stuckMinutes: number
-  ): string {
-    return [
-      `[SYSTEM] 检测到您的进程已经卡住 ${stuckMinutes} 分钟没有输出了，已经被强制重启。`,
-      ``,
-      `可能的原因：等待输入、死循环、网络请求挂起、长时间无响应的工具调用等。`,
-      ``,
-      `- 如果您之前的工作有阶段性成果，请立即向用户汇报当前进度和遇到的问题。`,
-      `- 如果您遇到了阻塞（权限不足、依赖缺失、不确定的方向等），请向用户说明并请求指导。`,
-      `- 如果您可以继续，请避开导致卡住的操作，换一种方式继续工作。`,
-      ``,
-      `使用 \`reply\` 工具向 ${instructions.issueRef} 给出回复（以 \`[bot]\` 开头）。其他方式的回复会被忽略。`,
-    ].join("\n");
-  }
-
   private handleLargeContent(workdir: string, content: string, filename: string): string {
     if (content.length <= Engine.MAX_INLINE_SIZE) return content;
 
@@ -4822,6 +4819,19 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
     }
     for (const msg of stranded) {
       if (this.destroyed) return;
+      // Stuck-backoff hold (2026-11-14): a just-killed session's message rides
+      // retry_after — waiting it out is the whole point of the backoff. The
+      // row field is authoritative once set; the in-memory map only bridges
+      // the (rare) window where the hold write raced the park's
+      // retry_after=NULL clear, so a row that carries its own retry_after
+      // must never be shadowed by a stale map entry.
+      const memHold = msg.retryAfter ? undefined : this.stuckBackoffHolds.get(msg.id);
+      if (memHold) {
+        if (new Date(memHold).getTime() > Date.now()) continue;
+        this.stuckBackoffHolds.delete(msg.id); // pruned once lapsed
+        await this.store.setRetryAfter(msg.id, null).catch(() => {});
+      }
+      if (msg.retryAfter && msg.retryAfter.getTime() > Date.now()) continue;
       const session = await this.store.getSession(msg.sessionId);
       if (!session) continue;
       const issue = await this.store.getIssue(session.issueId);
@@ -5119,8 +5129,17 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
 
           const stuckNudgeRound = this.stuckNudgeRounds.get(k) ?? 0;
           if (stuckNudgeRound < this.maxStuckNudges) {
-            log.warn(`engine: stuck — no output for ${minutes}min on ${k}, killing + sending stuck nudge (round ${stuckNudgeRound + 1}/${this.maxStuckNudges})`);
-            await tracker.createComment(ref, `[system] ⏰ **${session.name}** no output for ${minutes} min, restarting...`).catch(
+            // Congestion backoff (2026-11-14): compute the hold BEFORE killing
+            // so the comment can state it; the parked message (finishRun flips
+            // it to 'interrupted') rides retry_after and the stranded sweep
+            // waits it out — no immediate re-dispatch, no nudge message.
+            const stuckKills = (this.stuckKillCount.get(k) ?? 0) + 1;
+            const backoffMs = Math.min(Engine.STUCK_BACKOFF_BASE_MS * 2 ** (stuckKills - 1), Engine.STUCK_BACKOFF_MAX_MS);
+            const backoffMin = Math.round(backoffMs / 60000);
+
+            log.warn(`engine: stuck — no output for ${minutes}min on ${k}, killing + ~${backoffMin}min backoff (kill #${stuckKills}/${this.maxStuckNudges})`);
+            const heldMsgId = this.currentMessage.get(k);
+            await tracker.createComment(ref, `[system] ⏰ **${session.name}** no output for ${minutes} min — restarting in ~${backoffMin} min (congestion backoff, 第 ${stuckKills} 次无输出重启)`).catch(
               err => log.error(`engine: stuck-nudge comment failed for ${k}:`, (err as Error).message)
             );
 
@@ -5133,26 +5152,61 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
             }
 
             // A stuck hang is the dead-provider signature: open the circuit so
-            // the pool stops picking it, and leave the nudge unpinned so the
+            // the pool stops picking it, and leave the model unpinned so the
             // re-spawn re-picks from healthy models instead of re-pinning the
             // one that just hung (dsh#133 flash-zombie family).
             const stuckModel = this.currentModel.get(k);
             if (stuckModel) this.modelCircuits.set(stuckModel, Date.now() + this.cfg.opencode.modelCooldownMs);
             this.currentModel.delete(k);
             this.stuckNudgeRounds.set(k, stuckNudgeRound + 1);
-            this.stuckKillCount.set(k, (this.stuckKillCount.get(k) ?? 0) + 1);
+            this.stuckKillCount.set(k, stuckKills);
 
-            const instructions = tracker.getTrackerInstructions(ref);
-            const nudgePrompt = this.buildStuckNudgePrompt(session, issue, instructions, minutes);
-            const nudgeMsg = await this.store.createMessage(session.id, nudgePrompt, undefined, undefined, this.currentModel.get(k));
-            await this.dequeueOrIdle(k, session, issue, nudgeMsg);
+            // Arm the backoff hold on the parked message (execProcess's
+            // process-replaced path settles it 'interrupted' a tick later; a
+            // daemon death in that gap costs one fast retry at worst — the
+            // next kill re-arms with a larger hold). The stranded sweep
+            // resurrects it once the hold expires: no nudge message, no
+            // immediate re-dispatch.
+            if (heldMsgId) {
+              const holdIso = new Date(Date.now() + backoffMs).toISOString();
+              this.stuckBackoffHolds.set(heldMsgId, holdIso);
+              // Arm the hold ONLY after the park lands: forceStop's execProcess
+              // continuation settles the row 'interrupted' a tick later, and
+              // that status flip (updateMessageStatus) CLEARS retry_after —
+              // breaking on "not running/pending" is too early (a 'failed'
+              // row from forceStop's own message sweep passes it while the
+              // park is still in flight, and the park then wipes the hold).
+              // status === 'interrupted' is the terminal state of that same
+              // UPDATE, so it is safe to write immediately after observing it.
+              for (let i = 0; i < 80; i++) {
+                const row = await this.store.getMessage(heldMsgId).catch(() => undefined);
+                if (row && row.status === "interrupted") break;
+                await new Promise((r) => setTimeout(r, 150));
+              }
+              await this.store.setRetryAfter(heldMsgId, holdIso).catch(() => {});
+              log.info(`engine: stuck-backoff hold on msg ${heldMsgId.slice(0, 8)} until ${holdIso}`);
+            }
           } else {
             log.warn(`engine: stuck for ${minutes}min on ${k}, stuck nudge exhausted (${stuckNudgeRound}/${this.maxStuckNudges}), giving up`);
+            const heldMsgId = this.currentMessage.get(k);
             await tracker.createComment(ref, `[system] ⛔ **${session.name}** stuck for ${minutes} min, gave up after ${this.maxStuckNudges} restart(s).`).catch(
               err => log.error(`engine: stuck-giveup comment failed for ${k}:`, (err as Error).message)
             );
             if (this.processes.get(k)) {
               await this.forceStop(k);
+            }
+            // Flat 2h cool-off before the stranded sweep may try again —
+            // give-up must mean "stop hammering", not "retry in seconds".
+            if (heldMsgId) {
+              const holdIso = new Date(Date.now() + Engine.STUCK_GIVEUP_HOLD_MS).toISOString();
+              this.stuckBackoffHolds.set(heldMsgId, holdIso);
+              for (let i = 0; i < 80; i++) {
+                const row = await this.store.getMessage(heldMsgId).catch(() => undefined);
+                if (row && row.status === "interrupted") break;
+                await new Promise((r) => setTimeout(r, 150));
+              }
+              await this.store.setRetryAfter(heldMsgId, holdIso).catch(() => {});
+              log.info(`engine: stuck-giveup hold on msg ${heldMsgId.slice(0, 8)} until ${holdIso}`);
             }
             this.stuckNudgeRounds.delete(k);
             this.stuckKillCount.set(k, (this.stuckKillCount.get(k) ?? 0) + 1);
