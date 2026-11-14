@@ -3167,13 +3167,21 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
     // Owner policy 2026-10-14: infra fix work must not fan out across the
     // whole fleet — deferred messages stay pending; the next completion event
     // drains them. Engineer mode (2026-11-03) counts BOTH prefixes in one pool.
+    //
+    // Owner decision 2026-11-14 (billion-context release flood): the CI lane
+    // must NOT borrow idle fleet capacity — every rebase push onto an old PR
+    // branch re-triggers the full upstream suite (~13 workflow runs), so a
+    // pool that idles up to the global cap (infraIdleExpandedCap) turned an
+    // idle fleet into a 10-wide rebase storm that starved release runs. The
+    // CI pool is now hard-capped at its configured value (×2 at night).
     if (msg.sourceCommentId?.startsWith("merge-conflict-") || msg.sourceCommentId?.startsWith("ci-fail-")) {
       let poolCap: number;
       let runningPool: number;
       let poolName: string;
       if (this.engineerMode) {
-        // One shared budget for the unified CI engineer.
-        poolCap = this.infraIdleExpandedCap(this.infraNightActive() ? this.ciMaxConcurrent * 2 : this.ciMaxConcurrent);
+        // One shared budget for the unified CI engineer — fixed, no idle
+        // expansion (2026-11-14 flood fix, see block comment above).
+        poolCap = this.infraNightActive() ? this.ciMaxConcurrent * 2 : this.ciMaxConcurrent;
         runningPool = await this.store.countRunningEngineerMessages(msg.id);
         poolName = "ci-engineer";
       } else if (msg.sourceCommentId.startsWith("merge-conflict-")) {
@@ -3181,7 +3189,7 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
         runningPool = await this.store.countRunningConflictMessages(msg.id);
         poolName = "merge-conflict";
       } else {
-        poolCap = this.infraIdleExpandedCap(this.infraNightActive() ? this.ciMaxConcurrent * 2 : this.ciMaxConcurrent);
+        poolCap = this.infraNightActive() ? this.ciMaxConcurrent * 2 : this.ciMaxConcurrent;
         runningPool = await this.store.countRunningCiMessages(msg.id);
         poolName = "ci-fix";
       }
