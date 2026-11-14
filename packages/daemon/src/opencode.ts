@@ -4335,6 +4335,30 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
     return { issues, killed, superseded };
   }
 
+  /** Boost lane (e-work#63): set dispatch_priority on the given mirror issues so
+   * their pending messages jump ahead of older normal work in the global drain
+   * (dispatch_priority DESC, then created_at ASC). The classifier board re-stamps
+   * the current RC aggregation set every round; the write is skipped when the
+   * value is already correct, so a re-stamp of an unchanged set is a no-op
+   * (idempotent). Silent on purpose — no thread comments. */
+  async boostIssuePriority(mirrorIssueIds: string[], priority = 1): Promise<{ issues: number; boosted: number }> {
+    let issues = 0;
+    let boosted = 0;
+    for (const id of [...new Set(mirrorIssueIds.map((s) => String(s)))]) {
+      for (const issue of await this.store.findIssuesByTrackerIssueId(id)) {
+        issues++;
+        if ((issue.dispatchPriority ?? 0) !== priority) {
+          await this.store.setIssueDispatchPriority(issue.id, priority);
+          boosted++;
+        }
+      }
+    }
+    if (issues > 0) {
+      log.info(`engine: boost — ${issues} issue(s), ${boosted} dispatch_priority re-stamp(s) to ${priority}`);
+    }
+    return { issues, boosted };
+  }
+
   private buildForwardPrompt(
     opName: string,
     commentBody: string,
