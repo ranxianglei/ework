@@ -205,6 +205,32 @@ export function gcIntervalMs(freeMb: number | null): number {
   return freeMb !== null && freeMb < GC_TIGHT_FREE_MB ? GC_TIGHT_INTERVAL_MS : GC_BASELINE_INTERVAL_MS;
 }
 
+/** Pressure tiers for the adaptive workdir TTL (in MB) — incident 2026-11-13 ENOSPC. */
+export const GC_TTL_P1_FREE_MB = 5 * 1024; // free < 5G  → TTL floor 6h
+export const GC_TTL_P2_FREE_MB = 10 * 1024; // free < 10G → TTL floor 12h
+export const GC_TTL_P3_FREE_MB = 20 * 1024; // free < 20G → TTL floor 24h
+export const GC_TTL_P1_MS = 6 * 60 * 60 * 1000;
+export const GC_TTL_P2_MS = 12 * 60 * 60 * 1000;
+export const GC_TTL_P3_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Pressure-adaptive workdir TTL (owner-approved 2026-11-14, incident
+ * 2026-11-13 ENOSPC): a flood of brand-new workdirs (e.g. a root-cause
+ * batch) leaves a fixed TTL with nothing eligible to delete while the disk
+ * drains. As free space shrinks the effective TTL shortens; the configured
+ * TTL remains the ceiling. null free space (df unavailable) keeps the
+ * configured TTL — never tighten blindly.
+ */
+export function pressureTtlMs(freeMb: number | null, configuredTtlMs: number): number {
+  if (freeMb === null || configuredTtlMs <= 0) return configuredTtlMs;
+  const floor =
+    freeMb < GC_TTL_P1_FREE_MB ? GC_TTL_P1_MS
+    : freeMb < GC_TTL_P2_FREE_MB ? GC_TTL_P2_MS
+    : freeMb < GC_TTL_P3_FREE_MB ? GC_TTL_P3_MS
+    : Number.MAX_SAFE_INTEGER;
+  return Math.min(configuredTtlMs, floor);
+}
+
 export async function purgeStaleNodeModules(
   root: string,
   ttlMs: number,
