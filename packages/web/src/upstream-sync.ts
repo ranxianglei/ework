@@ -1411,22 +1411,30 @@ export class UpstreamSync {
   private async importDiscussionComments(d: GithubDiscussion, emit: boolean): Promise<number> {
     const local = await getIssueByUpstreamNumber(this.project.id, d.number, "discussion");
     if (!local) return 0;
-    const comments = await this.fetchJson<GiteaComment[]>(`/discussions/${d.number}/comments?per_page=50`);
-    if (!comments) return 0;
+    // Walk every page until a short one (same class of bug as issue comments,
+    // owner fix 2026-11-07; the discussion variant missed it 2026-11-14):
+    // a single fixed page truncated long threads FOREVER — newer comments
+    // sat beyond it, were never imported, and the updated_at cursor advanced
+    // past them so they could never be retried (awesome-dsh-plugin/5795).
     let n = 0;
-    for (const gc of comments) {
-      if (await getCommentByUpstreamId(gc.id)) continue;
-      if ((gc.body ?? "").includes("<!-- ework-mirror -->")) continue;
-      const gcAuthor = gc.user?.login ?? "upstream";
-      await ensureUser(gcAuthor, fromGithubBot(gcAuthor) ? "bot" : "human");
-      const body = (gc.body ?? "") + "\n\n<!-- upstream-sync -->";
-      const row = await postComment(local.id, body, gcAuthor, {
-        createdAt: gc.created_at,
-        updatedAt: gc.updated_at,
-        upstreamCommentId: gc.id,
-      });
-      if (emit) void emitCommentEvent(this.project.id, local.id, row.id, this.origin);
-      n++;
+    for (let page = 1; page <= 50; page++) {
+      const comments = await this.fetchJson<GiteaComment[]>(`/discussions/${d.number}/comments?per_page=100&page=${page}`);
+      if (!comments || comments.length === 0) break;
+      for (const gc of comments) {
+        if (await getCommentByUpstreamId(gc.id)) continue;
+        if ((gc.body ?? "").includes("<!-- ework-mirror -->")) continue;
+        const gcAuthor = gc.user?.login ?? "upstream";
+        await ensureUser(gcAuthor, fromGithubBot(gcAuthor) ? "bot" : "human");
+        const body = (gc.body ?? "") + "\n\n<!-- upstream-sync -->";
+        const row = await postComment(local.id, body, gcAuthor, {
+          createdAt: gc.created_at,
+          updatedAt: gc.updated_at,
+          upstreamCommentId: gc.id,
+        });
+        if (emit) void emitCommentEvent(this.project.id, local.id, row.id, this.origin);
+        n++;
+      }
+      if (comments.length < 100) break;
     }
     return n;
   }
