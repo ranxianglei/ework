@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync, unlinkSync, rmdirSync, readdirSync, existsSyn
 import { join, dirname, resolve, isAbsolute } from "path";
 import { homedir, hostname } from "os";
 import { log } from "./logger";
-import { freeSpaceMb, gcIntervalMs, listBusyOpencodeWorkdirs, purgeStaleNodeModules, purgeStaleWorkdirs, shouldBlockSpawn } from "./workdir-gc";
+import { freeSpaceMb, gcIntervalMs, listBusyOpencodeWorkdirs, pressureTtlMs, purgeStaleNodeModules, purgeStaleWorkdirs, shouldBlockSpawn } from "./workdir-gc";
 import type { Config } from "./config";
 import { isForeignKeyError, type Store } from "./op";
 import type { IssueTracker, TrackerRef, TrackerEvent, TrackerComment, Issue, OpSession, Message } from "./trackers/types";
@@ -961,6 +961,7 @@ export class Engine {
 
   private observedIssues = new Set<string>();
   private lastWorkdirGcAt = 0;
+  private workdirGcPass: Promise<void> | null = null;
   private lastWebReconcileAt = 0;
   private badgeWrites = new Map<string, string>();
   private observerTimer?: ReturnType<typeof setInterval>;
@@ -3271,17 +3272,26 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
     if (this.cfg.opencode.minFreeMb > 0) {
       const freeMb = freeSpaceMb(workdir);
       if (shouldBlockSpawn(freeMb, this.cfg.opencode.minFreeMb)) {
-        log.warn(`engine: spawn blocked for ${k} — ${freeMb}MB free < ${this.cfg.opencode.minFreeMb}MB watermark`);
-        await tracker.createComment(
-          ref,
-          `[system] ⚠️ ${this.sessionRef(session)} spawn refused: only ${freeMb}MB free on disk (< ${this.cfg.opencode.minFreeMb}MB watermark). Free up space and post again.`,
-        ).catch((err) => log.error(`engine: watermark notice failed for ${k}:`, (err as Error).message));
-        await this.store.updateMessageStatus(msg.id, "failed", `disk watermark: ${freeMb}MB < ${this.cfg.opencode.minFreeMb}MB`);
-        this.running.delete(k);
-        this.currentMessage.delete(k);
-        this.currentModel.delete(k);
-        void this.dequeueAfterGate(k, session, issue);
-        return;
+        // Rescue (incident 2026-11-13): the 5-min background cadence can sit
+        // idle against a disk that drained in one hour. Reclaim once NOW,
+        // with the pressure-adaptive TTL, then re-measure before refusing.
+        log.warn(`engine: spawn blocked for ${k} — ${freeMb}MB free < ${this.cfg.opencode.minFreeMb}MB watermark; running rescue GC pass`);
+        await this.runWorkdirGcPass("spawn-rescue");
+        const freeMbAfter = freeSpaceMb(workdir);
+        if (shouldBlockSpawn(freeMbAfter, this.cfg.opencode.minFreeMb)) {
+          log.warn(`engine: spawn blocked for ${k} after rescue GC — ${freeMbAfter}MB free < ${this.cfg.opencode.minFreeMb}MB watermark`);
+          await tracker.createComment(
+            ref,
+            `[system] ⚠️ ${this.sessionRef(session)} spawn refused: only ${freeMbAfter}MB free on disk (< ${this.cfg.opencode.minFreeMb}MB watermark). Free up space and post again.`,
+          ).catch((err) => log.error(`engine: watermark notice failed for ${k}:`, (err as Error).message));
+          await this.store.updateMessageStatus(msg.id, "failed", `disk watermark: ${freeMbAfter}MB < ${this.cfg.opencode.minFreeMb}MB`);
+          this.running.delete(k);
+          this.currentMessage.delete(k);
+          this.currentModel.delete(k);
+          void this.dequeueAfterGate(k, session, issue);
+          return;
+        }
+        log.info(`engine: rescue GC recovered ${k} — ${freeMbAfter}MB free >= watermark, spawning`);
       }
     }
 
@@ -4830,6 +4840,52 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
     }
   }
 
+  /**
+   * One full workdir-GC pass (node_modules TTL + issue-workdir TTL).
+   *
+   * The workdir TTL is pressure-adaptive (owner-approved 2026-11-14,
+   * incident 2026-11-13 ENOSPC): when free space shrinks the effective TTL
+   * shortens, so a flood of brand-new workdirs cannot outrun the reclaim.
+   * Re-entrancy guard: the observer interval and the spawn-rescue path may
+   * overlap — a second caller piggybacks on the in-flight pass.
+   */
+  private runWorkdirGcPass(reason: "interval" | "spawn-rescue"): Promise<void> {
+    if (this.workdirGcPass) return this.workdirGcPass;
+    this.workdirGcPass = (async () => {
+      const nmTtlMs = this.cfg.opencode.nodeModulesTtlDays * 24 * 60 * 60 * 1000;
+      const wdTtlMs = this.cfg.opencode.workdirTtlDays * 24 * 60 * 60 * 1000;
+      if (nmTtlMs <= 0 && wdTtlMs <= 0) return;
+      try {
+        const freeMb = freeSpaceMb(this.cfg.opencode.baseWorkdir);
+        // busy cwds cover live processes from ANY daemon sharing baseWorkdir.
+        const busy = await listBusyOpencodeWorkdirs();
+        if (nmTtlMs > 0) {
+          const removed = await purgeStaleNodeModules(this.cfg.opencode.baseWorkdir, nmTtlMs, busy);
+          if (removed > 0) log.info(`workdir-gc(${reason}): removed ${removed} node_modules dir(s) older than ${this.cfg.opencode.nodeModulesTtlDays}d`);
+        }
+        if (wdTtlMs > 0) {
+          // Running judgment comes from engine/session state, never mtime
+          // freshness: a stale-but-running workdir must survive, a fresh-but-
+          // idle one may be reclaimed after the TTL.
+          const protectedDirs: string[] = [...busy];
+          for (const s of await this.store.listNonIdleSessions()) {
+            if (s.state === "running" && s.workdir) protectedDirs.push(s.workdir);
+          }
+          const effectiveTtlMs = pressureTtlMs(freeMb, wdTtlMs);
+          const removed = await purgeStaleWorkdirs(this.cfg.opencode.baseWorkdir, effectiveTtlMs, protectedDirs);
+          const ttlH = Math.round((effectiveTtlMs / 3_600_000) * 10) / 10;
+          const freeG = freeMb === null ? "n/a" : `${Math.round(freeMb / 1024)}G`;
+          if (removed > 0) log.info(`workdir-gc(${reason}): removed ${removed} issue workdir(s) older than ${ttlH}h (configured ${this.cfg.opencode.workdirTtlDays}d, free ${freeG})`);
+        }
+      } catch (err) {
+        log.warn(`workdir-gc(${reason}) failed:`, (err as Error).message);
+      }
+    })().finally(() => {
+      this.workdirGcPass = null;
+    });
+    return this.workdirGcPass;
+  }
+
   private async runObserverCycle() {
     try {
       await this.store.releaseDeadOwners(this.cfg.work.leaseTtlMs);
@@ -4847,28 +4903,8 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
     if (nmTtlMs > 0 || wdTtlMs > 0) {
       const freeMb = freeSpaceMb(this.cfg.opencode.baseWorkdir);
       if (Date.now() - this.lastWorkdirGcAt > gcIntervalMs(freeMb)) {
-      this.lastWorkdirGcAt = Date.now();
-      try {
-        // busy cwds cover live processes from ANY daemon sharing baseWorkdir.
-        const busy = await listBusyOpencodeWorkdirs();
-        if (nmTtlMs > 0) {
-          const removed = await purgeStaleNodeModules(this.cfg.opencode.baseWorkdir, nmTtlMs, busy);
-          if (removed > 0) log.info(`workdir-gc: removed ${removed} node_modules dir(s) older than ${this.cfg.opencode.nodeModulesTtlDays}d`);
-        }
-        if (wdTtlMs > 0) {
-          // Running judgment comes from engine/session state, never mtime
-          // freshness: a stale-but-running workdir must survive, a fresh-but-
-          // idle one may be reclaimed after the TTL.
-          const protectedDirs: string[] = [...busy];
-          for (const s of await this.store.listNonIdleSessions()) {
-            if (s.state === "running" && s.workdir) protectedDirs.push(s.workdir);
-          }
-          const removed = await purgeStaleWorkdirs(this.cfg.opencode.baseWorkdir, wdTtlMs, protectedDirs);
-          if (removed > 0) log.info(`workdir-gc: removed ${removed} issue workdir(s) older than ${this.cfg.opencode.workdirTtlDays}d`);
-        }
-      } catch (err) {
-        log.warn("workdir-gc failed:", (err as Error).message);
-      }
+        this.lastWorkdirGcAt = Date.now();
+        void this.runWorkdirGcPass("interval");
       }
     }
 

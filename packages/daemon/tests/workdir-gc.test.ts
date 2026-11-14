@@ -2,7 +2,7 @@ import { describe, expect, test, beforeAll, afterAll, afterEach } from "bun:test
 import { mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
-import { freeSpaceMb, gcIntervalMs, purgeStaleNodeModules, purgeStaleWorkdirs, shouldBlockSpawn } from "../src/workdir-gc";
+import { freeSpaceMb, gcIntervalMs, listBusyOpencodeWorkdirs, pressureTtlMs, purgeStaleNodeModules, purgeStaleWorkdirs, shouldBlockSpawn } from "../src/workdir-gc";
 
 const ROOT = join(tmpdir(), `ework-gc-test-${Date.now()}`);
 const DAY = 24 * 60 * 60 * 1000;
@@ -151,5 +151,46 @@ describe("pressure-aware GC cadence (gcIntervalMs)", () => {
 
   test("unmeasurable free space (null) → 24-hour baseline, never tightens", () => {
     expect(gcIntervalMs(null)).toBe(24 * 60 * 60 * 1000);
+  });
+});
+
+// Literals on purpose: these pin the incident-approved pressure-TTL policy
+// (5G→6h / 10G→12h / 20G→24h, configured TTL stays the ceiling).
+describe("pressure-adaptive workdir TTL (pressureTtlMs)", () => {
+  const H = 3_600_000;
+  const configured2d = 2 * 24 * H;
+
+  test("free < 5G → 6h floor", () => {
+    expect(pressureTtlMs(5 * 1024 - 1, configured2d)).toBe(6 * H);
+    expect(pressureTtlMs(0, configured2d)).toBe(6 * H);
+  });
+
+  test("5G <= free < 10G → 12h floor", () => {
+    expect(pressureTtlMs(5 * 1024, configured2d)).toBe(12 * H);
+    expect(pressureTtlMs(10 * 1024 - 1, configured2d)).toBe(12 * H);
+  });
+
+  test("10G <= free < 20G → 24h floor", () => {
+    expect(pressureTtlMs(10 * 1024, configured2d)).toBe(24 * H);
+    expect(pressureTtlMs(20 * 1024 - 1, configured2d)).toBe(24 * H);
+  });
+
+  test("free >= 20G → configured TTL unchanged", () => {
+    expect(pressureTtlMs(20 * 1024, configured2d)).toBe(configured2d);
+    expect(pressureTtlMs(102_400, configured2d)).toBe(configured2d);
+  });
+
+  test("effective TTL is min(configured, pressure floor)", () => {
+    expect(pressureTtlMs(100, 24 * H)).toBe(6 * H); // 1d configured, disk < 5G → floor 6h wins
+    expect(pressureTtlMs(50_000, 6 * H)).toBe(6 * H); // 6h configured, healthy disk → configured wins
+  });
+
+  test("null free space → configured TTL (never tighten blindly)", () => {
+    expect(pressureTtlMs(null, configured2d)).toBe(configured2d);
+  });
+
+  test("disabled (ttl <= 0) passes through unchanged", () => {
+    expect(pressureTtlMs(100, 0)).toBe(0);
+    expect(pressureTtlMs(100, -5)).toBe(-5);
   });
 });
