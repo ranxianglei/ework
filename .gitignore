@@ -5,3 +5,4 @@ dist/
 *.tgz
 package-lock.json
 __pycache__/
+*.pyc
