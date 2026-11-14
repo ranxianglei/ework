@@ -56,12 +56,19 @@ function mockFetch() {
       hookCalls.push({ url, body: JSON.parse(String(init?.body ?? "{}")) });
       return new Response("{}", { status: 200 });
     }
+    const slicePaged = <T,>(arr: T[]): T[] => {
+      const lm = url.match(/[?&](?:limit|per_page)=(\d+)/);
+      const limit = lm ? Number(lm[1]) : 100;
+      const pm = url.match(/[?&]page=(\d+)/);
+      const page = pm ? Number(pm[1]) : 1;
+      return arr.slice((page - 1) * limit, page * limit);
+    };
     const perDiscussion = url.match(/\/discussions\/(\d+)\/comments/);
     if (perDiscussion) {
-      return Response.json(discussionComments[Number(perDiscussion[1])] ?? []);
+      return Response.json(slicePaged(discussionComments[Number(perDiscussion[1])] ?? []));
     }
     if (/\/discussions(\?|$)/.test(url)) {
-      return Response.json(discussionList);
+      return Response.json(slicePaged(discussionList));
     }
     if (/\/issues(\?|$)/.test(url)) {
       return Response.json(issueList);
@@ -205,5 +212,38 @@ describe("discussions sync", () => {
     expect(closed?.body.issue.kind).toBe("discussion");
     const local = await getIssueByUpstreamNumber(sync.project_id, 51, "discussion");
     expect(local?.state).toBe("closed");
+  });
+
+  test("live poll walks every discussion comment page (thread > one page, 2026-11-14 discussion 5795 class)", async () => {
+    const { sync } = await setup();
+    const ts = (day: number, i: number) => new Date(Date.UTC(2026, 9, day, 1, 0, i)).toISOString();
+    mockFetch();
+    // Round 1 (backfill): discussion 61 with 100 comments — all must land
+    discussionList = [discussion(61, { created_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-02T00:00:00Z" })];
+    discussionComments[61] = Array.from({ length: 100 }, (_, i) =>
+      dcomment(6100 + i, 61, { created_at: ts(2, i), updated_at: ts(2, i) })
+    );
+    await (await makeSyncer(sync.project_id)).pollOnce();
+    await settle();
+    expect(await getCommentByUpstreamId(6199)).toBeTruthy();
+    expect((await getUpstreamSync(sync.project_id))?.discussion_cursor).toBe("2026-10-02T00:00:00Z");
+
+    // Round 2 (live): 20 more comments land on page 2 and updated_at moves past
+    // the cursor. The old single-page fetch (per_page=50, page 1) saw only the
+    // already-imported comments, emitted no webhook, and still advanced the
+    // cursor — the 20 new comments were lost forever (discussion 5795).
+    discussionList = [discussion(61, { created_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-05T00:00:00Z" })];
+    discussionComments[61] = [
+      ...discussionComments[61],
+      ...Array.from({ length: 20 }, (_, i) => dcomment(6200 + i, 61, { created_at: ts(5, i), updated_at: ts(5, i) })),
+    ];
+    hookCalls = [];
+    await (await makeSyncer(sync.project_id)).pollOnce();
+    await settle();
+
+    for (const id of [6200, 6209, 6210, 6219]) expect(await getCommentByUpstreamId(id)).toBeTruthy();
+    const created = hookCalls.filter((c) => c.body.action === "created" && c.body.issue?.kind === "discussion");
+    expect(created.length).toBe(20);
+    expect((await getUpstreamSync(sync.project_id))?.discussion_cursor).toBe("2026-10-05T00:00:00Z");
   });
 });
