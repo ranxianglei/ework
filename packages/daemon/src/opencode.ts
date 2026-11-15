@@ -1799,15 +1799,22 @@ export class Engine {
     // Incorporated-issue auto-stop (owner policy 2026-11-12): issues absorbed
     // into a [根因] root-cause aggregation (or classified 碎小修/tinyfix) run
     // NO bot work of their own — the aggregation thread owns the fix. The
-    // classifier board writes the suppression set; ordinary task events for
-    // suppressed issues are dropped silently (lane events like CI/conflict
-    // still flow, so a red PR on a suppressed issue is still handled).
-    if (event.type === "issue_opened" || event.type === "comment_created" || event.type === "issue_boosted") {
+    // classifier board writes the suppression set; new issues / boosts for
+    // suppressed issues are dropped (lane events like CI/conflict still flow,
+    // so a red PR on a suppressed issue is still handled). COMMENT events are
+    // deliberately NOT dropped (owner policy 2026-11-15, "absorbed ≠ dead
+    // thread"): anyone's comment on an absorbed issue must still get an
+    // answer — the forwarded prompt carries suppressionNotice(), which puts
+    // the run in read-only Q&A mode (answer from the aggregation, no new PRs).
+    if (event.type === "issue_opened" || event.type === "issue_boosted") {
       const reason = this.suppressionReason(ref.issueId);
       if (reason) {
         log.info(`engine: suppressed ${event.type} on ${scopeKey}#${ref.issueId} — ${reason} (classifier incorporation; no bot work on absorbed issues)`);
         return;
       }
+    }
+    if (event.type === "comment_created" && this.suppressionReason(ref.issueId)) {
+      log.info(`engine: comment on suppressed issue ${scopeKey}#${ref.issueId} — answered in read-only Q&A mode (aggregation owns the work)`);
     }
 
     switch (event.type) {
@@ -2682,12 +2689,14 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
         }
         const workdir = await this.resolveWorkdir(session, issue);
         const instructions = tracker.getTrackerInstructions(ref);
+        const notice = this.suppressionNotice(ref);
         const prompt = this.buildForwardPrompt(
           session.name, this.handleLargeContent(workdir, comment.body, `comment-${comment.id}.txt`),
           comment.author, comment.authorKind, issueData.title, workdir, instructions,
           this.identityNote(issueData),
           authority,
           await this.fetchUnansweredBacklog(ref, tracker, comment.id),
+          notice,
         );
 
         // Immediate ack
@@ -2717,6 +2726,7 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
           issueData.author, workdir, instructions,
           this.identityNote(issueData),
           authority,
+          this.suppressionNotice(ref),
         );
         await this.enqueueOrRun(session, issue, prompt, tracker, ref, comment.id, model);
       }
@@ -2747,6 +2757,7 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
         this.identityNote(issueData),
         authority,
         await this.fetchUnansweredBacklog(ref, tracker, comment.id),
+        this.suppressionNotice(ref),
       );
       await tracker.createComment(ref, `[system] 🏷 ${this.sessionRef(session)} ✓ Message forwarded to **${session.name}**${this.running.has(this.sessionKey(session, issue)) ? " (running)" : ""}.\n> workdir: ${this.workdirLink(workdir)}${upstreamAckSuffix(comment.upstreamCommentId)}`);
       await this.enqueueOrRun(session, issue, prompt, tracker, ref, comment.id, model);
@@ -4199,6 +4210,7 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
     instructions: { clone: string; issueRef: string; closeIssue?: string },
     identityNote?: string | null,
     auth?: ProjectAuthority,
+    suppressionNotice?: string | null,
   ): string {
     return [
       `You are ${opName}, the AI agent for this project on ework (a self-hosted, issue-driven dev platform).`,
@@ -4222,6 +4234,7 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
       `If it's empty, clone the repo: \`${instructions.clone}\``,
       ``,
       `Read the issue, work on it, and reply via the \`reply\` tool — every reply starts with \`[bot] 🏷\`. Post the reply as soon as possible, then continue working if needed.`,
+      suppressionNotice ?? "",
     ].filter(Boolean).join("\n");
   }
 
@@ -4343,6 +4356,20 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
     return { issues, killed, superseded };
   }
 
+  /** Read-only Q&A notice for comment runs on absorbed (suppressed) issues
+   * (owner policy 2026-11-15, "absorbed ≠ dead thread" — 停止干活但任何人都能
+   * 提问并获得回答; 2026-11-15 #6757 追问被静默丢弃后 owner 定). */
+  private suppressionNotice(ref: TrackerRef): string | null {
+    const reason = this.suppressionReason(ref.issueId);
+    if (!reason) return null;
+    return (
+      `This issue has been ABSORBED into a root-cause aggregation — work here is stopped (reason: ${reason}). ` +
+      `You are in READ-ONLY Q&A mode: answer the commenter's question(s) from the existing thread + the aggregation thread's conclusions and PR links; ` +
+      `do NOT open new PRs, branches, or issues from this thread, and do NOT close or edit this issue. ` +
+      `If real code work is actually needed, say so and point to the aggregation thread.`
+    );
+  }
+
   private buildForwardPrompt(
     opName: string,
     commentBody: string,
@@ -4354,6 +4381,7 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
     identityNote?: string | null,
     auth?: ProjectAuthority,
     backlog: { author: string; authorKind?: string; body: string; createdAt?: string }[] = [],
+    suppressionNotice?: string | null,
   ): string {
     const role = this.authorRole(commentUser, auth);
     const who = authorKind === "bot" ? `@${commentUser} (bot)` : `@${commentUser} (${authorRoleLabel(role)})`;
@@ -4386,6 +4414,7 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
       `Reply using the \`reply\` tool.`,
       this.replyLanguageRule,
       this.rcEightQuestionRule(issueTitle),
+      suppressionNotice ?? "",
     ].filter(Boolean).join("\n");
   }
 
