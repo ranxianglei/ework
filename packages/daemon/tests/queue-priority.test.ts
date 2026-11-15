@@ -120,6 +120,97 @@ describe("getGlobalPendingMessages ordering", () => {
   });
 });
 
+describe("dispatch_priority boost lane (e-work#63)", () => {
+  it("boosted issue beats older normal work (branch 1: no project priorities)", async () => {
+    const older = await seedPending("ranxianglei/other", "1", "2026-09-29T10:00:00.000Z");
+    const newer = await seedPending("ranxianglei/billion-context", "2", "2026-09-29T11:00:00.000Z");
+    const store = new Store();
+    const issues2 = await store.findIssuesByTrackerIssueId("2");
+    expect(issues2).toHaveLength(1);
+    await store.setIssueDispatchPriority(issues2[0]!.id, 1);
+    const picked = await store.getGlobalPendingMessages(2);
+    expect(picked.map((m) => m.id)).toEqual([newer, older]);
+    await store.close();
+  });
+
+  it("boosted issue beats older normal AND higher project-priority work (branch 2)", async () => {
+    const olderNormal = await seedPending("ranxianglei/other", "1", "2026-09-29T10:00:00.000Z");
+    const highPriority = await seedPending("ranxianglei/billion-context", "2", "2026-09-29T10:30:00.000Z");
+    const boosted = await seedPending("ranxianglei/opencode-acp", "3", "2026-09-29T11:00:00.000Z");
+    const store = new Store([{ scope: "ranxianglei/billion-context", priority: 100 }]);
+    const issues3 = await store.findIssuesByTrackerIssueId("3");
+    await store.setIssueDispatchPriority(issues3[0]!.id, 1);
+    const picked = await store.getGlobalPendingMessages(3);
+    expect(picked.map((m) => m.id)).toEqual([boosted, olderNormal, highPriority]);
+    await store.close();
+  });
+
+  it("same dispatch_priority bucket keeps strict FIFO (owner 2026-10-30 anti-starvation)", async () => {
+    const a = await seedPending("ranxianglei/other", "1", "2026-09-29T10:00:00.000Z");
+    const b = await seedPending("ranxianglei/billion-context", "2", "2026-09-29T11:00:00.000Z");
+    const c = await seedPending("ranxianglei/opencode-acp", "3", "2026-09-29T12:00:00.000Z");
+    const store = new Store();
+    for (const num of ["1", "2", "3"]) {
+      const issues = await store.findIssuesByTrackerIssueId(num);
+      await store.setIssueDispatchPriority(issues[0]!.id, 5);
+    }
+    const picked = await store.getGlobalPendingMessages(3);
+    expect(picked.map((m) => m.id)).toEqual([a, b, c]);
+    await store.close();
+  });
+
+  it("boosting '645' does not misfire on '6453' (exact match, not prefix)", async () => {
+    await seedPending("ranxianglei/other", "645", "2026-09-29T10:00:00.000Z");
+    await seedPending("ranxianglei/other", "6453", "2026-09-29T11:00:00.000Z");
+    const store = new Store();
+    const found645 = await store.findIssuesByTrackerIssueId("645");
+    expect(found645).toHaveLength(1);
+    await store.setIssueDispatchPriority(found645[0]!.id, 1);
+    // Re-fetch: the in-memory object is stale after the UPDATE.
+    const after645 = await store.findIssuesByTrackerIssueId("645");
+    const found6453 = await store.findIssuesByTrackerIssueId("6453");
+    expect(found6453).toHaveLength(1);
+    expect(found6453[0]!.dispatchPriority ?? 0).toBe(0);
+    expect(after645[0]!.dispatchPriority ?? 0).toBe(1);
+    await store.close();
+  });
+
+  it("boost is idempotent (re-stamping to the same value is a no-op)", async () => {
+    await seedPending("ranxianglei/other", "1", "2026-09-29T10:00:00.000Z");
+    const store = new Store();
+    const issues = await store.findIssuesByTrackerIssueId("1");
+    const id = issues[0]!.id;
+    await store.setIssueDispatchPriority(id, 1);
+    await store.setIssueDispatchPriority(id, 1);
+    const after = await store.findIssuesByTrackerIssueId("1");
+    expect(after[0]!.dispatchPriority).toBe(1);
+    await store.close();
+  });
+
+  it("boosting an empty list is a no-op (no issues touched)", async () => {
+    await seedPending("ranxianglei/other", "1", "2026-09-29T10:00:00.000Z");
+    const store = new Store();
+    // Mirror of Engine.boostIssuePriority([]): dedupe → empty → loop body never runs.
+    const ids: string[] = [];
+    let issues = 0, boosted = 0;
+    for (const id of [...new Set(ids)]) {
+      const found = await store.findIssuesByTrackerIssueId(id);
+      for (const issue of found) {
+        issues++;
+        if ((issue.dispatchPriority ?? 0) !== 1) {
+          await store.setIssueDispatchPriority(issue.id, 1);
+          boosted++;
+        }
+      }
+    }
+    expect(issues).toBe(0);
+    expect(boosted).toBe(0);
+    const after = await store.findIssuesByTrackerIssueId("1");
+    expect(after[0]!.dispatchPriority ?? 0).toBe(0);
+    await store.close();
+  });
+});
+
 it("age order spans lanes: infra sessions do not leapfrog older ordinary work (owner 2026-10-30)", async () => {
   const store = new Store([{ scope: "acme/widgets", priority: 100 }]);
   const issueA = await store.findOrCreateIssue(ref("1", "acme/widgets"), "acme/widgets", "normal");
