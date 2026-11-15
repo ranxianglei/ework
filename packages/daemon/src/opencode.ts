@@ -2078,6 +2078,12 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
       `Push discipline (owner policy 2026-11-07): other agents may be working on this same PR branch concurrently — before EVERY push run \`git fetch origin\` and integrate the remote head (\`git pull --rebase origin/<branch>\`); NEVER force-push except when completing a conflict-rebase this task explicitly told you to perform; if a push is rejected twice or your rebase hits conflicts you did not cause, STOP and report it plainly in your reply — do not fight for the branch.`;
     const statusFreshness =
       `Status freshness (owner policy 2026-11-07): never assert CI green/red, merge state, labels, or approvals from memory or from earlier comments — verify against the LIVE sources available to you IN THIS RUN first; if you cannot verify it live, say so instead of guessing.`;
+    // CI-hold marker convention (owner policy 2026-11-15, billion-context #6783/PR #6784):
+    // every intermediate push carries [ework:ci-held] in its commit message (repo
+    // workflows skip all PR jobs on it); exactly ONE unmarked final head push is the
+    // branch's single full CI pass. No more one-push-one-fleet queue floods.
+    const ciHoldDiscipline =
+      `CI-hold push discipline (owner policy 2026-11-15): every push that is NOT the final head of this PR MUST carry the line [ework:ci-held] in its commit message — put it in the commit BODY (git commit -m "<subject>" -m "[ework:ci-held]"). Those pushes trigger NO CI. Only the FINAL head push — the exact commit you want reviewed, pushed after you verified the work locally — must NOT carry the marker; it is this branch's one full CI pass. At wake, check the branch head first: if its commit message still carries [ework:ci-held], a previous run died mid-session — finish the work and push the unmarked final commit.`;
     const windowMs = this.cfg.work.autoLaneWindowMs;
     const cap = this.engineerCap;
     const attempts = await this.store.countAutoLaneEngineerMessages(
@@ -2111,7 +2117,7 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
     }
     if (parts.ci) {
       const checkList = parts.ci.checks.map((c) => `- ${c.name}${c.html_url ? ` (${c.html_url})` : ""}`).join("\n");
-      steps.push(`${stepN++}. Failing checks:\n${checkList}\nFix them directly on the PR branch (fetch check logs via the API as needed), push incrementally. RE-VERIFY the live check state FIRST — an earlier wake may already have fixed what this event reports; if everything is green already, confirm that in one short comment and stop without further work.`);
+      steps.push(`${stepN++}. Failing checks:\n${checkList}\nFix them directly on the PR branch (fetch check logs via the API as needed), push incrementally WITH the CI-hold marker on every intermediate commit (see CI-hold push discipline below). RE-VERIFY the live check state FIRST — an earlier wake may already have fixed what this event reports; if everything is green already, confirm that in one short comment and stop without further work.`);
     }
     const body =
       // Push/status rules are appended below the body (owner policy 2026-11-07).
@@ -2121,7 +2127,7 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
       `\nWhen done, reply with a 七问 summary covering everything you did this run.\n` +
       `This is an auto-fix lane: attempt ${attempts + 1}/${cap}. Rules: small mechanical fixes only; when something needs a design decision, NEVER open a NEW issue — post a comment here whose first line is "🔶 需要决策" listing options A/B/C + recommendation + default-if-undecided, apply the needs-decision label via add-label.sh (workdir-root tools/ dir, see AGENTS.md §需要人工决策时), and stop (owner policy 2026-11-01). ` +
       `Authorization checkpoints are NOT yours to satisfy: if a gate blocks you (kernel-guard on kernel/ diffs or any owner-approval guard), NEVER edit the PR body to add a declaration UNLESS the gated diff is a mechanical kernel bug YOU fixed yourself (owner policy 2026-11-06 exemption — then adding ONLY the \`kernel-change:\` line plus your in-thread report is permitted; no other body edits, ever) — otherwise post a "🔶 需要决策" comment requesting the owner's explicit authorization citing the PR number and the exact gated diff, apply the needs-decision label, then stop touching that PR (owner policy 2026-11-01, superseding 2026-10-26). ` +
-      `Check states come from the mirror cache: curl -s -H "Authorization: token $(grep ^GITEA_TOKEN= /var/lib/ework-daemon/share/ework-daemon/.env | cut -d= -f2)" "http://127.0.0.1:3002/api/v1/upstream-checks?owner=<owner>&repo=<repo>&number=<PR>" (refreshed by the mirror poller ~60s). NEVER gh-poll check states — the shared GitHub PAT budget exhausts (owner policy 2026-10-27); gh is only for git push/PR operations.\n\n${pushDiscipline}\n\n${statusFreshness}`;
+      `Check states come from the mirror cache: curl -s -H "Authorization: token $(grep ^GITEA_TOKEN= /var/lib/ework-daemon/share/ework-daemon/.env | cut -d= -f2)" "http://127.0.0.1:3002/api/v1/upstream-checks?owner=<owner>&repo=<repo>&number=<PR>" (refreshed by the mirror poller ~60s). NEVER gh-poll check states — the shared GitHub PAT budget exhausts (owner policy 2026-10-27); gh is only for git push/PR operations.\n\n${pushDiscipline}\n\n${statusFreshness}\n\n${ciHoldDiscipline}`;
     const prompt = this.buildForwardPrompt(
       session.name,
       this.handleLargeContent(workdir, body, `ci-engineer-${ref.issueId}.txt`),
