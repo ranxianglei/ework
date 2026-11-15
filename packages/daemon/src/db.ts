@@ -407,6 +407,7 @@ async function runMigrations(db: AsyncDatabase): Promise<void> {
   title TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
+  dispatch_priority INTEGER NOT NULL DEFAULT 0,
   UNIQUE(tracker_type, tracker_scope_key, tracker_issue_id)
 )`,
       mysqlCreate: `CREATE TABLE ${tIssues} (
@@ -420,6 +421,7 @@ async function runMigrations(db: AsyncDatabase): Promise<void> {
   title VARCHAR(512) NOT NULL DEFAULT '',
   created_at VARCHAR(40) NOT NULL,
   updated_at VARCHAR(40) NOT NULL,
+  dispatch_priority INT NOT NULL DEFAULT 0,
   UNIQUE (tracker_type, tracker_scope_key, tracker_issue_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
       oldCols:
@@ -549,6 +551,17 @@ async function runMigrations(db: AsyncDatabase): Promise<void> {
     tIssues,
     "reset_at",
     sqlite ? "reset_at INTEGER NOT NULL DEFAULT 0" : "reset_at BIGINT NOT NULL DEFAULT 0"
+  );
+
+  // issues.dispatch_priority — 1 = top-of-queue for the global drain
+  // (owner policy 2026-11-12: root-cause aggregation issues run ahead of the
+  // FIFO backlog). The classifier board re-stamps the live set every round via
+  // POST /api/admin/boost; stale flags are harmless (closed issues hold no
+  // pending messages).
+  await ensureColumn(
+    tIssues,
+    "dispatch_priority",
+    sqlite ? "dispatch_priority INTEGER NOT NULL DEFAULT 0" : "dispatch_priority INT NOT NULL DEFAULT 0"
   );
 
   // op_sessions runtime-state columns (previously in-memory Maps; now persisted
