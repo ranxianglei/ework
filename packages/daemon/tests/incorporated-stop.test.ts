@@ -143,3 +143,94 @@ describe("incorporated-issue auto-stop (owner policy 2026-11-12)", () => {
     expect(Engine.prototype.rcEightQuestionRule.call(self, undefined)).toBe("");
   });
 });
+
+// Absorbed issues stay alive for Q&A (owner policy 2026-11-15, "absorbed ≠
+// dead thread"): work stops, but ANYONE's comment on an absorbed issue must
+// still get an answer. 2026-11-15 incident: owner's follow-up question on
+// #6757 was silently dropped after incorporation.
+describe("absorbed issue Q&A mode (owner policy 2026-11-15)", () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const { Engine } = require("../src/opencode") as { Engine: any };
+
+  function makeSelf(suppressionFile: string) {
+    const findIssue = vi.fn(async () => ({ id: 5, state: "active", ownerDaemonId: "d" }));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const self = Object.create(Engine.prototype) as Record<string, any>;
+    self.cfg = {
+      bot: { username: "ework-daemon" },
+      work: { suppressionFile },
+      opencode: { baseWorkdir: "/nonexistent-base-workdir" },
+      daemon: {},
+    };
+    self.store = {
+      findIssue,
+      findMessageByCommentId: vi.fn(async () => null),
+      getSessionsForIssue: vi.fn(async () => [{ id: "s1", name: "ework-daemon", state: "idle", workdir: "/w" }]),
+    };
+    self.daemonId = "d";
+    self.ensureOwned = vi.fn(async () => true);
+    self.projectAuthority = vi.fn(async () => undefined);
+    self.extractMentionName = () => null;
+    self.parseDirCommand = () => null;
+    self.resolveWorkdir = async () => "/w";
+    self.handleLargeContent = (_wd: string, c: string) => c;
+    self.identityNote = () => null;
+    self.fetchUnansweredBacklog = vi.fn(async () => []);
+    self.sessionRef = () => "ework-daemon";
+    self.workdirLink = () => "/w";
+    self.running = new Set();
+    self.processingComments = new Set();
+    self.sessionKey = () => "s1";
+    const enqueueOrRun = vi.fn(async () => {});
+    self.enqueueOrRun = enqueueOrRun;
+    return { self, enqueueOrRun };
+  }
+
+  const ref = { trackerType: "gitea", scope: { owner: "acme", repo: "widgets" }, issueId: "42" };
+  const issueData = { title: "长会话崩溃报告", body: "", state: "open", author: "dog" };
+  const tracker = { isBotUser: () => false, createComment: vi.fn(async () => ({ id: "c1" })), getTrackerInstructions: () => ({ issueRef: "acme/widgets#42" }) };
+
+  test("suppressionNotice: present for suppressed issues with the reason, absent otherwise", () => {
+    const { tmpdir } = require("os");
+    const { mkdtempSync, writeFileSync } = require("fs");
+    const { join } = require("path");
+    const dir = mkdtempSync(join(tmpdir(), "qa-"));
+    const file = join(dir, "suppressed.json");
+    const self = makeSelf(file).self;
+    expect(Engine.prototype.suppressionNotice.call(self, ref)).toBeNull();
+    writeFileSync(file, JSON.stringify({ issues: { "42": "incorporated:performance-memory" } }));
+    const notice = Engine.prototype.suppressionNotice.call(self, ref);
+    expect(notice).toContain("READ-ONLY Q&A mode");
+    expect(notice).toContain("incorporated:performance-memory");
+    expect(notice).toContain("do NOT open new PRs");
+  });
+
+  test("human comment on an absorbed issue is answered (read-only), not dropped", async () => {
+    const { mkdtempSync, writeFileSync } = require("fs");
+    const { tmpdir } = require("os");
+    const { join } = require("path");
+    const dir = mkdtempSync(join(tmpdir(), "qa2-"));
+    const file = join(dir, "suppressed.json");
+    writeFileSync(file, JSON.stringify({ issues: { "42": "incorporated:performance-memory" } }));
+    const { self, enqueueOrRun } = makeSelf(file);
+    const comment = { id: "c42", author: "dog", authorKind: "user", body: "宿主换 persona 指的是啥" };
+    await Engine.prototype.handleCommented.call(self, ref, "acme/widgets", issueData, comment, tracker);
+    expect(enqueueOrRun).toHaveBeenCalledTimes(1);
+    const prompt = String((enqueueOrRun.mock.calls[0] as unknown[])[2]);
+    expect(prompt).toContain("READ-ONLY Q&A mode");
+    expect(prompt).toContain("宿主换 persona 指的是啥");
+  });
+
+  test("comment on a non-suppressed issue gets no Q&A notice", async () => {
+    const { mkdtempSync } = require("fs");
+    const { tmpdir } = require("os");
+    const { join } = require("path");
+    const dir = mkdtempSync(join(tmpdir(), "qa3-"));
+    const { self, enqueueOrRun } = makeSelf(join(dir, "empty.json"));
+    const comment = { id: "c43", author: "dog", authorKind: "user", body: "继续" };
+    await Engine.prototype.handleCommented.call(self, ref, "acme/widgets", issueData, comment, tracker);
+    expect(enqueueOrRun).toHaveBeenCalledTimes(1);
+    const prompt = String((enqueueOrRun.mock.calls[0] as unknown[])[2]);
+    expect(prompt).not.toContain("READ-ONLY Q&A mode");
+  });
+});
