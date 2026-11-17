@@ -178,12 +178,12 @@ describe("global no-decision-issue rule in base prompts", () => {
       { clone: "git clone x .", issueRef: "acme/widgets#42" }, null,
     );
     // 2026-11-17: the 2026-11-01 ban was superseded by the two-ways rule
-    // (顺手修 small/mechanical on the spot; 顺手提 [顺带] issue when not;
-    // no third option). The in-thread 需要决策 comment survives for
+    // (on-the-spot fix for small/mechanical; drive-by NEW issue [Drive-by] when
+    // not; no third option). The in-thread 需要决策 comment survives for
     // decisions that block THIS thread.
     expect(prompt).toContain("顺手修 or 顺手提, no third option");
     expect(prompt).toContain("NO third option");
-    expect(prompt).toContain("[顺带]");
+    expect(prompt).toContain("[Drive-by]");
     expect(prompt).toContain("🔶 需要决策");
     expect(prompt).toContain("add-label.sh");
     expect(prompt).toContain("owner policy 2026-11-17");
@@ -213,7 +213,7 @@ describe("global no-decision-issue rule in base prompts", () => {
       self, "ework-daemon", "t", "b", "ranxianglei", "/wd",
       { clone: "git clone x .", issueRef: "acme/widgets#42" }, null,
     );
-    expect(prompt).toContain("no source-issue rename");
-    expect(prompt).toContain("NEVER rename, relabel, close, edit");
+    expect(prompt).toContain("LABEL IT ON PICKUP");
+    expect(prompt).toContain("NEVER rename the source issue/PR title");
   });
 });
