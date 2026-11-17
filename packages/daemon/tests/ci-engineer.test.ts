@@ -126,6 +126,17 @@ describe("unified CI-engineer routing", () => {
     expect(prompt).toContain("update-branch");
   });
 
+
+  test("engineer prompt enforces the [ework:ci-held] intermediate-push discipline (owner policy 2026-11-15)", async () => {
+    const { self, enqueueOrRun, tracker } = makeSelf(3);
+    await callCi(self, tracker);
+    const [prompt] = enqueueArgs(enqueueOrRun);
+    expect(prompt).toContain("[ework:ci-held]");
+    expect(prompt).toContain("NOT the final head of this PR MUST carry the line [ework:ci-held]");
+    expect(prompt).toContain("commit BODY");
+    expect(prompt).toContain("must NOT carry the marker");
+    expect(prompt).toContain("one full CI pass");
+  });
 });
 
 describe("execProcess engineer kill-switch", () => {
