@@ -756,6 +756,25 @@ const REPLY_LANGUAGE_RULE =
 const RC_EIGHT_QUESTION_RULE =
   `Root-cause thread contract (owner policy 2026-11-12): this is a [根因]/[Root Cause] thread — its deliverable is a VERDICT, not activity. Your FINAL reply on this thread MUST end with the 8-question checklist (8问) IN CHINESE, one numbered line each: 1. 这是啥问题（大白话+触发条件） 2. 根本原因是啥（组件+机制，知道就给 file:line） 3. 如何修复（已做的修复或建议修法） 4. 能否合并/关闭（结论+依据：测试/CI/回归分析） 5. URL（相关线程/PR 链接） 6. 影响面（哪些代码路径/用户） 7. 测试（什么钉住它） 8. 风险（还可能坏在哪）。A line you cannot answer honestly gets 「待验证：原因」 — never omit a line, never pad it.`;
 
+// Release-PR contract (owner policy 2026-11-17): a release PR is the
+// highest-priority thread of the whole fleet. The worker must review the
+// full diff, fix small findings directly on the release branch, and end the
+// FINAL reply with the same 8-question checklist so the owner gets a single
+// merge/no-merge verdict — not silence (2026-11-16: release v0.1.216 PR sat
+// unreviewed and un-asked for hours after the worker finished).
+export const RELEASE_REVIEW_RULE =
+  `Release-PR contract (owner policy 2026-11-17): this is a RELEASE pull request — the highest-priority thread. Review the full diff (last release tag → head), fix small findings directly on this branch (commit tag "(PR#NNNN review)"), and report big findings instead of guessing. Your FINAL reply on this thread MUST end with the 8-question checklist (8问) IN CHINESE, one numbered line each: 1. 这是啥问题（这个 release 要发什么，大白话） 2. 根本原因是啥（diff 里最重的改动+机制） 3. 如何修复（你已修的：commit 号；建议修的） 4. 能否合并/发布（结论+依据：测试/CI/回归分析） 5. URL（release PR/相关线程链接） 6. 影响面（哪些代码路径/用户） 7. 测试（什么钉住它） 8. 风险（还可能坏在哪）。A line you cannot answer honestly gets 「待验证：原因」 — never omit a line, never pad it.`;
+
+/** 8-question contract picker (owner policies 2026-11-12 / 2026-11-17):
+ *  [根因]/[Root Cause] threads get the RC verdict rule; release PRs get the
+ *  release-review rule; anything else gets no rule. */
+export const RELEASE_PR_RE = /release v?\d+\.\d+\.\d+/i;
+
+export function eightQuestionRuleFor(title: string | undefined): string {
+  if (/^\[(根因|Root Cause)\]/i.test(title ?? "")) return RC_EIGHT_QUESTION_RULE;
+  return RELEASE_PR_RE.test(title ?? "") ? RELEASE_REVIEW_RULE : "";
+}
+
 export class Engine {
   private cfg: Config;
   private store: Store;
@@ -2585,7 +2604,12 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
     // Release PRs (mirror titles look like "[PR] release vX.Y.Z") are
     // fleet-infrastructure work: route to a sticky release-worker session
     // (owner policy 2026-10-17) so they rank in the infra pickup tier (op.ts).
-    const releaseTracker = /release v?\d+\.\d+\.\d+/i.test(issueData?.title ?? "");
+    const releaseTracker = RELEASE_PR_RE.test(issueData?.title ?? "");
+    if (releaseTracker) {
+      // Release PRs rank ahead of the FIFO backlog (owner policy 2026-11-17,
+      // "release分支应该是最高优先级"): idempotent stamp, re-applied is safe.
+      void this.boostIssueWork([ref.issueId]);
+    }
     // Create default session for bot user
     const defaultSessionName = scheduledCiTracker ? "ci-worker" : releaseTracker ? "release-worker" : this.cfg.bot.username;
     let session = await this.store.getSessionByName(issue.id, defaultSessionName);
@@ -4299,7 +4323,7 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
 
   /** 8-question contract, active only on [根因]/[Root Cause] threads (owner policy 2026-11-12). */
   private rcEightQuestionRule(issueTitle?: string): string {
-    return /^\[(根因|Root Cause)\]/i.test(issueTitle ?? "") ? RC_EIGHT_QUESTION_RULE : "";
+    return eightQuestionRuleFor(issueTitle);
   }
 
   // Suppression set (owner policy 2026-11-12, "被纳入的机器人自动停止"): the
