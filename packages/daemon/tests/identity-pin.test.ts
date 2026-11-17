@@ -184,6 +184,8 @@ describe("global no-decision-issue rule in base prompts", () => {
     expect(prompt).toContain("顺手修 or 顺手提, no third option");
     expect(prompt).toContain("NO third option");
     expect(prompt).toContain("[Drive-by]");
+    expect(prompt).toContain("api/v1/repos/<owner>/<repo>/issues");
+    expect(prompt).toContain("NO probe/test/placeholder");
     expect(prompt).toContain("🔶 需要决策");
     expect(prompt).toContain("add-label.sh");
     expect(prompt).toContain("owner policy 2026-11-17");
