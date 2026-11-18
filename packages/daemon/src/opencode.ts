@@ -193,6 +193,17 @@ export function hasRecentBotReply(
  * the work entirely. Duplicate-run cost < lost-work cost, so the list stays
  * narrow and explicit.
  */
+/**
+ * True while the engine's ⏳ progress comment for a session still says the run
+ * is in flight ("⏳ … processing, running for N min"). finishRun edits the
+ * same comment to a terminal marker ("✅ completed" / "⚡ interrupted") once
+ * the run ends, so a terminal body means the live path ran to completion
+ * before the daemon died. Exported for unit testing.
+ */
+export function progressStillOpen(body: string): boolean {
+  return body.includes("⏳") && /processing, running for/.test(body);
+}
+
 const IN_PROGRESS_PATTERNS: RegExp[] = [
   /进行中/, /稍后/, /稍等/, /请稍候/, /收到/, /开始执行/, /正在处理/, /继续处理/, /马上/, /接着处理/,
   /\bwip\b/i, /\bin progress\b/i, /\bworking on it\b/i, /\bwill follow up\b/i, /\bfollow-up soon\b/i,
@@ -5439,12 +5450,25 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
       // design, and nothing else repaired the stale comment). Close it with
       // a terminal interrupted marker here; the requeued run opens a fresh
       // progress comment on its next observer tick.
+      // Read the thread BEFORE mutating the ⏳ progress comment: its current
+      // body is the evidence for whether the run was still in flight when the
+      // daemon died (a "⏳ … processing" body means mid-task bot comments are
+      // NOT deliveries — the 2026-11-17 billion-context#7059 false-done, where
+      // an in-flight run's 查重 comment was mistaken for the final reply and
+      // the backfill work was silently dropped).
+      const ref = this.sessionToRef(session, issue);
+      const tracker = this.getTracker(issue.trackerType);
+      const comments = await tracker.listComments(ref).catch((): TrackerComment[] => []);
+
       const staleProgressId = this.progressCommentId.get(k);
+      const progressWasOpen = Boolean(
+        staleProgressId &&
+        comments.find((c) => c.id === staleProgressId)?.body &&
+        progressStillOpen(comments.find((c) => c.id === staleProgressId)!.body)
+      );
       if (msgs.some(m => m.status === "running") && staleProgressId) {
-        const staleRef = this.sessionToRef(session, issue);
-        const staleTracker = this.getTracker(issue.trackerType);
-        await staleTracker.editComment(
-          staleRef, staleProgressId,
+        await tracker.editComment(
+          ref, staleProgressId,
           `[system] 🏷 ⚡ **${session.name}** interrupted (daemon restart) — auto-retry scheduled`
         ).catch(err => log.warn(`engine: recover — failed to close stale progress comment for ${k}: ${(err as Error).message}`));
         this.progressCommentId.delete(k);
@@ -5454,12 +5478,19 @@ Check states: read the mirror cache (see AGENTS.md), do not poll gh for check st
 
       // Strict recovery-time delivery check (ework#9 spec item 3): only a bot
       // reply posted AFTER this message's promptTime — and not in-progress
-      // wording ("working on it…") — counts as delivery. When unsure, requeue:
+      // wording ("working on it…") — counts as delivery. Two refinements:
+      // (a) the baseline is the LATEST in-flight message (a nudge chain
+      // re-executes as a new message; bot comments from the superseded run
+      // predate it and must not count as its delivery), and (b) while the ⏳
+      // progress comment still says "processing", every bot comment is
+      // mid-task output, never the final reply. When unsure, requeue:
       // duplicate-run cost < lost-work cost.
-      const ref = this.sessionToRef(session, issue);
-      const tracker = this.getTracker(issue.trackerType);
-      const comments = await tracker.listComments(ref).catch((): TrackerComment[] => []);
-      if (hasRecoveryDelivery(comments, (a) => tracker.isBotUser(a), first.createdAt)) {
+      const lastInFlight = msgs
+        .filter((m) => m.status !== "done")
+        .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime()).at(-1) ?? first;
+      if (progressWasOpen) {
+        log.warn(`engine: recover — msg ${first.id.slice(0, 8)} for ${k} — ⏳ progress comment still in flight at daemon death; mid-task bot comments are NOT deliveries, requeueing (never false-done)`);
+      } else if (hasRecoveryDelivery(comments, (a) => tracker.isBotUser(a), lastInFlight.createdAt)) {
         log.info(`engine: recovered msg ${first.id.slice(0, 8)} for ${k} — post-prompt delivery reply detected, marking done`);
         await this.store.updateMessageStatus(first.id, "done");
         void this.scheduleCiVerify(first); // audit RC3

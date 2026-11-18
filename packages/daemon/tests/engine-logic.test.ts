@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { Database } from "bun:sqlite";
-import { hasRecentBotReply, hasRecoveryDelivery, looksLikeInProgress, checkSessionOutput } from "../src/opencode";
+import { hasRecentBotReply, hasRecoveryDelivery, looksLikeInProgress, progressStillOpen, checkSessionOutput } from "../src/opencode";
 import type { TrackerComment } from "../src/trackers/types";
 
 function makeComment(author: string, createdAt: string, body = "reply"): TrackerComment {
@@ -75,6 +75,20 @@ describe("hasRecentBotReply — absolute window fallback (no promptTime)", () =>
   test("ignores system comments in fallback mode", () => {
     const comments = [makeComment("bot", new Date().toISOString(), "[system] done")];
     expect(hasRecentBotReply(comments, isBot)).toBe(false);
+  });
+});
+
+describe("progressStillOpen — an in-flight ⏳ progress comment means the run died mid-task (2026-11-17 #7059 false-done)", () => {
+  test("detects the live in-progress progress body", () => {
+    expect(progressStillOpen("[system] 🏷 [ses_x](/sessions/ses_x) ⏳ **ework-daemon** processing, running for 2 min...")).toBe(true);
+    expect(progressStillOpen("[system] 🏷 ⏳ **release-worker** processing, running for 1 h 3 min...")).toBe(true);
+  });
+
+  test("terminal edits are not in-flight", () => {
+    expect(progressStillOpen("[system] 🏷 ✅ **ework-daemon** completed (13 min)")).toBe(false);
+    expect(progressStillOpen("[system] 🏷 ⚡ **ework-daemon** interrupted (daemon restart) — auto-retry scheduled")).toBe(false);
+    expect(progressStillOpen("[system] 🏷 ⚡ **ework-daemon** infrastructure failure (model) — auto-retry scheduled (attempt 1/3, backoff 30s).")).toBe(false);
+    expect(progressStillOpen("")).toBe(false);
   });
 });
 
